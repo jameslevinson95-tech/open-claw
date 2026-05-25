@@ -1,11 +1,3713 @@
-# Open Claw Trading Pipeline — Full Codebase
-# Generated: Sat May 23 22:51:04 EDT 2026
+# OPEN CLAW TRADING PIPELINE — FULL CODEBASE DUMP
+# Generated: 2026-05-25 00:49:37 ET
+# Repo: https://github.com/lionizeai/open-claw
 
-# Total: 19 Python files, ~7431 lines
+# Files included:
+# - ./agent1_macro_director.py (     247 lines)
+# - ./agent2_fundamental_screener.py (     607 lines)
+# - ./agent3_synthesizer.py (     546 lines)
+# - ./agent4_risk_manager.py (     748 lines)
+# - ./agent5_position_monitor.py (     669 lines)
+# - ./alpaca_data.py (     352 lines)
+# - ./assembly_scraper.py (     217 lines)
+# - ./broker.py (     249 lines)
+# - ./config.py (     112 lines)
+# - ./deprecated/agent2b_deep_research.py (     303 lines)
+# - ./deprecated/agent3_signal_verifier.py (     255 lines)
+# - ./discord_fetch.py (     293 lines)
+# - ./flash_crash_daemon.py (     362 lines)
+# - ./massive_data.py (     467 lines)
+# - ./orchestrator.py (     690 lines)
+# - ./performance_review.py (     380 lines)
+# - ./preflight.py (    1007 lines)
+# - ./run_archiver.py (     175 lines)
+# - ./safeguards.py (     508 lines)
+# - ./trade_journal.py (     137 lines)
+# - ./vwap_gate.py (     106 lines)
+# - ./watchlist.py (     231 lines)
+# - ./weekly_review.py (     125 lines)
+# - ./x_fetch.py (     313 lines)
 
-==================================================================
-FILE: config.py (     112 lines)
-==================================================================
+---
+
+============================================================
+FILE: ./agent1_macro_director.py (     247 lines)
+============================================================
+"""
+Agent 1: Macro Director — v2 (Jamie's Golden Path tweaks)
+Model: Claude (Anthropic)
+Role: Classify the current market regime and issue a directive.
+
+Changes from v1:
+- Removed S&P 500, DXY, Gold from inputs
+- Added MOVE, DIX, Sector Breadth
+- Enforced kill-switch: missing DIX/MOVE/Credit → REGIME: Defer
+- Locked posture table from Page 8
+- Added VOL_REGIME output (Compressed/Normal/Elevated/Stressed)
+- Removed "max_positions" and "allocation_caps" — that's Agent 4's job
+"""
+import json
+import os
+from datetime import datetime
+
+from dotenv import load_dotenv
+
+load_dotenv()
+
+SYSTEM_PROMPT = """You are Agent 1: The Macro Director for a $100,000 speculative spot-only trading account.
+
+YOUR SOLE JOB: Read the macro data provided and classify the current market regime. You do NOT pick stocks. You do NOT make trade recommendations. You do NOT set position limits or allocation caps — that is Agent 4's job.
+
+REGIME CLASSIFICATIONS (pick exactly one):
+1. RISK-ON — Bull trend intact, volatility low/falling, spreads tight, dark pool buying strong
+2. CAUTIOUS RISK-ON — Generally positive but with yellow flags (elevated VIX, mixed signals)
+3. RISK-OFF — Defensive posture. Rising vol, widening spreads, flight to safety underway
+4. CRISIS — Extreme stress. VIX >35, MOVE >150, credit markets seizing
+5. DEFER — MANDATORY if DIX, MOVE, or Credit data is missing/unavailable. Do NOT hallucinate a regime without these inputs.
+
+KILL-SWITCH RULE (NON-NEGOTIABLE):
+If MOVE index data OR Credit spread data is listed as "DATA UNAVAILABLE" or missing, you MUST output REGIME: DEFER. Do not guess. Do not proceed without these critical inputs.
+If DIX data is unavailable, you MAY proceed but MUST note it in missing_data and reduce your confidence by 2 points. Do NOT attempt to guess DIX values.
+
+VOL REGIME (MANDATORY OUTPUT — Agent 4 needs this exact string):
+Based on VIX level and MOVE index:
+- COMPRESSED: VIX < 14 AND MOVE < 90
+- NORMAL: VIX 14-20 AND MOVE 90-120
+- ELEVATED: VIX 20-30 OR MOVE 120-150
+- STRESSED: VIX > 30 OR MOVE > 150
+
+POSTURE TABLE (USE EXACTLY — from Page 8 of spec):
+- RISK-ON → POSTURE: Aggressive, CONVICTION_FLOOR: 5
+- CAUTIOUS RISK-ON → POSTURE: Offensive, CONVICTION_FLOOR: 6
+- RISK-OFF → POSTURE: Defensive, CONVICTION_FLOOR: 7
+- CRISIS → POSTURE: Bunker, CONVICTION_FLOOR: 9
+- DEFER → POSTURE: Hold, CONVICTION_FLOOR: 10
+
+DECISION INPUTS (what you should analyze):
+- VIX: Fear gauge for equity volatility
+- MOVE: Bond market volatility — rising MOVE with falling VIX = divergence warning
+- DIX: Dark pool buying index — high DIX (>45) = institutional accumulation, low DIX (<40) = distribution
+- Yield curve (10Y-2Y spread): Inverted = recession risk
+- HY spread proxy (HYG/LQD ratio): Falling = credit stress
+- Sector breadth: % of sectors above 20DMA — broad participation vs narrow leadership
+
+ASSEMBLY PRIVATE DATA (if provided):
+You may also receive Assembly sentiment and macro data. Use these for additional signal confirmation:
+- Assembly Sentiment Composite (0-100): <25 = Extreme Fear, 25-45 = Fear, 45-55 = Neutral, 55-75 = Greed, >75 = Extreme Greed
+- Sub-components: VIX sentiment, momentum, price strength, breadth, put/call, junk bond demand, safe haven demand
+- Cross-asset rotation: equities vs bonds vs gold vs oil vs USD with 50d/200d trends
+- Risk & Credit Gauges: VIX, VXN, MOVE, HYG, LQD, JNK with trend context
+- Sector rotation with RS vs SPY: identifies sector leadership
+- Full yield curve (1M through 30Y)
+These are supplementary — your core regime classification still relies on VIX, MOVE, credit, and breadth.
+
+PREFERRED THEMES: Based on regime, suggest 1-3 macro themes Agent 2 should focus on.
+
+You MUST output valid JSON matching this EXACT schema — no extra fields:
+{
+  "agent": "macro_director",
+  "timestamp": "<ISO timestamp>",
+  "regime": "<RISK-ON | CAUTIOUS RISK-ON | RISK-OFF | CRISIS | DEFER>",
+  "vol_regime": "<COMPRESSED | NORMAL | ELEVATED | STRESSED>",
+  "posture": "<Aggressive | Offensive | Defensive | Bunker | Hold>",
+  "conviction_floor": <integer 5-10>,
+  "preferred_themes": ["<theme1>", "<theme2>"],
+  "summary": "<2-3 sentence plain English summary>",
+  "key_signals": {
+    "vix_read": "<description>",
+    "move_read": "<description>",
+    "dix_read": "<description>",
+    "yield_curve_read": "<description>",
+    "credit_read": "<description>",
+    "breadth_read": "<description>"
+  },
+  "missing_data": ["<list any unavailable data feeds>"]
+}
+
+Do NOT output "max_positions_today", "allocation_cap_pct", or any position sizing fields. That is Agent 4's domain.
+
+Be decisive. Pick a regime and commit."""
+
+
+def run_agent1(macro_data: dict = None) -> dict:
+    """Run Agent 1: Read macro data, send to Claude, return structured directive."""
+
+    # Load macro data from pre-flight if not passed
+    if macro_data is None:
+        macro_path = "output/preflight_macro.json"
+        if not os.path.exists(macro_path):
+            return {"success": False, "error": "No pre-flight macro data found. Run preflight.py first."}
+        with open(macro_path, "r") as f:
+            macro_data = json.load(f)
+
+    # Format for prompt
+    from preflight import format_macro_for_prompt, format_assembly_for_prompt
+    macro_text = format_macro_for_prompt(macro_data)
+
+    # Load Assembly data if available
+    assembly_text = ""
+    assembly_path = "output/assembly_data.json"
+    if os.path.exists(assembly_path):
+        try:
+            with open(assembly_path) as f:
+                assembly_data = json.load(f)
+            assembly_text = "\n\n" + format_assembly_for_prompt(assembly_data)
+            print("[Agent 1] Assembly Private data loaded")
+        except Exception as e:
+            print(f"[Agent 1] Assembly data load failed: {e}")
+
+    print(f"[Agent 1] Macro data loaded from {macro_data.get('timestamp', 'unknown')}")
+
+    # Send to Claude
+    print("[Agent 1] Sending to Claude for regime classification...")
+
+    try:
+        import anthropic
+        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        if not api_key:
+            raise RuntimeError("No ANTHROPIC_API_KEY — run as subagent via OCPlatform instead.")
+        client = anthropic.Anthropic(api_key=api_key)
+
+        user_message = f"""Here is today's macro data. Classify the regime and produce your directive.
+
+CRITICAL: If DIX, MOVE, or Credit data is marked as unavailable, you MUST output REGIME: DEFER.
+
+{macro_text}{assembly_text}
+
+Current date/time: {datetime.now().isoformat()}
+
+Respond with ONLY the JSON directive, no other text."""
+
+        response = client.messages.create(
+            model="claude-opus-4-7",
+            max_tokens=16000,
+            thinking={
+                "type": "enabled",
+                "budget_tokens": 10000,
+            },
+            system=SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": user_message}],
+        )
+
+        # With extended thinking, content has thinking + text blocks
+        raw_text = next(b.text for b in response.content if b.type == "text").strip()
+    except RuntimeError:
+        # No API key — return the prompt for subagent execution
+        return {
+            "success": False,
+            "needs_subagent": True,
+            "prompt": SYSTEM_PROMPT,
+            "macro_text": macro_text,
+        }
+
+    # Parse response
+    if raw_text.startswith("```"):
+        raw_text = raw_text.split("\n", 1)[1]
+        raw_text = raw_text.rsplit("```", 1)[0]
+        raw_text = raw_text.strip()
+
+    try:
+        directive = json.loads(raw_text)
+
+        # Validate required fields
+        required = ["regime", "vol_regime", "posture", "conviction_floor"]
+        for field in required:
+            if field not in directive:
+                return {"success": False, "error": f"Missing required field: {field}", "raw": raw_text}
+
+        # Strip any hallucinated position-sizing fields
+        for bad_field in ["max_positions_today", "allocation_cap_pct", "max_positions", "allocation_cap"]:
+            directive.pop(bad_field, None)
+
+        print(f"[Agent 1] Regime: {directive.get('regime')} | Vol: {directive.get('vol_regime')} | Posture: {directive.get('posture')}")
+        return {"success": True, "directive": directive, "raw_macro_data": macro_data}
+    except json.JSONDecodeError as e:
+        print(f"[Agent 1] ERROR: Failed to parse response as JSON: {e}")
+        return {"success": False, "error": str(e), "raw_response": raw_text}
+
+
+def format_directive_for_telegram(result: dict) -> str:
+    """Format Agent 1 output as a readable Telegram message."""
+    if not result["success"]:
+        return f"⚠️ Agent 1 FAILED: {result.get('error', 'Unknown error')}"
+
+    d = result["directive"]
+    regime_emoji = {
+        "RISK-ON": "🟢",
+        "CAUTIOUS RISK-ON": "🟡",
+        "RISK-OFF": "🟠",
+        "CRISIS": "🔴",
+        "DEFER": "⚪",
+    }
+    emoji = regime_emoji.get(d.get("regime", ""), "⚪")
+
+    lines = [
+        f"{'='*30}",
+        f"📊 AGENT 1: MACRO DIRECTOR (v2)",
+        f"{'='*30}",
+        f"",
+        f"{emoji} Regime: {d.get('regime')}",
+        f"📈 Vol Regime: {d.get('vol_regime')}",
+        f"📋 Posture: {d.get('posture')}",
+        f"🎯 Conviction Floor: {d.get('conviction_floor')}",
+        f"",
+        f"🎪 Themes: {', '.join(d.get('preferred_themes', []))}",
+        f"",
+        f"💬 {d.get('summary', '')}",
+        f"",
+        f"📡 Key Signals:",
+    ]
+
+    signals = d.get("key_signals", {})
+    for key, val in signals.items():
+        label = key.replace("_read", "").replace("_", " ").upper()
+        lines.append(f"  • {label}: {val}")
+
+    missing = d.get("missing_data", [])
+    if missing:
+        lines.append(f"")
+        lines.append(f"⚠️ Missing data: {', '.join(missing)}")
+
+    return "\n".join(lines)
+
+
+if __name__ == "__main__":
+    result = run_agent1()
+    print("\n" + format_directive_for_telegram(result))
+
+    if result.get("success"):
+        os.makedirs("output", exist_ok=True)
+        with open("output/agent1_directive.json", "w") as f:
+            json.dump(result["directive"], f, indent=2)
+        print(f"\n[Agent 1] Directive saved to output/agent1_directive.json")
+
+
+============================================================
+FILE: ./agent2_fundamental_screener.py (     607 lines)
+============================================================
+"""
+Agent 2: Fundamental Screener — v4.0 (Gemini Deep Research Max)
+Model: Gemini Deep Research Max (Google) via Interactions API
+Role: Given Agent 1's directive + SCREENER_UNIVERSE + FUNDAMENTAL_DATA
+      (all pre-fetched by Python), select 1-3 tickers with rigorous analysis.
+
+Changes from v3.0:
+- Switched from Claude Opus 4.7 to Gemini Deep Research Max
+- Uses Interactions API (async) for comprehensive research synthesis
+- Deep Research Max: maximum comprehensiveness, accuracy-critical investigations
+- Python pre-fetches ALL fundamental data — model does NOT fetch or browse
+- Verbatim THEME_MATCH, SOURCE enum
+"""
+import json
+import os
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
+
+import requests
+import yfinance as yf
+from dotenv import load_dotenv
+
+load_dotenv()
+
+# Gemini Deep Research (speed/efficiency)
+MODEL = "deep-research-preview-04-2026"
+MODEL_DISPLAY = "Gemini Deep Research"
+GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
+MAX_RETRIES = 3
+RETRY_DELAY = 5
+POLL_INTERVAL = 15  # seconds between status polls
+MAX_POLL_TIME = 300  # 5 min max wait for deep research to complete
+
+SYSTEM_PROMPT = """You are Agent 2: The Fundamental Screener for a $100,000 speculative spot-only trading account.
+
+YOUR JOB: Given Agent 1's regime directive, a pre-filtered SCREENER_UNIVERSE, and pre-fetched FUNDAMENTAL_DATA (all provided by Python — you do NOT fetch any data yourself), select 1-3 candidates through rigorous quantitative analysis.
+
+CRITICAL RULES:
+1. You may ONLY select tickers from the provided SCREENER_UNIVERSE list. Do NOT suggest any ticker not on the list. Do NOT fetch, browse, or look up any data — use ONLY what Python injected into this prompt.
+2. CONVICTION_TIER must be exactly one of: PASS, STRONG, or EXCEPTIONAL (string enum). Numeric scores are FORBIDDEN and will crash the pipeline.
+   - PASS: Meets all screens, thesis is coherent, no red flags. Default state for any candidate that survives Step 3.
+   - STRONG: PASS + at least two of: (a) clear near-term catalyst, (b) valuation in bottom tercile, (c) momentum confirmed by price > MA50 > MA200.
+   - EXCEPTIONAL: STRONG + thesis is asymmetric AND theme is the single strongest in Agent 1's preferred themes.
+   - Do NOT output STRONG or EXCEPTIONAL for more than one candidate per run unless explicitly justified in screening_notes.
+3. You must COPY the PREFERRED_THEME string from Agent 1 EXACTLY character-for-character into your THEME_MATCH field. Do not summarize, paraphrase, or reword it even slightly.
+4. SOURCE must be exactly one of: "Newsletter" or "Screener Stage 2" (enum). For screener-sourced picks, use "Screener Stage 2".
+5. Each candidate needs a rigorous quantitative thesis grounded in the FUNDAMENTAL_DATA provided, plus a specific near-term catalyst.
+6. If the regime is DEFER, CRISIS with Bunker posture, output an empty candidates array.
+7. All surviving candidates must be at least PASS tier.
+
+<deep_research_protocol>
+CRITICAL: You must conduct your analysis inside a <research_scratchpad> block before generating your final structured output.
+Step 1: Inventory the exact numerical data and fundamentals injected by Python.
+Step 2: Verify the asset passes the >$5 price and >$100M market cap constraints.
+Step 3: Argue the downside. Why might this setup fail? (Play Devil's Advocate).
+Step 4: Brutally interrogate the fundamentals to assign a CONVICTION_TIER (PASS, STRONG, or EXCEPTIONAL).
+Step 5: Ensure the THEME_MATCH is a verbatim, character-for-character echo of Agent 1's theme.
+Only after completing this <research_scratchpad> block may you output the final JSON.
+</deep_research_protocol>
+
+OUTPUT FORMAT:
+First, output your <research_scratchpad>...</research_scratchpad> analysis.
+Then, output ONLY this JSON structure (no markdown, no code blocks):
+{
+  "agent": "fundamental_screener",
+  "timestamp": "<ISO timestamp>",
+  "regime_received": "<regime from Agent 1>",
+  "candidates": [
+    {
+      "ticker": "<SYMBOL from SCREENER_UNIVERSE>",
+      "name": "<company name>",
+      "type": "<equity | sector ETF | commodity ETF | crypto>",
+      "theme_match": "<EXACT string from Agent 1 preferred_themes>",
+      "conviction_tier": "<PASS | STRONG | EXCEPTIONAL>",
+      "thesis": "<2-3 sentences grounded in the numerical fundamentals>",
+      "catalyst": "<specific near-term catalyst>",
+      "source": "Screener Stage 2"
+    }
+  ],
+  "screening_notes": "<brief note on selection process and rejected names>"
+}"""
+
+# Strict JSON schema for structured outputs (Jamie fix #3)
+# This prevents Gemini from outputting "HIGH" instead of an integer
+OUTPUT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "agent": {"type": "string"},
+        "timestamp": {"type": "string"},
+        "regime_received": {"type": "string"},
+        "candidates": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "ticker": {"type": "string"},
+                    "name": {"type": "string"},
+                    "type": {"type": "string", "enum": ["equity", "sector ETF", "commodity ETF", "crypto"]},
+                    "theme_match": {"type": "string"},
+                    "conviction_tier": {"type": "string", "enum": ["PASS", "STRONG", "EXCEPTIONAL"]},
+                    "thesis": {"type": "string"},
+                    "catalyst": {"type": "string"},
+                    "source": {"type": "string", "enum": ["Newsletter", "Screener Stage 2"]},
+                },
+                "required": ["ticker", "name", "type", "theme_match", "conviction_score", "thesis", "catalyst", "source"],
+            },
+        },
+        "screening_notes": {"type": "string"},
+    },
+    "required": ["agent", "timestamp", "regime_received", "candidates", "screening_notes"],
+}
+
+
+def prefetch_fundamental_data(screener_universe: list) -> dict:
+    """
+    Pre-fetch ALL fundamental data for the screener universe.
+    Uses bulk yf.download() for price history (much faster than per-ticker),
+    then per-ticker yf.Ticker().info for fundamentals.
+    """
+    fundamentals = {}
+    tickers_list = [t["ticker"] for t in screener_universe]
+    print(f"  [Agent 2] Pre-fetching fundamentals for {len(tickers_list)} tickers (bulk download)...")
+
+    # Bulk download price history — much faster than individual calls
+    try:
+        bulk_hist = yf.download(tickers_list, period="1mo", group_by="ticker", threads=True, progress=False)
+    except Exception as e:
+        print(f"  [Agent 2] Bulk download failed: {e}, falling back to per-ticker")
+        bulk_hist = None
+
+    def _fetch_single_ticker_data(entry):
+        """Fetch fundamental data for a single ticker. Designed for parallel execution."""
+        ticker = entry["ticker"]
+        try:
+            # Get price data from bulk download
+            if bulk_hist is not None and len(tickers_list) > 1:
+                try:
+                    hist = bulk_hist[ticker]
+                    closes = [float(c) for c in hist["Close"].dropna().values.flatten()]
+                    volumes = [int(v) for v in hist["Volume"].dropna().values.flatten()]
+                except (KeyError, TypeError):
+                    closes = []
+                    volumes = []
+            else:
+                hist = yf.Ticker(ticker).history(period="1mo")
+                closes = [float(c) for c in hist["Close"].values.flatten()] if not hist.empty else []
+                volumes = [int(v) for v in hist["Volume"].values.flatten()] if not hist.empty else []
+
+            if not closes:
+                return ticker, {"error": "No price history"}
+
+            # Get fundamentals from .info
+            stock = yf.Ticker(ticker)
+            info = stock.info
+
+            prior_close = closes[-1]
+            price_5d = closes[-5] if len(closes) >= 5 else prior_close
+            price_20d = closes[0]
+            avg_vol = int(sum(volumes) / len(volumes)) if volumes else 0
+
+            return ticker, {
+                "prior_close": round(prior_close, 2),
+                "change_5d_pct": round((prior_close - price_5d) / price_5d * 100, 2),
+                "change_20d_pct": round((prior_close - price_20d) / price_20d * 100, 2),
+                "market_cap": info.get("marketCap"),
+                "pe_ratio": info.get("trailingPE"),
+                "forward_pe": info.get("forwardPE"),
+                "peg_ratio": info.get("pegRatio"),
+                "price_to_book": info.get("priceToBook"),
+                "revenue_growth": info.get("revenueGrowth"),
+                "earnings_growth": info.get("earningsGrowth"),
+                "profit_margin": info.get("profitMargins"),
+                "debt_to_equity": info.get("debtToEquity"),
+                "free_cash_flow": info.get("freeCashflow"),
+                "beta": info.get("beta"),
+                "sector": info.get("sector", "N/A"),
+                "avg_volume_20d": avg_vol,
+                "52w_high": info.get("fiftyTwoWeekHigh"),
+                "52w_low": info.get("fiftyTwoWeekLow"),
+            }
+        except Exception as e:
+            return ticker, {"error": str(e)}
+
+    # Fetch fundamentals in parallel using ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        futures = {executor.submit(_fetch_single_ticker_data, entry): entry for entry in screener_universe}
+        for future in as_completed(futures):
+            ticker, data = future.result()
+            fundamentals[ticker] = data
+
+    fetched = len([v for v in fundamentals.values() if "error" not in v])
+    print(f"  [Agent 2] Fetched fundamentals for {fetched}/{len(screener_universe)} tickers")
+    return fundamentals
+
+
+def _build_research_prompt(directive: dict, screener_universe: list, fundamental_data: dict, held_tickers: list = None) -> str:
+    """
+    Build the full research prompt with all pre-fetched data.
+    Used by both Deep Research Max and fallback paths.
+    """
+    screener_lines = []
+    for s in screener_universe:
+        ticker = s["ticker"]
+        fund = fundamental_data.get(ticker, {})
+
+        if "error" in fund:
+            continue
+
+        mkt_cap = fund.get("market_cap", 0)
+        cap_str = f"${mkt_cap/1e9:.1f}B" if mkt_cap and mkt_cap > 1e9 else f"${mkt_cap/1e6:.0f}M" if mkt_cap else "N/A"
+
+        line = (
+            f"  {ticker} | {s.get('name', '')} | {s.get('sector', 'N/A')}\n"
+            f"    Prior Close: ${fund.get('prior_close', '?')} | Mkt Cap: {cap_str}\n"
+            f"    5d Change: {fund.get('change_5d_pct', '?')}% | 20d Change: {fund.get('change_20d_pct', '?')}%\n"
+            f"    P/E: {fund.get('pe_ratio', 'N/A')} | Fwd P/E: {fund.get('forward_pe', 'N/A')} | PEG: {fund.get('peg_ratio', 'N/A')}\n"
+            f"    P/B: {fund.get('price_to_book', 'N/A')} | Beta: {fund.get('beta', 'N/A')}\n"
+            f"    Rev Growth: {fund.get('revenue_growth', 'N/A')} | Earnings Growth: {fund.get('earnings_growth', 'N/A')}\n"
+            f"    Profit Margin: {fund.get('profit_margin', 'N/A')} | D/E: {fund.get('debt_to_equity', 'N/A')}\n"
+            f"    FCF: {fund.get('free_cash_flow', 'N/A')} | 52w: ${fund.get('52w_low', '?')} — ${fund.get('52w_high', '?')}"
+        )
+        screener_lines.append(line)
+
+    screener_text = "\n".join(screener_lines)
+
+    prompt = f"""{SYSTEM_PROMPT}
+
+---
+
+Here is Agent 1's directive and the pre-filtered SCREENER_UNIVERSE with FUNDAMENTAL_DATA.
+ALL data has been pre-fetched by Python. Do NOT look up, browse, or fetch any additional data.
+You may ONLY select from the tickers listed below.
+
+AGENT 1 DIRECTIVE:
+{json.dumps(directive, indent=2)}
+
+SCREENER_UNIVERSE WITH FUNDAMENTALS ({len(screener_lines)} tickers with data):
+{screener_text}
+
+RULES REMINDER:
+- CONVICTION_TIER must be exactly one of: PASS, STRONG, or EXCEPTIONAL
+- THEME_MATCH must be copied EXACTLY character-for-character from preferred_themes
+- SOURCE must be "Screener Stage 2"
+
+CURRENT PORTFOLIO:
+You currently hold: {held_tickers if held_tickers else '(empty — full freedom)'}
+Do NOT select candidates highly correlated with existing holdings. Diversify across sectors and themes.
+If portfolio is empty, you have full freedom.
+
+Current date/time: {datetime.now().isoformat()}
+
+After your analysis, output the final result as a JSON object with this schema:
+{{
+  "candidates": [
+    {{
+      "ticker": "SYMBOL",
+      "name": "Company Name",
+      "thesis": "Why this stock fits the regime and theme",
+      "catalyst": "Near-term catalyst",
+      "theme_match": "Exact theme from Agent 1",
+      "conviction_tier": "PASS|STRONG|EXCEPTIONAL",
+      "conviction_score": 7,
+      "source": "Screener Stage 2"
+    }}
+  ],
+  "screening_notes": "Brief summary of screening logic"
+}}"""
+    return prompt
+
+
+def _submit_deep_research(prompt: str, api_key: str) -> str:
+    """
+    Submit a Deep Research Max interaction and return the interaction ID.
+    """
+    url = f"{GEMINI_API_BASE}/interactions"
+    headers = {
+        "x-goog-api-key": api_key,
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "agent": MODEL,
+        "input": {"type": "text", "text": prompt},
+        "background": True,
+    }
+
+    resp = requests.post(url, headers=headers, json=payload, timeout=30)
+    resp.raise_for_status()
+    data = resp.json()
+
+    interaction_id = data.get("id")
+    if not interaction_id:
+        raise RuntimeError(f"No interaction ID returned: {data}")
+
+    print(f"  [Agent 2] Deep Research task submitted: {interaction_id}")
+    return interaction_id
+
+
+def _poll_deep_research(interaction_id: str, api_key: str) -> dict:
+    """
+    Poll for Deep Research completion. Returns the full interaction result.
+    """
+    url = f"{GEMINI_API_BASE}/interactions/{interaction_id}"
+    headers = {"x-goog-api-key": api_key}
+
+    start_time = time.time()
+    last_status = None
+
+    while True:
+        elapsed = time.time() - start_time
+        if elapsed > MAX_POLL_TIME:
+            raise TimeoutError(f"Deep Research timed out after {MAX_POLL_TIME}s")
+
+        resp = requests.get(url, headers=headers, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+
+        status = data.get("status")
+        if status != last_status:
+            print(f"  [Agent 2] Research status: {status} ({elapsed:.0f}s elapsed)")
+            last_status = status
+
+        if status == "completed":
+            return data
+        elif status == "failed":
+            error = data.get("error", "unknown error")
+            raise RuntimeError(f"Deep Research failed: {error}")
+
+        time.sleep(POLL_INTERVAL)
+
+
+def _extract_json_from_report(report_text: str) -> dict:
+    """
+    Extract the JSON candidates object from a Deep Research report.
+    The report may contain markdown, citations, and prose around the JSON.
+    """
+    # Try to find JSON block in markdown code fences
+    if "```json" in report_text:
+        json_block = report_text.split("```json", 1)[1]
+        json_block = json_block.split("```", 1)[0].strip()
+        return json.loads(json_block)
+
+    if "```" in report_text:
+        parts = report_text.split("```")
+        for i in range(1, len(parts), 2):  # odd indices are inside fences
+            block = parts[i].strip()
+            if block.startswith("{"):
+                return json.loads(block)
+
+    # Try to find a raw JSON object
+    brace_depth = 0
+    start = None
+    for i, ch in enumerate(report_text):
+        if ch == "{":
+            if brace_depth == 0:
+                start = i
+            brace_depth += 1
+        elif ch == "}":
+            brace_depth -= 1
+            if brace_depth == 0 and start is not None:
+                candidate = report_text[start:i+1]
+                try:
+                    parsed = json.loads(candidate)
+                    if "candidates" in parsed:
+                        return parsed
+                except json.JSONDecodeError:
+                    start = None
+                    continue
+
+    raise json.JSONDecodeError("No valid JSON with 'candidates' found in report", report_text[:200], 0)
+
+
+def call_deep_research(directive: dict, screener_universe: list, fundamental_data: dict, held_tickers: list = None) -> dict:
+    """
+    Send directive + screener + fundamentals to Gemini Deep Research Max.
+    Uses the Interactions API (async).
+    """
+    api_key = os.environ.get("GOOGLE_API_KEY", "")
+    if not api_key:
+        raise RuntimeError("No GOOGLE_API_KEY — set in .env to use Gemini Deep Research Max.")
+
+    prompt = _build_research_prompt(directive, screener_universe, fundamental_data, held_tickers)
+
+    last_error = None
+    for attempt in range(MAX_RETRIES):
+        try:
+            print(f"  [Agent 2] Calling {MODEL_DISPLAY} (attempt {attempt + 1}/{MAX_RETRIES})...")
+
+            # Submit async research task
+            interaction_id = _submit_deep_research(prompt, api_key)
+
+            # Poll for completion
+            result = _poll_deep_research(interaction_id, api_key)
+
+            # Extract the report text from outputs
+            outputs = result.get("outputs", [])
+            if not outputs:
+                raise RuntimeError("Deep Research completed but returned no outputs")
+
+            # The last output typically contains the synthesized report
+            report_text = ""
+            for output in outputs:
+                text = output.get("text", "")
+                if text:
+                    report_text = text  # use the last text output
+
+            if not report_text:
+                raise RuntimeError("Deep Research outputs contained no text")
+
+            print(f"  [Agent 2] Report received ({len(report_text)} chars)")
+
+            # Extract JSON from the report
+            parsed = _extract_json_from_report(report_text)
+
+            # Validate conviction_tier enums
+            for c in parsed.get("candidates", []):
+                tier = c.get("conviction_tier")
+                if tier not in ("PASS", "STRONG", "EXCEPTIONAL"):
+                    score = c.get("conviction_score")
+                    if isinstance(score, int):
+                        if score >= 9:
+                            c["conviction_tier"] = "EXCEPTIONAL"
+                        elif score >= 7:
+                            c["conviction_tier"] = "STRONG"
+                        else:
+                            c["conviction_tier"] = "PASS"
+                    else:
+                        raise ValueError(f"conviction_tier must be PASS/STRONG/EXCEPTIONAL, got: {tier}")
+                source = c.get("source")
+                if source not in ("Newsletter", "Screener Stage 2"):
+                    c["source"] = "Screener Stage 2"  # Auto-fix common Deep Research output
+
+            print(f"  [Agent 2] Success with {MODEL_DISPLAY}")
+            return parsed
+
+        except json.JSONDecodeError as je:
+            last_error = je
+            print(f"  [Agent 2] {MODEL_DISPLAY} returned unparseable report (attempt {attempt + 1}), retrying...")
+            time.sleep(RETRY_DELAY)
+        except TimeoutError as te:
+            last_error = te
+            print(f"  [Agent 2] {MODEL_DISPLAY} timed out (attempt {attempt + 1}), retrying...")
+            time.sleep(RETRY_DELAY)
+        except ValueError as ve:
+            last_error = ve
+            print(f"  [Agent 2] {MODEL_DISPLAY} validation error: {ve}, retrying...")
+            time.sleep(RETRY_DELAY)
+        except Exception as e:
+            last_error = e
+            print(f"  [Agent 2] {MODEL_DISPLAY} error: {e}")
+            time.sleep(RETRY_DELAY)
+
+    raise Exception(f"{MODEL_DISPLAY} failed after {MAX_RETRIES} attempts. Last error: {last_error}")
+
+
+def run_agent2(directive: dict = None, screener_universe: list = None) -> dict:
+    """Run Agent 2: Pre-fetch fundamentals, call Deep Research Max with full context."""
+
+    # Load directive
+    if directive is None:
+        path = "output/agent1_directive.json"
+        if not os.path.exists(path):
+            return {"success": False, "error": "No Agent 1 directive found."}
+        with open(path) as f:
+            directive = json.load(f)
+
+    # Load screener universe
+    if screener_universe is None:
+        path = "output/screener_universe.json"
+        if not os.path.exists(path):
+            return {"success": False, "error": "No screener universe found. Run preflight.py first."}
+        with open(path) as f:
+            screener_universe = json.load(f)
+
+    regime = directive.get("regime", "UNKNOWN")
+    conviction_floor = directive.get("conviction_floor", 5)
+    print(f"[Agent 2] Regime: {regime} | Conviction floor: {conviction_floor}")
+
+    # DEFER or CRISIS = no trades
+    if regime in ("DEFER", "CRISIS"):
+        return {
+            "success": True,
+            "candidates": [],
+            "screening_notes": f"Regime is {regime}. No candidates.",
+            "directive_used": directive,
+        }
+
+    # Pre-fetch ALL fundamental data BEFORE calling the model
+    print("[Agent 2] Pre-fetching fundamental data for entire screener universe...")
+    fundamental_data = prefetch_fundamental_data(screener_universe)
+
+    # Fetch current Alpaca positions to avoid portfolio blindness
+    try:
+        from broker import AlpacaBroker
+        broker = AlpacaBroker()
+        current_positions = broker.get_positions()
+        held_tickers = [p["ticker"] for p in current_positions]
+    except Exception:
+        held_tickers = []
+
+    if held_tickers:
+        print(f"[Agent 2] Current portfolio: {held_tickers}")
+    else:
+        print(f"[Agent 2] No current positions (or broker unavailable)")
+
+    # Call Deep Research Max with full context
+    print(f"[Agent 2] Calling {MODEL_DISPLAY} with {len(screener_universe)} tickers + fundamentals...")
+    try:
+        model_result = call_deep_research(directive, screener_universe, fundamental_data, held_tickers=held_tickers)
+    except RuntimeError as re:
+        # No API key
+        return {"success": False, "needs_subagent": True, "error": str(re)}
+    except Exception as e:
+        return {"success": False, "error": f"Deep Research Max error: {e}"}
+
+    candidates = model_result.get("candidates", [])
+
+    # Filter by conviction tier
+    pre_filter = len(candidates)
+    tier_order = {"PASS": 1, "STRONG": 2, "EXCEPTIONAL": 3}
+    candidates = [c for c in candidates if c.get("conviction_tier") in tier_order]
+    if len(candidates) < pre_filter:
+        print(f"  [Agent 2] Filtered {pre_filter - len(candidates)} candidates below conviction floor {conviction_floor}")
+
+    # Validate tickers are in screener universe
+    valid_tickers = {s["ticker"] for s in screener_universe}
+    invalid = [c for c in candidates if c.get("ticker") not in valid_tickers]
+    if invalid:
+        print(f"  [Agent 2] WARNING: Removing {len(invalid)} tickers not in screener: {[c['ticker'] for c in invalid]}")
+        candidates = [c for c in candidates if c.get("ticker") in valid_tickers]
+
+    print(f"[Agent 2] {len(candidates)} candidates: {[c.get('ticker') for c in candidates]}")
+
+    # Attach the pre-fetched fundamentals to each candidate
+    for c in candidates:
+        ticker = c.get("ticker")
+        c["fundamentals"] = fundamental_data.get(ticker, {"error": "not found"})
+
+    return {
+        "success": True,
+        "agent": "fundamental_screener",
+        "timestamp": datetime.now().isoformat(),
+        "regime_received": regime,
+        "candidates": candidates,
+        "screening_notes": model_result.get("screening_notes", ""),
+        "directive_used": directive,
+    }
+
+
+def format_agent2_for_telegram(result: dict) -> str:
+    """Format Agent 2 output for Telegram."""
+    if not result.get("success"):
+        return f"⚠️ Agent 2 FAILED: {result.get('error')}"
+
+    candidates = result.get("candidates", [])
+    if not candidates:
+        return (
+            f"{'='*30}\n"
+            f"🔍 AGENT 2: FUNDAMENTAL SCREENER (v4.0 — Deep Research Max)\n"
+            f"{'='*30}\n\n"
+            f"📋 Regime: {result.get('regime_received')}\n"
+            f"💵 No candidates met criteria.\n"
+            f"📝 {result.get('screening_notes', '')}"
+        )
+
+    lines = [
+        f"{'='*30}",
+        f"🔍 AGENT 2: FUNDAMENTAL SCREENER (v4.0 — Gemini Deep Research Max)",
+        f"{'='*30}",
+        f"",
+        f"📋 Regime: {result.get('regime_received')}",
+        f"🎯 Candidates: {len(candidates)}",
+        f"🔬 Model: {MODEL} | Adaptive Thinking",
+        f"",
+    ]
+
+    for i, c in enumerate(candidates, 1):
+        fund = c.get("fundamentals", {})
+        lines.append(f"{'─'*25}")
+        lines.append(f"#{i}  {c.get('ticker')} — {c.get('name')}")
+        lines.append(f"    Theme: {c.get('theme_match')}")
+        lines.append(f"    Conviction: {c.get('conviction_tier', 'N/A')} | Source: {c.get('source', 'N/A')}")
+        lines.append(f"    💡 Thesis: {c.get('thesis')}")
+        lines.append(f"    ⚡ Catalyst: {c.get('catalyst')}")
+
+        if fund and "error" not in fund:
+            mkt_cap = fund.get("market_cap")
+            mkt_cap_str = f"${mkt_cap/1e9:.1f}B" if mkt_cap and mkt_cap > 1e9 else "N/A"
+            lines.append(f"    📊 Close: ${fund.get('prior_close')} | P/E: {fund.get('pe_ratio', 'N/A')} | Fwd P/E: {fund.get('forward_pe', 'N/A')}")
+            lines.append(f"    📊 Cap: {mkt_cap_str} | Beta: {fund.get('beta', 'N/A')} | PEG: {fund.get('peg_ratio', 'N/A')}")
+            lines.append(f"    📊 5d: {fund.get('change_5d_pct')}% | 20d: {fund.get('change_20d_pct')}%")
+
+        lines.append(f"")
+
+    lines.append(f"📝 {result.get('screening_notes', '')}")
+    return "\n".join(lines)
+
+
+if __name__ == "__main__":
+    result = run_agent2()
+    print("\n" + format_agent2_for_telegram(result))
+
+    if result.get("success"):
+        os.makedirs("output", exist_ok=True)
+        with open("output/agent2_candidates.json", "w") as f:
+            json.dump(result, f, indent=2, default=str)
+        print(f"\n[Agent 2] Candidates saved to output/agent2_candidates.json")
+
+
+============================================================
+FILE: ./agent3_synthesizer.py (     546 lines)
+============================================================
+"""
+Agent 3: Qualitative Synthesizer — v3.0
+Model: Claude Opus 4.7 (Anthropic) with adaptive thinking
+Role: Merges the former Agent 2.5 (deep research / red team) and Agent 3
+      (smart money verifier) into a single qualitative synthesis pass.
+
+Gathers ALL qualitative data in Python:
+  - News headlines (yfinance)
+  - Options flow / Put-Call ratio (yfinance)
+  - Short interest (yfinance)
+  - X/Twitter smart money mentions (from output/smart_money_mentions.json)
+
+Then sends the complete "mosaic" to Claude for a unified verdict per ticker.
+
+Verdicts:
+  PASS_THROUGH      — Qualitative data is neutral/silent; trade proceeds as-is.
+  CONFIRM_ENHANCED  — Multiple bullish qualitative signals reinforce the thesis.
+  VETO_DIVERGENT    — Smart money diverges from the bullish thesis.
+  VETO_CROWDED      — Too many accounts are bullish (contrarian crowding signal).
+  VETO_QUALITATIVE  — Fatal qualitative flaw (e.g., 30% SI + bearish smart money).
+"""
+import json
+import os
+import re
+from datetime import datetime
+
+import yfinance as yf
+from dotenv import load_dotenv
+
+load_dotenv()
+
+# Claude Opus 4.7 with adaptive thinking
+MODEL = "claude-opus-4-7"
+MAX_RETRIES = 3
+RETRY_DELAY = 5
+
+# Curated smart money accounts (carried from former Agent 3)
+CURATED_ACCOUNTS = [
+    "unusual_whales",
+    "DeItaone",
+    "Fxhedgers",
+    "zaborsky",
+    "jimcramer",
+    "GurufocusData",
+    "OptionsHawk",
+    "PeterSchiff",
+    "TruthGundlach",
+    "elerianm",
+    "SqueezeMetrics",
+    "sentimentrader",
+    "DarkPoolChart",
+    "WallStJesus",
+    "VolSignals",
+]
+
+SYSTEM_PROMPT = """You are Agent 3: The Qualitative Synthesizer for a $100,000 speculative spot-only trading account.
+
+YOUR JOB: Agent 2 has passed you 1-3 surviving candidates based on a rigid quantitative screen. You receive a complete QUALITATIVE MOSAIC assembled by Python — recent news headlines, options flow (put/call ratio), short interest, AND curated smart money X/Twitter mentions (7-day lookback, institutional-grade accounts). You must weigh this entire mosaic and produce a unified verdict per ticker.
+
+CRITICAL RULES:
+1. You may NOT look up or fetch external data. Rely ONLY on the QUALITATIVE_MOSAIC injected into this prompt.
+2. For each candidate, assign exactly ONE verdict:
+
+   - PASS_THROUGH: Default. Qualitative data is neutral, silent, or mildly mixed. Trade proceeds using Agent 2's conviction tier unchanged. No numeric score.
+
+   - CONFIRM_ENHANCED: 2+ sector specialists or hedge fund principals are publicly aligned with the thesis on X/Twitter, AND zero curated accounts are bearish, AND options flow / news reinforce the bullish setup. Effect: conviction_adjustment = UNCHANGED, Agent 4B applies a CONFIRM_BONUS in sizing.
+
+   - VETO_DIVERGENT: 3+ curated accounts are bearish on the ticker, OR at least 1 hedge fund principal (boazweinstein, CliffordAsness, DylanLeClair_, cngarabedian, RayDalio) is bearish, OR news headlines reveal a fatal narrative break (regulatory action, terrible earnings reaction). Effect: REJECT the trade.
+
+   - VETO_CROWDED: 8+ curated accounts are bullish on the same ticker within the last 48 hours, OR options flow shows extreme call skew (P/C ratio < 0.3) suggesting the trade is too consensus. Effect: REJECT the trade (contrarian signal).
+
+   - VETO_QUALITATIVE: The qualitative mosaic reveals a fatal combined flaw — for example, short interest > 25% of float WITH bearish smart money AND negative news sentiment. This is the "everything is wrong" veto. Effect: REJECT the trade.
+
+3. conviction_adjustment: For non-veto verdicts, output either UNCHANGED or DOWNGRADE. You may NEVER upgrade a conviction tier. DOWNGRADE moves EXCEPTIONAL → STRONG or STRONG → PASS.
+
+4. SHORT SQUEEZE RULE (CRITICAL): High short interest COMBINED with bullish smart money flow is a potential short squeeze setup — do NOT veto solely on high short interest if institutional flow confirms the bullish thesis. Only apply VETO_QUALITATIVE when high short interest is COMBINED with bearish smart money AND negative news.
+
+5. Generate a "red_flag_warnings" array for every candidate — even clean setups have risks. Identify the biggest risk factor.
+
+6. Cite specific X/Twitter accounts and/or news headlines that drove your verdict.
+
+7. Synthesize a "qualitative_thesis" per ticker: 2-3 sentences merging Agent 2's quantitative thesis with the qualitative mosaic realities.
+
+<synthesis_protocol>
+MANDATORY — execute before generating JSON:
+Step 1: Inventory the full mosaic (news, options flow, short interest, smart money tweets).
+Step 2: Cross-reference: Does smart money sentiment align with the quantitative thesis?
+Step 3: Check for crowding: Are too many accounts piling in? Is options flow too one-sided?
+Step 4: Check for divergence: Are bearish voices credible? Is the news narrative breaking?
+Step 5: Evaluate short squeeze potential: High SI + bullish flow = squeeze setup, not veto.
+Step 6: Assign verdict and conviction_adjustment.
+Step 7: Write the qualitative_thesis and red_flag_warnings.
+</synthesis_protocol>
+
+OUTPUT FORMAT — respond with ONLY this JSON:
+{
+  "agent": "qualitative_synthesizer",
+  "timestamp": "<ISO timestamp>",
+  "evaluations": [
+    {
+      "ticker": "<SYMBOL>",
+      "verdict": "<PASS_THROUGH | CONFIRM_ENHANCED | VETO_DIVERGENT | VETO_CROWDED | VETO_QUALITATIVE>",
+      "conviction_adjustment": "<UNCHANGED | DOWNGRADE>",
+      "updated_conviction_tier": "<PASS | STRONG | EXCEPTIONAL>",
+      "red_flag_warnings": ["<specific risk 1>", "<specific risk 2>"],
+      "qualitative_thesis": "<2-3 sentences merging quant thesis with qualitative mosaic>",
+      "cited_accounts": ["<accounts that drove verdict>"],
+      "short_interest_pct": "<X%>",
+      "put_call_ratio": <float>
+    }
+  ],
+  "synthesis_notes": "<overall summary of qualitative synthesis>"
+}"""
+
+
+def prefetch_qualitative_context(candidates: list) -> dict:
+    """
+    Pre-fetch ALL qualitative data for candidates in Python:
+      - News headlines (yfinance)
+      - Options flow / Put-Call ratio (yfinance)
+      - Short interest (yfinance)
+    Returns a dict keyed by ticker.
+    """
+    context = {}
+    print(f"  [Agent 3] Pre-fetching qualitative context for {len(candidates)} candidates...")
+
+    for c in candidates:
+        ticker = c["ticker"]
+        try:
+            stock = yf.Ticker(ticker)
+
+            # 1. News Headlines
+            news_items = stock.news
+            headlines = []
+            if news_items:
+                for n in news_items[:5]:
+                    pub_time = n.get("providerPublishTime", "")
+                    title = n.get("title", "")
+                    publisher = n.get("publisher", "")
+                    headlines.append(f"- {pub_time}: {title} [{publisher}]")
+            if not headlines:
+                headlines = ["- No recent news available"]
+
+            # 2. Options Flow (Put/Call OI Ratio for nearest expiration)
+            options_context = "No options data available"
+            pc_ratio = None
+            puts_oi = 0
+            calls_oi = 0
+            try:
+                expirations = stock.options
+                if expirations:
+                    nearest_exp = expirations[0]
+                    chain = stock.option_chain(nearest_exp)
+                    puts_oi = int(chain.puts["openInterest"].fillna(0).sum()) if not chain.puts.empty else 0
+                    calls_oi = int(chain.calls["openInterest"].fillna(0).sum()) if not chain.calls.empty else 0
+                    pc_ratio = round(puts_oi / calls_oi, 2) if calls_oi > 0 else 0
+                    options_context = (
+                        f"Nearest Expiration ({nearest_exp}): "
+                        f"Put OI = {puts_oi}, Call OI = {calls_oi}, P/C Ratio = {pc_ratio}"
+                    )
+            except Exception:
+                pass
+
+            # 3. Short Interest
+            info = stock.info
+            short_pct_raw = info.get("shortPercentOfFloat")
+            short_pct = f"{round(short_pct_raw * 100, 2)}%" if short_pct_raw else "N/A"
+
+            context[ticker] = {
+                "recent_headlines": headlines,
+                "options_flow": options_context,
+                "put_call_ratio": pc_ratio,
+                "puts_oi": puts_oi,
+                "calls_oi": calls_oi,
+                "short_interest_pct_of_float": short_pct,
+                "short_interest_raw": short_pct_raw,
+            }
+        except Exception as e:
+            context[ticker] = {"error": str(e)}
+
+    return context
+
+
+def _load_x_mentions(tickers: list) -> dict:
+    """
+    Load X/Twitter smart money mentions from the pre-fetched file.
+    Returns a dict keyed by ticker with mention lists.
+    """
+    mentions_path = "output/smart_money_mentions.json"
+    if os.path.exists(mentions_path):
+        with open(mentions_path) as f:
+            data = json.load(f)
+        raw = data.get("mentions", data)  # x_fetch.py nests under "mentions"
+        # Filter to our tickers
+        result = {}
+        for ticker in tickers:
+            result[ticker] = raw.get(ticker, raw.get(ticker.lower(), []))
+        return result
+
+    # X research is mandatory — raise if missing
+    raise RuntimeError(
+        "No smart money X/Twitter data found at output/smart_money_mentions.json. "
+        "X research is MANDATORY — run x_fetch.py first. "
+        "The pipeline cannot proceed without smart money sentiment data."
+    )
+
+
+def call_synthesis(candidates: list, qual_context: dict, x_mentions: dict) -> dict:
+    """
+    Send the complete qualitative mosaic to Claude Opus 4.7 for unified synthesis.
+    Uses adaptive thinking (extended thinking with budget_tokens).
+    """
+    import anthropic
+    import time
+
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        raise RuntimeError("No ANTHROPIC_API_KEY — run as subagent via OCPlatform.")
+
+    client = anthropic.Anthropic(api_key=api_key)
+
+    # Build the mosaic payload for each candidate
+    mosaic_lines = []
+    for c in candidates:
+        ticker = c["ticker"]
+        qc = qual_context.get(ticker, {})
+        mentions = x_mentions.get(ticker, [])
+
+        mention_count = len(mentions) if isinstance(mentions, list) else 0
+        mention_text = json.dumps(mentions, indent=2) if mentions else "No mentions from curated accounts"
+
+        line = (
+            f"TICKER: {ticker}\n"
+            f"  Quantitative Thesis: {c.get('thesis', 'N/A')}\n"
+            f"  Current Conviction Tier: {c.get('conviction_tier', 'PASS')}\n"
+            f"  Theme: {c.get('theme_match', 'N/A')}\n"
+            f"  --- QUALITATIVE MOSAIC ---\n"
+            f"  Short Interest: {qc.get('short_interest_pct_of_float', 'N/A')}\n"
+            f"  Options Flow: {qc.get('options_flow', 'N/A')}\n"
+            f"  Recent Headlines:\n" + "\n".join([f"    {h}" for h in qc.get("recent_headlines", [])]) + "\n"
+            f"  Smart Money X/Twitter ({mention_count} mentions from curated accounts):\n"
+            f"    {mention_text}\n"
+        )
+        mosaic_lines.append(line)
+
+    user_message = f"""Synthesize the qualitative mosaic for these candidates from Agent 2.
+
+ALL data has been pre-fetched by Python. Do NOT look up external data.
+
+CANDIDATES & QUALITATIVE MOSAIC:
+{"=" * 60}
+{"".join(mosaic_lines)}
+{"=" * 60}
+
+CURATED SMART MONEY ACCOUNTS MONITORED:
+{json.dumps(CURATED_ACCOUNTS)}
+
+Current date/time: {datetime.now().isoformat()}
+
+Perform your synthesis and respond with ONLY the JSON output."""
+
+    last_error = None
+    for attempt in range(MAX_RETRIES):
+        try:
+            print(f"  [Agent 3] Calling {MODEL} (attempt {attempt + 1}/{MAX_RETRIES})...")
+
+            response = client.messages.create(
+                model=MODEL,
+                max_tokens=16000,
+                temperature=1,  # Required when using extended thinking
+                thinking={
+                    "type": "enabled",
+                    "budget_tokens": 10000,
+                },
+                system=SYSTEM_PROMPT,
+                messages=[{"role": "user", "content": user_message}],
+            )
+
+            # With extended thinking, content has thinking + text blocks
+            raw_text = next(b.text for b in response.content if b.type == "text").strip()
+
+            # Strip scratchpad if present
+            if "</research_scratchpad>" in raw_text:
+                raw_text = raw_text.split("</research_scratchpad>", 1)[1].strip()
+
+            # Try code-fenced JSON first
+            json_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', raw_text, re.DOTALL)
+            if json_match:
+                json_str = json_match.group(1)
+            else:
+                # Find the outermost JSON object by matching balanced braces
+                brace_depth = 0
+                start = None
+                json_str = None
+                for i, ch in enumerate(raw_text):
+                    if ch == '{':
+                        if brace_depth == 0:
+                            start = i
+                        brace_depth += 1
+                    elif ch == '}':
+                        brace_depth -= 1
+                        if brace_depth == 0 and start is not None:
+                            candidate = raw_text[start:i+1]
+                            try:
+                                json.loads(candidate)
+                                json_str = candidate
+                                break
+                            except json.JSONDecodeError:
+                                start = None
+                                continue
+
+                if json_str is None:
+                    raise json.JSONDecodeError("No valid JSON object found in response", raw_text[:200], 0)
+
+            result = json.loads(json_str)
+            return result
+
+        except RuntimeError:
+            raise  # Re-raise missing API key
+        except Exception as e:
+            last_error = e
+            print(f"  [Agent 3] Claude error: {e}. Retrying in {RETRY_DELAY}s...")
+            import time
+            time.sleep(RETRY_DELAY)
+
+    raise Exception(f"{MODEL} failed after {MAX_RETRIES} attempts. Last error: {last_error}")
+
+
+def run_agent3(agent2_result: dict = None, x_mentions: dict = None) -> dict:
+    """
+    Run Agent 3: Qualitative Synthesizer.
+    Merges news, options flow, short interest, and smart money X/Twitter into
+    a single qualitative pass with Claude.
+
+    Args:
+        agent2_result: Output from Agent 2 (or Agent 2 → 2.5 filtered).
+        x_mentions: Pre-fetched X/Twitter mentions dict keyed by ticker.
+                    If None, loads from output/smart_money_mentions.json.
+
+    Returns:
+        Dict with evaluations per ticker (verdicts, conviction adjustments, etc.).
+    """
+    # Load Agent 2 candidates
+    if agent2_result is None:
+        path = "output/agent2_candidates.json"
+        if not os.path.exists(path):
+            return {"success": False, "error": "No Agent 2 candidates found."}
+        with open(path) as f:
+            agent2_result = json.load(f)
+
+    candidates = agent2_result.get("candidates", [])
+    if not candidates:
+        return {
+            "success": True,
+            "evaluations": [],
+            "verifications": [],
+            "note": "No candidates to synthesize.",
+        }
+
+    tickers = [c.get("ticker") for c in candidates]
+    print(f"[Agent 3] Qualitative synthesis for {len(tickers)} tickers: {tickers}")
+
+    # 1. Pre-fetch qualitative context (news, options, short interest)
+    qual_context = prefetch_qualitative_context(candidates)
+
+    # 2. Load X/Twitter mentions
+    if x_mentions is None:
+        try:
+            x_mentions = _load_x_mentions(tickers)
+        except RuntimeError as e:
+            return {"success": False, "error": str(e)}
+    else:
+        # Filter to our tickers if a raw dict was passed
+        filtered = {}
+        for ticker in tickers:
+            filtered[ticker] = x_mentions.get(ticker, x_mentions.get(ticker.lower(), []))
+        x_mentions = filtered
+
+    for t in tickers:
+        mentions = x_mentions.get(t, [])
+        count = len(mentions) if isinstance(mentions, list) else 0
+        qc = qual_context.get(t, {})
+        si = qc.get("short_interest_pct_of_float", "N/A")
+        pcr = qc.get("put_call_ratio", "N/A")
+        print(f"  [Agent 3] {t}: {count} X mentions | SI: {si} | P/C: {pcr}")
+
+    # 3. Call Claude for synthesis
+    try:
+        synthesis_result = call_synthesis(candidates, qual_context, x_mentions)
+    except RuntimeError:
+        # No API key — return data for subagent execution
+        return {
+            "success": False,
+            "needs_subagent": True,
+            "prompt": SYSTEM_PROMPT,
+            "candidates": candidates,
+            "qual_context": qual_context,
+            "x_mentions": x_mentions,
+        }
+    except Exception as e:
+        return {"success": False, "error": f"Claude API error: {e}"}
+
+    # 4. Process evaluations — filter vetoes, update conviction tiers
+    evaluations = synthesis_result.get("evaluations", [])
+    eval_lookup = {ev["ticker"]: ev for ev in evaluations}
+
+    surviving_candidates = []
+    verifications = []  # Backward-compatible with Agent 4's expected input
+
+    for c in candidates:
+        ticker = c["ticker"]
+        ev = eval_lookup.get(ticker)
+
+        if not ev:
+            # No evaluation — pass through unchanged
+            surviving_candidates.append(c)
+            verifications.append({
+                "ticker": ticker,
+                "verdict": "PASS_THROUGH",
+                "sentiment_read": "Not evaluated",
+                "cited_accounts": [],
+            })
+            continue
+
+        verdict = ev.get("verdict", "PASS_THROUGH")
+
+        # Build backward-compatible verification record for Agent 4
+        verification = {
+            "ticker": ticker,
+            "verdict": verdict,
+            "sentiment_read": ev.get("qualitative_thesis", ""),
+            "cited_accounts": ev.get("cited_accounts", []),
+        }
+        verifications.append(verification)
+
+        # Handle vetoes
+        if verdict in ("VETO_DIVERGENT", "VETO_CROWDED", "VETO_QUALITATIVE"):
+            print(f"  [Agent 3] 🚫 {verdict}: {ticker}")
+            continue
+
+        # Apply conviction adjustment
+        adjustment = ev.get("conviction_adjustment", "UNCHANGED")
+        if adjustment == "DOWNGRADE":
+            tier = c.get("conviction_tier", "PASS")
+            downgrade_map = {"EXCEPTIONAL": "STRONG", "STRONG": "PASS", "PASS": "PASS"}
+            c["conviction_tier"] = downgrade_map.get(tier, tier)
+            print(f"  [Agent 3] ⬇️ DOWNGRADE: {ticker} {tier} → {c['conviction_tier']}")
+        elif verdict == "CONFIRM_ENHANCED":
+            c["confirm_enhanced"] = True
+            print(f"  [Agent 3] ✅ CONFIRM_ENHANCED: {ticker}")
+
+        # Merge qualitative data into candidate
+        c["thesis"] = ev.get("qualitative_thesis", c.get("thesis", ""))
+        c["red_flag_warnings"] = ev.get("red_flag_warnings", [])
+        c["qualitative_verdict"] = verdict
+
+        surviving_candidates.append(c)
+
+    # Update agent2_result with filtered candidates
+    updated_agent2_result = agent2_result.copy()
+    updated_agent2_result["candidates"] = surviving_candidates
+
+    return {
+        "success": True,
+        "evaluations": evaluations,
+        "verifications": verifications,  # Agent 4 reads this
+        "synthesis_notes": synthesis_result.get("synthesis_notes", ""),
+        "candidates_passthrough": surviving_candidates,
+        "updated_agent2_result": updated_agent2_result,
+    }
+
+
+def format_agent3_for_slack(result: dict) -> str:
+    """Format Agent 3 output using Slack-friendly mrkdwn."""
+    if not result.get("success"):
+        return f"⚠️ *Agent 3 FAILED:* {result.get('error')}"
+
+    evaluations = result.get("evaluations", [])
+    surviving = result.get("candidates_passthrough", [])
+
+    lines = [
+        f"🧪 *AGENT 3: QUALITATIVE SYNTHESIZER*",
+        f"> *Survived Synthesis:* {len(surviving)}/{len(evaluations)}",
+        f"> *Model:* Claude Opus 4.7 (Adaptive Thinking)",
+        f"",
+    ]
+
+    if not evaluations:
+        lines.append("📋 No evaluations performed.")
+        return "\n".join(lines)
+
+    for i, ev in enumerate(evaluations, 1):
+        verdict = ev.get("verdict", "PASS_THROUGH")
+        emoji_map = {
+            "PASS_THROUGH": "➡️",
+            "CONFIRM_ENHANCED": "✅",
+            "VETO_DIVERGENT": "🚫",
+            "VETO_CROWDED": "🔴",
+            "VETO_QUALITATIVE": "💀",
+        }
+        emoji = emoji_map.get(verdict, "❓")
+
+        lines.append(f"*{i}. {ev.get('ticker')}* — {emoji} *{verdict}*")
+
+        adj = ev.get("conviction_adjustment", "UNCHANGED")
+        tier = ev.get("updated_conviction_tier", "N/A")
+        lines.append(f"• *Tier:* {tier} ({adj})")
+
+        si = ev.get("short_interest_pct", "N/A")
+        pcr = ev.get("put_call_ratio", "N/A")
+        lines.append(f"• *Short Interest:* {si} | *P/C Ratio:* {pcr}")
+
+        flags = ev.get("red_flag_warnings", [])
+        if flags:
+            lines.append("• *Red Flags:*")
+            for flag in flags:
+                lines.append(f"  - {flag}")
+
+        if verdict not in ("VETO_DIVERGENT", "VETO_CROWDED", "VETO_QUALITATIVE"):
+            lines.append(f"• *Thesis:* {ev.get('qualitative_thesis', '')}")
+
+        cited = ev.get("cited_accounts", [])
+        if cited:
+            lines.append(f"• *Cited:* {', '.join(cited)}")
+
+        lines.append(f"")
+
+    if result.get("synthesis_notes"):
+        lines.append(f"📝 *Notes:* _{result.get('synthesis_notes')}_")
+
+    return "\n".join(lines)
+
+
+if __name__ == "__main__":
+    result = run_agent3()
+    print("\n" + format_agent3_for_slack(result))
+
+    if result.get("success"):
+        os.makedirs("output", exist_ok=True)
+        with open("output/agent3_verified.json", "w") as f:
+            json.dump(result, f, indent=2, default=str)
+        # Also save the updated candidates with qualitative data merged in
+        if result.get("updated_agent2_result"):
+            with open("output/agent2_candidates.json", "w") as f:
+                json.dump(result["updated_agent2_result"], f, indent=2, default=str)
+        print(f"\n[Agent 3] Results saved to output/agent3_verified.json")
+
+
+============================================================
+FILE: ./agent4_risk_manager.py (     748 lines)
+============================================================
+"""
+Agent 4: Risk Manager — v3 (ATR-based stops, no LLM dependency)
+All-Python pipeline: ATR stop calculation → position sizing → tear sheet.
+
+Changes from v2:
+- Killed Agent 4A (Claude LLM call for stop anchors)
+- ATR-based stop calculation: 14-day ATR with conviction-scaled multipliers
+- Correlation veto fix: min_periods=20, no double-dropna
+- Formula: Target = Allocation_Cap * Conviction_Mod * Vol_Mod * Posture_Mod * Contrarian_Penalty
+- Theme cap enforced: 1 position per theme, keep higher conviction if duplicates
+- Uses prior close price from 7:55 AM pre-flight (not live)
+- Generates Markdown tear sheet for manual execution at 9:30 AM
+"""
+import json
+import math
+import os
+from datetime import datetime
+
+import pandas as pd
+import yfinance as yf
+from dotenv import load_dotenv
+
+from config import (
+    ACCOUNT_SIZE,
+    BASE_RISK,
+    MAX_RISK_PER_TRADE,
+    MIN_RISK_PER_TRADE,
+    MAX_ALLOCATION_PCT,
+    TIER_RISK_MULT,
+    CONFIRM_RISK_MULT,
+    VOL_RISK_MULT,
+    POSTURE_RISK_MULT,
+    DRY_POWDER_FLOOR,
+    POSTURE_TABLE,
+    SESSION_RISK_BUDGET,
+    THEME_CAP,
+    MAX_PORTFOLIO_HEAT_PCT,
+    HEAT_WARNING_PCT,
+)
+from broker import AlpacaBroker
+
+load_dotenv()
+
+
+# ATR multipliers by conviction tier — higher conviction = wider stop (more room)
+ATR_MULTIPLIERS = {
+    "PASS": 1.2,
+    "STRONG": 1.5,
+    "EXCEPTIONAL": 2.0,
+}
+
+
+def get_moving_averages(ticker: str) -> dict:
+    """Fetch prior close + moving averages for a ticker."""
+    try:
+        stock = yf.Ticker(ticker)
+        hist = stock.history(period="6mo")
+        if hist.empty or len(hist) < 50:
+            return {"error": f"Insufficient data for {ticker}"}
+
+        closes = [float(c) for c in hist["Close"]]
+        prior_close = closes[-1]
+        ma_10 = sum(closes[-10:]) / 10
+        ma_20 = sum(closes[-20:]) / 20
+        ma_50 = sum(closes[-50:]) / 50
+
+        return {
+            "prior_close": round(prior_close, 2),
+            "ma_10": round(ma_10, 2),
+            "ma_20": round(ma_20, 2),
+            "ma_50": round(ma_50, 2),
+            "recent_low_20d": round(min(closes[-20:]), 2),
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def calculate_atr_stop(ticker: str, entry_price: float, conviction_tier: str) -> dict:
+    """
+    Calculate ATR-based stop loss for a ticker.
+    Downloads 20 trading days of daily OHLC, computes 14-day ATR,
+    and sets stop at entry_price - (multiplier * ATR).
+    Multiplier scales with conviction tier (wider stop = more room for winners).
+    """
+    try:
+        stock = yf.Ticker(ticker)
+        hist = stock.history(period="1mo")  # ~20 trading days
+        if hist.empty or len(hist) < 14:
+            return {"error": f"Insufficient data for {ticker} ({len(hist) if not hist.empty else 0} bars)"}
+
+        # Calculate True Range for each bar
+        high = hist["High"]
+        low = hist["Low"]
+        prev_close = hist["Close"].shift(1)
+
+        tr1 = high - low
+        tr2 = (high - prev_close).abs()
+        tr3 = (low - prev_close).abs()
+        true_range = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+
+        # 14-day ATR (simple moving average of true range)
+        atr = true_range.tail(14).mean()
+
+        multiplier = ATR_MULTIPLIERS.get(conviction_tier, ATR_MULTIPLIERS["PASS"])
+        stop_distance = multiplier * atr
+        stop_price = entry_price - stop_distance
+        stop_distance_pct = (stop_distance / entry_price) * 100
+
+        return {
+            "stop_price": round(stop_price, 2),
+            "atr": round(atr, 4),
+            "atr_multiplier": multiplier,
+            "stop_distance_pct": round(stop_distance_pct, 2),
+            "stop_label": f"{multiplier}x ATR({round(atr, 2)})",
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def correlation_veto(new_ticker: str, current_positions: list, threshold: float = 0.70) -> bool:
+    """
+    Check if new_ticker is >threshold correlated with any current position.
+    Uses 60-day daily returns. Returns True if correlated (should veto).
+    """
+    if not current_positions:
+        return False
+
+    try:
+        all_tickers = [new_ticker] + current_positions
+        data = yf.download(all_tickers, period="3mo", progress=False)
+        if data.empty:
+            return False
+
+        closes = data["Close"] if "Close" in data.columns else data
+        returns = closes.pct_change().tail(60)
+
+        if new_ticker not in returns.columns:
+            return False
+
+        for pos in current_positions:
+            if pos in returns.columns:
+                corr = returns[new_ticker].corr(returns[pos], min_periods=20)
+                if corr is not None and corr > threshold:
+                    print(f"  [Agent 4B] CORRELATION VETO: {new_ticker} vs {pos} = {corr:.2f} (>{threshold})")
+                    return True
+    except Exception as e:
+        print(f"  [Agent 4B] Correlation check failed (non-fatal): {e}")
+
+    return False
+
+
+def calculate_portfolio_heat() -> dict:
+    """
+    Calculate total open risk ("heat") across all positions.
+
+    For each position:
+      - open_risk = shares * (current_price - stop_price)
+      - If stop_price unknown, estimate as entry_price - (1.5 * ATR)
+
+    Returns:
+      {
+        "total_heat_dollars": float,
+        "heat_pct_of_equity": float,
+        "positions_detail": [...]
+      }
+    """
+    try:
+        broker = AlpacaBroker()
+        positions = broker.get_positions()
+        account = broker.get_account_summary()
+    except Exception as e:
+        print(f"[Heat] ERROR connecting to Alpaca: {e}")
+        return {
+            "total_heat_dollars": 0.0,
+            "heat_pct_of_equity": 0.0,
+            "positions_detail": [],
+            "error": str(e),
+        }
+
+    equity = account.get("equity", ACCOUNT_SIZE)
+
+    # Try to load agent4 orders for known stop prices
+    stop_lookup = {}
+    orders_path = os.path.join("output", "agent4_orders.json")
+    if os.path.exists(orders_path):
+        try:
+            with open(orders_path) as f:
+                orders_data = json.load(f)
+            for order in orders_data.get("trade_orders", []):
+                if order.get("action") == "BUY" and order.get("stop_loss"):
+                    stop_lookup[order["ticker"]] = order["stop_loss"]
+        except (json.JSONDecodeError, Exception):
+            pass
+
+    total_heat = 0.0
+    details = []
+
+    for pos in positions:
+        ticker = pos["ticker"]
+        shares = pos["shares"]
+        entry_price = pos["avg_entry_price"]
+        current_price = pos["current_price"]
+
+        stop_price = stop_lookup.get(ticker)
+        stop_source = "agent4_orders"
+
+        if stop_price is None:
+            # Estimate stop using ATR
+            atr_result = calculate_atr_stop(ticker, entry_price, "PASS")
+            if "error" not in atr_result:
+                stop_price = atr_result["stop_price"]
+                stop_source = "estimated_atr"
+            else:
+                # Fallback: 3% below entry
+                stop_price = entry_price * 0.97
+                stop_source = "fallback_3pct"
+
+        # Anchor risk to entry price, not current price (prevents heat shrinkage during drawdowns)
+        if stop_price >= entry_price:
+            open_risk = max(0, shares * (current_price - stop_price))
+        else:
+            open_risk = shares * (entry_price - stop_price)
+
+        total_heat += open_risk
+
+        details.append({
+            "ticker": ticker,
+            "shares": shares,
+            "entry_price": entry_price,
+            "current_price": current_price,
+            "stop_price": round(stop_price, 2),
+            "stop_source": stop_source,
+            "open_risk": round(open_risk, 2),
+        })
+
+    heat_pct = total_heat / equity if equity > 0 else 0.0
+
+    return {
+        "total_heat_dollars": round(total_heat, 2),
+        "heat_pct_of_equity": round(heat_pct, 4),
+        "equity": round(equity, 2),
+        "positions_detail": details,
+    }
+
+
+def _reject_trade(ticker: str, reason: str) -> dict:
+    """Build a rejection record."""
+    return {"ticker": ticker, "action": "SKIP", "shares": 0, "reason": reason}
+
+
+def size_position(
+    entry: float,
+    stop: float,
+    tier: str,
+    confirm_enhanced: bool,
+    vol_regime: str,
+    posture: str,
+    account_value: float,
+    session_risk_used: float,
+) -> dict:
+    """
+    Risk-first position sizer.
+    Starts from risk dollars, derives shares from stop distance,
+    then floors with allocation cap. Logs the binding constraint.
+    """
+    if posture == "Bunker":
+        return {"shares": 0, "reason": "BUNKER_POSTURE"}
+
+    # 1. Conviction-scaled risk budget
+    risk_mult = (
+        TIER_RISK_MULT.get(tier, TIER_RISK_MULT["PASS"])
+        * CONFIRM_RISK_MULT.get(confirm_enhanced, 1.0)
+        * VOL_RISK_MULT.get(vol_regime, 1.0)
+        * POSTURE_RISK_MULT.get(posture, 1.0)
+    )
+    risk_dollars = BASE_RISK * risk_mult
+    risk_dollars = min(risk_dollars, MAX_RISK_PER_TRADE)
+
+    if risk_dollars < MIN_RISK_PER_TRADE:
+        return {"shares": 0, "reason": f"RISK_TOO_SMALL ({risk_dollars:.0f} < {MIN_RISK_PER_TRADE})"}
+
+    # 2. Session budget check
+    remaining_session_budget = SESSION_RISK_BUDGET - session_risk_used
+    if risk_dollars > remaining_session_budget:
+        risk_dollars = remaining_session_budget
+        if risk_dollars < MIN_RISK_PER_TRADE:
+            return {"shares": 0, "reason": "SESSION_BUDGET_EXHAUSTED"}
+
+    # 3. Derive shares from risk and stop distance
+    stop_distance = entry - stop
+    if stop_distance <= 0:
+        return {"shares": 0, "reason": "INVALID_STOP"}
+
+    shares_by_risk = int(risk_dollars // stop_distance)
+
+    # 4. Allocation cap (max position value as % of account)
+    max_position_value = account_value * MAX_ALLOCATION_PCT
+    shares_by_alloc = int(max_position_value // entry)
+
+    shares = min(shares_by_risk, shares_by_alloc)
+    if shares == 0:
+        return {"shares": 0, "reason": "ZERO_SHARES_AFTER_CONSTRAINTS"}
+
+    binding = "risk" if shares == shares_by_risk else "allocation"
+    actual_risk = shares * stop_distance
+
+    return {
+        "shares": shares,
+        "position_value": round(shares * entry, 2),
+        "risk_budgeted": round(risk_dollars, 2),
+        "risk_actual": round(actual_risk, 2),
+        "risk_multiplier": round(risk_mult, 3),
+        "binding_constraint": binding,
+        "stop_distance_pct": round(stop_distance / entry * 100, 2),
+    }
+
+
+def run_agent4b(
+    stop_anchors: list,
+    directive: dict,
+    candidates: list,
+    verifications: list = None,
+    existing_exposure: float = 0.0,
+    remaining_heat_budget: float = None,
+) -> dict:
+    """
+    Agent 4B (Python): Risk-first position sizing + tear sheet generation.
+    
+    Starts from risk dollars (BASE_RISK * multiplier stack), derives shares
+    from stop distance, then floors with allocation cap and dry powder check.
+    Binding constraint is logged per trade.
+    
+    Args:
+        existing_exposure: dollar value of already-open positions carried from prior sessions.
+        remaining_heat_budget: max additional risk dollars allowed before portfolio heat cap is hit.
+                               None means no heat constraint (backward compat).
+    """
+    regime = directive.get("regime", "UNKNOWN")
+    vol_regime = directive.get("vol_regime", "Normal")
+    posture_info = POSTURE_TABLE.get(regime, POSTURE_TABLE.get("Cautious Risk-On"))
+    posture = posture_info["posture"]
+
+    print(f"[Agent 4B] Regime: {regime} | Vol: {vol_regime} | Posture: {posture}")
+    print(f"[Agent 4B] Risk stack: BASE_RISK=${BASE_RISK} | MAX=${MAX_RISK_PER_TRADE} | MIN=${MIN_RISK_PER_TRADE}")
+
+    trade_orders = []
+    theme_tracker = {}
+    accepted_tickers = []
+    session_risk_used = 0.0
+    total_allocated = 0.0
+
+    # Build lookups
+    anchor_lookup = {a["ticker"]: a for a in stop_anchors}
+    candidate_lookup = {c["ticker"]: c for c in candidates}
+
+    # Sort: EXCEPTIONAL first, then STRONG, then PASS
+    tier_priority = {"EXCEPTIONAL": 0, "STRONG": 1, "PASS": 2}
+    sorted_tickers = sorted(
+        anchor_lookup.keys(),
+        key=lambda t: tier_priority.get(anchor_lookup[t].get("conviction_tier", "PASS"), 2),
+    )
+
+    for ticker in sorted_tickers:
+        anchor = anchor_lookup[ticker]
+        candidate = candidate_lookup.get(ticker, {})
+
+        # Check if Agent 4A rejected (veto from Agent 3)
+        if anchor.get("action") == "REJECTED":
+            trade_orders.append({
+                "ticker": ticker,
+                "action": "REJECTED",
+                "reason": f"Agent 3 veto: {anchor.get('veto_reason', 'unknown')}",
+            })
+            continue
+
+        entry = anchor.get("prior_close", 0)
+        stop = anchor.get("stop_anchor_price", 0)
+        conviction_tier = anchor.get("conviction_tier", "PASS")
+        confirm_enhanced = anchor.get("confirm_bonus", False)
+        theme = candidate.get("theme_match", "Unknown")
+
+        if entry <= 0 or stop <= 0:
+            trade_orders.append(_reject_trade(ticker, "Invalid price data"))
+            continue
+
+        # Theme cap check
+        if theme in theme_tracker:
+            existing = theme_tracker[theme]
+            print(f"  [Agent 4B] {ticker}: Theme '{theme}' already taken by {existing}. Dropping.")
+            trade_orders.append(_reject_trade(ticker, f"Theme cap: '{theme}' used by {existing}"))
+            continue
+
+        # Correlation veto
+        if correlation_veto(ticker, accepted_tickers, threshold=0.70):
+            trade_orders.append(_reject_trade(ticker, "Correlation veto: >0.70 with existing position"))
+            continue
+
+        # RISK-FIRST SIZING
+        sizing = size_position(
+            entry=entry,
+            stop=stop,
+            tier=conviction_tier,
+            confirm_enhanced=confirm_enhanced,
+            vol_regime=vol_regime,
+            posture=posture,
+            account_value=ACCOUNT_SIZE,
+            session_risk_used=session_risk_used,
+        )
+
+        if sizing["shares"] == 0:
+            trade_orders.append(_reject_trade(ticker, sizing.get("reason", "sizing returned 0")))
+            continue
+
+        shares = sizing["shares"]
+        position_value = sizing["position_value"]
+        risk_actual = sizing["risk_actual"]
+
+        # Heat budget check: would this trade blow through the remaining heat cap?
+        if remaining_heat_budget is not None:
+            if risk_actual > remaining_heat_budget:
+                trade_orders.append(_reject_trade(ticker, f"HEAT_BUDGET_EXCEEDED (trade risk ${risk_actual:.0f} > remaining ${remaining_heat_budget:.0f})"))
+                continue
+
+        # Dry powder floor: new + existing exposure cannot exceed 80%
+        max_deployable = ACCOUNT_SIZE * (1 - DRY_POWDER_FLOOR) - total_allocated - existing_exposure
+        if max_deployable <= 0:
+            trade_orders.append(_reject_trade(ticker, "Dry powder floor: existing exposure at 80%"))
+            continue
+        if position_value > max_deployable:
+            shares = int(max_deployable // entry)
+            if shares <= 0:
+                trade_orders.append(_reject_trade(ticker, "Dry powder floor (existing + new > 80%)"))
+                continue
+            position_value = round(shares * entry, 2)
+            risk_actual = round(shares * (entry - stop), 2)
+            sizing["binding_constraint"] = "dry_powder"
+
+        # Build order
+        stop_distance = entry - stop
+        order = {
+            "ticker": ticker,
+            "action": "BUY",
+            "shares": shares,
+            "entry_price": entry,
+            "stop_loss": round(stop, 2),
+            "stop_anchor_label": anchor.get("stop_anchor_label", ""),
+            "position_value": position_value,
+            "pct_of_account": round(position_value / ACCOUNT_SIZE * 100, 2),
+            "risk_budgeted": sizing["risk_budgeted"],
+            "risk_actual": risk_actual,
+            "risk_multiplier": sizing["risk_multiplier"],
+            "stop_distance_pct": round(stop_distance / entry * 100, 2),
+            "binding_constraint": sizing["binding_constraint"],
+            "theme": theme,
+            "conviction_tier": conviction_tier,
+            "confirm_enhanced": confirm_enhanced,
+        }
+
+        trade_orders.append(order)
+        theme_tracker[theme] = ticker
+        accepted_tickers.append(ticker)
+        session_risk_used += risk_actual
+        total_allocated += position_value
+        if remaining_heat_budget is not None:
+            remaining_heat_budget -= risk_actual
+
+        print(f"  [Agent 4B] {ticker}: {shares} shares @ ${entry}, "
+              f"risk ${risk_actual:.2f} (budgeted ${sizing['risk_budgeted']:.2f}), "
+              f"alloc {round(position_value/ACCOUNT_SIZE*100, 1)}%, "
+              f"tier={conviction_tier}, bound={sizing['binding_constraint']}")
+
+    result = {
+        "success": True,
+        "agent": "risk_manager",
+        "timestamp": datetime.now().isoformat(),
+        "trade_orders": trade_orders,
+        "session_summary": {
+            "total_trades": len([o for o in trade_orders if o.get("action") == "BUY"]),
+            "session_risk_used": round(session_risk_used, 2),
+            "session_risk_budget": SESSION_RISK_BUDGET,
+            "total_allocated": round(total_allocated, 2),
+            "existing_exposure": round(existing_exposure, 2),
+            "pct_deployed": round((total_allocated + existing_exposure) / ACCOUNT_SIZE * 100, 2),
+            "dry_powder_pct": round((1 - (total_allocated + existing_exposure) / ACCOUNT_SIZE) * 100, 2),
+        },
+        "modifiers_used": {
+            "regime": regime,
+            "vol_regime": vol_regime,
+            "posture": posture,
+        },
+    }
+
+    return result
+
+
+def generate_tear_sheet(result: dict, directive: dict) -> str:
+    """
+    Generate Markdown tear sheet for manual execution at 9:30 AM.
+    This is what gets sent to Telegram/Slack.
+    """
+    orders = result.get("trade_orders", [])
+    summary = result.get("session_summary", {})
+    mods = result.get("modifiers_used", {})
+
+    lines = [
+        f"{'='*35}",
+        f"📋 OPEN CLAW TEAR SHEET",
+        f"📅 {datetime.now().strftime('%Y-%m-%d')} | Execute at 9:30 AM ET",
+        f"{'='*35}",
+        f"",
+        f"🌍 Regime: {mods.get('regime')} | Vol: {mods.get('vol_regime')}",
+        f"📋 Posture Mod: {mods.get('posture_mod')} | Vol Mod: {mods.get('vol_mod')}",
+        f"",
+    ]
+
+    buy_orders = [o for o in orders if o.get("action") == "BUY"]
+    skip_orders = [o for o in orders if o.get("action") == "SKIP"]
+
+    if not buy_orders:
+        lines.append("🚫 NO TRADES TODAY")
+        if skip_orders:
+            lines.append("")
+            for s in skip_orders:
+                lines.append(f"  ⏭️ {s.get('ticker')}: {s.get('reason')}")
+        return "\n".join(lines)
+
+    for i, order in enumerate(buy_orders, 1):
+        math_info = order.get("sizing_math", {})
+        lines.append(f"{'─'*30}")
+        lines.append(f"TRADE #{i}: {order.get('ticker')}")
+        lines.append(f"")
+        lines.append(f"  Action:     BUY")
+        lines.append(f"  Shares:     {order.get('shares')}")
+        lines.append(f"  Entry:      ${order.get('entry_price'):.2f} (prior close)")
+        lines.append(f"  Stop:       ${order.get('stop_loss'):.2f} ({order.get('stop_anchor_label')})")
+        lines.append(f"  Stop Dist:  {order.get('stop_distance_pct'):.1f}%")
+        lines.append(f"  Theme:      {order.get('theme')}")
+        lines.append(f"  Conviction: {order.get('final_conviction')}/10")
+        lines.append(f"")
+        lines.append(f"  💰 Cost:    ${order.get('total_cost'):,.2f} ({order.get('pct_of_account'):.1f}% of account)")
+        lines.append(f"  🎯 Risk:    ${order.get('dollar_risk'):.2f}")
+        lines.append(f"  📏 Sizing:  {order.get('sizing_note')}")
+        lines.append(f"")
+        lines.append(f"  Math: {math_info.get('base_alloc',0)*100:.0f}% base × "
+                      f"{math_info.get('conviction_mod',0)} conv × "
+                      f"{math_info.get('vol_mod',0)} vol × "
+                      f"{math_info.get('posture_mod',0)} posture × "
+                      f"{math_info.get('contrarian_penalty',0)} contrarian "
+                      f"= {math_info.get('target_alloc_pct',0):.2f}% → "
+                      f"${math_info.get('target_alloc_dollars',0):.2f}")
+        lines.append(f"")
+
+    if skip_orders:
+        lines.append(f"{'─'*30}")
+        lines.append(f"SKIPPED:")
+        for s in skip_orders:
+            lines.append(f"  ⏭️ {s.get('ticker')}: {s.get('reason')}")
+        lines.append(f"")
+
+    lines.append(f"{'─'*30}")
+    lines.append(f"SESSION TOTALS:")
+    lines.append(f"  Trades:      {summary.get('total_trades')}")
+    lines.append(f"  Total Risk:  ${summary.get('total_risk', 0):.2f} / ${summary.get('session_risk_budget', 0):.2f}")
+    lines.append(f"  Deployed:    {summary.get('pct_deployed', 0):.1f}%")
+    lines.append(f"  Dry Powder:  {summary.get('dry_powder_pct', 0):.1f}%")
+    lines.append(f"{'='*35}")
+
+    return "\n".join(lines)
+
+
+def run_agent4(agent2_result: dict = None, agent3_result: dict = None, directive: dict = None) -> dict:
+    """
+    Run the full Agent 4 pipeline: ATR stops (Python) → 4B sizing (Python).
+    No LLM calls — pure Python.
+    """
+    # Load data
+    if directive is None:
+        with open("output/agent1_directive.json") as f:
+            directive = json.load(f)
+
+    if agent2_result is None:
+        with open("output/agent2_candidates.json") as f:
+            agent2_result = json.load(f)
+
+    if agent3_result is None:
+        path = "output/agent3_verified.json"
+        if os.path.exists(path):
+            with open(path) as f:
+                agent3_result = json.load(f)
+
+    candidates = agent2_result.get("candidates", [])
+    verifications = agent3_result.get("verifications", []) if agent3_result else []
+
+    if not candidates:
+        return {
+            "success": True,
+            "trade_orders": [],
+            "session_summary": {"total_trades": 0, "total_risk": 0},
+        }
+
+    # Build verification lookup
+    verification_lookup = {v.get("ticker"): v for v in verifications}
+
+    # Portfolio Heat Check — reject new trades if total open risk exceeds 6%
+    heat = calculate_portfolio_heat()
+    heat_pct = heat["heat_pct_of_equity"]
+    remaining_heat_budget = None
+
+    if heat_pct > MAX_PORTFOLIO_HEAT_PCT:
+        print(f"[Agent 4] 🔥 PORTFOLIO HEAT EXCEEDED: {heat_pct*100:.1f}% > {MAX_PORTFOLIO_HEAT_PCT*100:.0f}% cap")
+        print(f"[Agent 4] Total heat: ${heat['total_heat_dollars']:,.2f} on ${heat.get('equity', 0):,.2f} equity")
+        return {
+            "success": True,
+            "trade_orders": [{"action": "SKIP", "ticker": c.get("ticker", "?"), "shares": 0,
+                              "reason": f"PORTFOLIO_HEAT_EXCEEDED ({heat_pct*100:.1f}% > {MAX_PORTFOLIO_HEAT_PCT*100:.0f}%)"}
+                             for c in candidates],
+            "session_summary": {
+                "total_trades": 0,
+                "session_risk_used": 0,
+                "session_risk_budget": SESSION_RISK_BUDGET,
+                "portfolio_heat": heat,
+            },
+        }
+    elif heat_pct > HEAT_WARNING_PCT:
+        print(f"[Agent 4] ⚠️ Portfolio heat warning: {heat_pct*100:.1f}% (threshold: {HEAT_WARNING_PCT*100:.0f}%)")
+        print(f"[Agent 4] Total heat: ${heat['total_heat_dollars']:,.2f} — trades allowed but budget constrained")
+
+    # Compute remaining heat budget in dollars
+    max_heat_dollars = heat.get("equity", ACCOUNT_SIZE) * MAX_PORTFOLIO_HEAT_PCT
+    remaining_heat_budget = max_heat_dollars - heat["total_heat_dollars"]
+    print(f"[Agent 4] Heat budget: ${remaining_heat_budget:,.2f} remaining of ${max_heat_dollars:,.2f}")
+
+    # Build stop anchors from ATR calculations (replaces Agent 4A Claude call)
+    stop_anchors = []
+    print("[Agent 4] Calculating ATR-based stops (no LLM)...")
+
+    for candidate in candidates:
+        ticker = candidate.get("ticker")
+        conviction_tier = candidate.get("conviction_tier", "PASS")
+
+        # Apply Agent 3 verdict
+        v = verification_lookup.get(ticker, {})
+        verdict = v.get("verdict", "PASS_THROUGH")
+        confirm_bonus = False
+
+        if verdict in ("VETO_DIVERGENT", "VETO_CROWDED"):
+            stop_anchors.append({
+                "ticker": ticker,
+                "action": "REJECTED",
+                "veto_reason": verdict,
+                "prior_close": 0,
+                "stop_anchor_price": None,
+                "stop_anchor_label": None,
+                "stop_distance_pct": 0,
+                "conviction_tier": conviction_tier,
+                "confirm_bonus": False,
+            })
+            print(f"  [Agent 4] {ticker}: REJECTED by Agent 3 ({verdict})")
+            continue
+
+        if verdict == "CONFIRM_ENHANCED":
+            confirm_bonus = True
+
+        # Get prior close from moving averages
+        ma_data = get_moving_averages(ticker)
+        if "error" in ma_data:
+            print(f"  [Agent 4] {ticker}: Skipping — {ma_data['error']}")
+            stop_anchors.append({
+                "ticker": ticker,
+                "action": "REJECTED",
+                "veto_reason": f"Data error: {ma_data['error']}",
+                "prior_close": 0,
+                "stop_anchor_price": None,
+                "stop_anchor_label": None,
+                "stop_distance_pct": 0,
+                "conviction_tier": conviction_tier,
+                "confirm_bonus": False,
+            })
+            continue
+
+        entry_price = ma_data["prior_close"]
+
+        # Calculate ATR-based stop
+        atr_result = calculate_atr_stop(ticker, entry_price, conviction_tier)
+        if "error" in atr_result:
+            print(f"  [Agent 4] {ticker}: ATR failed — {atr_result['error']}")
+            stop_anchors.append({
+                "ticker": ticker,
+                "action": "REJECTED",
+                "veto_reason": f"ATR error: {atr_result['error']}",
+                "prior_close": entry_price,
+                "stop_anchor_price": None,
+                "stop_anchor_label": None,
+                "stop_distance_pct": 0,
+                "conviction_tier": conviction_tier,
+                "confirm_bonus": confirm_bonus,
+            })
+            continue
+
+        stop_anchors.append({
+            "ticker": ticker,
+            "action": "PROCEED",
+            "veto_reason": None,
+            "prior_close": entry_price,
+            "stop_anchor_price": atr_result["stop_price"],
+            "stop_anchor_label": atr_result["stop_label"],
+            "stop_distance_pct": atr_result["stop_distance_pct"],
+            "conviction_tier": conviction_tier,
+            "confirm_bonus": confirm_bonus,
+        })
+        print(f"  [Agent 4] {ticker}: Stop ${atr_result['stop_price']} "
+              f"({atr_result['stop_label']}, -{atr_result['stop_distance_pct']:.1f}%)")
+
+    # Fetch existing exposure for dry powder calculation
+    try:
+        broker = AlpacaBroker()
+        existing_exposure = broker.get_existing_exposure()
+        print(f"[Agent 4] Existing exposure: ${existing_exposure:,.2f}")
+    except Exception as e:
+        print(f"[Agent 4] Could not fetch exposure: {e} — assuming $0")
+        existing_exposure = 0.0
+
+    # Step 4B: Python multiplicative sizing
+    print("[Agent 4B] Running position sizing math...")
+    result_4b = run_agent4b(stop_anchors, directive, candidates, verifications,
+                            existing_exposure=existing_exposure,
+                            remaining_heat_budget=remaining_heat_budget)
+
+    # Generate tear sheet
+    tear_sheet = generate_tear_sheet(result_4b, directive)
+    result_4b["tear_sheet"] = tear_sheet
+
+    return result_4b
+
+
+if __name__ == "__main__":
+    result = run_agent4()
+
+    if result.get("tear_sheet"):
+        print("\n" + result["tear_sheet"])
+    else:
+        print(json.dumps(result, indent=2))
+
+    if result.get("success"):
+        os.makedirs("output", exist_ok=True)
+        with open("output/agent4_orders.json", "w") as f:
+            json.dump(result, f, indent=2, default=str)
+        print(f"\n[Agent 4] Orders saved to output/agent4_orders.json")
+
+
+============================================================
+FILE: ./agent5_position_monitor.py (     669 lines)
+============================================================
+"""
+Agent 5: Position Monitor — v3 (Python trailing stops + Claude thesis monitor)
+Model: Claude Opus 4.7 (Anthropic) with adaptive thinking
+Role: Runs at 3:30 PM ET to review open positions and decide hold/trim/close.
+
+Architecture:
+  1. Python calculates ALL mechanical trailing stops (no LLM needed for math)
+  2. Claude reviews ONLY thesis drift: has the fundamental narrative broken?
+  3. Merge: mechanical close if stop hit, thesis close if narrative broken, else HOLD
+
+Timing:
+  3:25 PM — Python snapshots current market prices + fetches breaking news
+  3:30 PM — Python trailing stops → Claude thesis review → merge decisions
+"""
+import json
+import os
+import re
+from datetime import datetime
+
+import yfinance as yf
+from dotenv import load_dotenv
+
+load_dotenv()
+
+# Claude Opus 4.7 with adaptive thinking — thesis drift ONLY
+MODEL = "claude-opus-4-7"
+MAX_RETRIES = 3
+RETRY_DELAY = 5
+
+SYSTEM_PROMPT = """You are Agent 5: The Thesis Monitor for a $100,000 speculative spot-only trading account.
+
+YOUR JOB: You are the qualitative half of the position monitoring system. Python has ALREADY calculated all trailing stops and mechanical close signals. Your ONLY job is to evaluate whether the FUNDAMENTAL THESIS for each position is still intact.
+
+YOU DO NOT:
+- Calculate trailing stops (Python already did this)
+- Compute P&L percentages (Python already did this)
+- Decide mechanical closes (Python already did this)
+- Do any math whatsoever
+
+YOU DO:
+- Read the ORIGINAL THESIS from Agent 2 for each position
+- Read today's BREAKING NEWS for each ticker (pre-fetched by Python from yfinance)
+- Read Agent 1's MORNING REGIME classification
+- Decide: Has the fundamental narrative broken? Did the macro regime shift?
+- If the thesis is broken, you OVERRIDE the mechanical trailing stop with a CLOSE
+
+PRE-CHECK (MANDATORY):
+If Agent 1's morning regime was CRISIS, OR if VIX at 3:25 PM > 35:
+-> ALL theses are considered BROKEN. Output thesis_status = "BROKEN" for every position
+   with override_action = "CLOSE" and reasoning = "CRISIS_LIQUIDATION".
+-> Skip per-position thesis evaluation entirely.
+
+THESIS STATUS OPTIONS (per position):
+- INTACT: The original thesis still holds. News is neutral or supportive. Macro regime has not shifted against the trade. No override.
+- DEGRADED: The thesis is weakened but not fatally broken. News introduces uncertainty. No override, but flag for closer monitoring tomorrow.
+- BROKEN: The thesis is fatally compromised. A material event has invalidated the trade rationale (e.g., regulatory action, earnings miss, key partnership dissolved, sector-wide selloff changing the narrative). Override: CLOSE the position regardless of what the trailing stop says.
+
+RULES:
+- Be conservative with BROKEN — only use it for genuine narrative breaks, not normal volatility.
+- A stock being down is NOT thesis broken. The thesis is about WHY you entered, not the price.
+- If no breaking news exists for a ticker, default to INTACT.
+- Cite the specific news headline or regime shift that drove your decision.
+
+OUTPUT FORMAT — respond with ONLY this JSON:
+{
+  "agent": "thesis_monitor",
+  "timestamp": "<ISO timestamp>",
+  "crisis_liquidation": <true | false>,
+  "thesis_reviews": [
+    {
+      "ticker": "<SYMBOL>",
+      "thesis_status": "<INTACT | DEGRADED | BROKEN>",
+      "override_action": <null | "CLOSE">,
+      "original_thesis_summary": "<1 sentence recap of the entry thesis>",
+      "thesis_assessment": "<2-3 sentences explaining why the thesis is intact/degraded/broken>",
+      "key_news_cited": ["<headline or event that influenced assessment>"]
+    }
+  ],
+  "macro_assessment": "<1-2 sentences on whether the macro regime has shifted since morning>"
+}"""
+
+
+def snapshot_prices(tickers: list) -> dict:
+    """
+    Snapshot current market prices at 3:25 PM ET.
+    Captures the intraday tape for trailing stop evaluation.
+    """
+    snapshot = {}
+    for ticker in tickers:
+        try:
+            stock = yf.Ticker(ticker)
+            hist = stock.history(period="1d", interval="1m")
+            if not hist.empty:
+                current = float(hist["Close"].iloc[-1])
+                day_open = float(hist["Open"].iloc[0])
+                day_high = float(hist["High"].max())
+                day_low = float(hist["Low"].min())
+                volume = int(hist["Volume"].sum())
+
+                snapshot[ticker] = {
+                    "current_price": round(current, 2),
+                    "day_open": round(day_open, 2),
+                    "day_high": round(day_high, 2),
+                    "day_low": round(day_low, 2),
+                    "day_volume": volume,
+                    "intraday_change_pct": round((current - day_open) / day_open * 100, 2),
+                }
+            else:
+                # Fallback to daily
+                hist_d = stock.history(period="1d")
+                if not hist_d.empty:
+                    snapshot[ticker] = {
+                        "current_price": round(float(hist_d["Close"].iloc[-1]), 2),
+                        "note": "Using daily close (intraday unavailable)",
+                    }
+                else:
+                    snapshot[ticker] = {"error": "No data available"}
+        except Exception as e:
+            snapshot[ticker] = {"error": str(e)}
+
+    snapshot["snapshot_time"] = datetime.now().isoformat()
+    return snapshot
+
+
+def fetch_breaking_news(tickers: list) -> dict:
+    """
+    Fetch latest news headlines from yfinance for each ticker.
+    Used to feed Claude's thesis drift assessment.
+    """
+    news_data = {}
+    print(f"  [Agent 5] Fetching breaking news for {len(tickers)} tickers...")
+
+    for ticker in tickers:
+        try:
+            stock = yf.Ticker(ticker)
+            news_items = stock.news
+            headlines = []
+            if news_items:
+                for n in news_items[:5]:
+                    pub_time = n.get("providerPublishTime", "")
+                    title = n.get("title", "")
+                    publisher = n.get("publisher", "")
+                    headlines.append(f"{pub_time}: {title} [{publisher}]")
+            news_data[ticker] = headlines if headlines else ["No recent news"]
+        except Exception as e:
+            news_data[ticker] = [f"Error fetching news: {e}"]
+
+    return news_data
+
+
+def load_open_positions() -> list:
+    """
+    Load open positions from Alpaca (source of truth).
+    Falls back to agent4_orders.json if Alpaca is unreachable.
+    Enriches with stop_loss from agent4_orders.json when available.
+    """
+    # Primary: Read from Alpaca
+    try:
+        from broker import AlpacaBroker
+        broker = AlpacaBroker()
+        alpaca_positions = broker.get_positions()
+        if alpaca_positions:
+            # Enrich with stop/theme data from agent4 orders if available
+            stop_map = {}
+            orders_path = "output/agent4_orders.json"
+            if os.path.exists(orders_path):
+                with open(orders_path) as f:
+                    orders_data = json.load(f)
+                for order in orders_data.get("trade_orders", []):
+                    if order.get("action") == "BUY":
+                        stop_map[order["ticker"]] = {
+                            "stop_loss": order.get("stop_loss", 0),
+                            "stop_anchor_label": order.get("stop_anchor_label", ""),
+                            "theme": order.get("theme", ""),
+                            "thesis": order.get("thesis", ""),
+                            "dollar_risk": order.get("dollar_risk", 0),
+                        }
+
+            positions = []
+            for p in alpaca_positions:
+                enrichment = stop_map.get(p["ticker"], {})
+                positions.append({
+                    "ticker": p["ticker"],
+                    "shares": p["shares"],
+                    "entry_price": p["avg_entry_price"],
+                    "stop_loss": enrichment.get("stop_loss", 0),
+                    "stop_anchor_label": enrichment.get("stop_anchor_label", ""),
+                    "theme": enrichment.get("theme", ""),
+                    "thesis": enrichment.get("thesis", ""),
+                    "dollar_risk": enrichment.get("dollar_risk", 0),
+                    "unrealized_pl": p.get("unrealized_pl", 0),
+                    "unrealized_plpc": p.get("unrealized_plpc", 0),
+                    "market_value": p.get("market_value", 0),
+                })
+            print(f"[Agent 5] Loaded {len(positions)} positions from Alpaca")
+            return positions
+    except Exception as e:
+        print(f"[Agent 5] Alpaca read failed, falling back to orders file: {e}")
+
+    # Fallback: Read from agent4_orders.json
+    orders_path = "output/agent4_orders.json"
+    if not os.path.exists(orders_path):
+        return []
+
+    with open(orders_path) as f:
+        orders_data = json.load(f)
+
+    positions = []
+    for order in orders_data.get("trade_orders", []):
+        if order.get("action") == "BUY":
+            positions.append({
+                "ticker": order["ticker"],
+                "shares": order["shares"],
+                "entry_price": order["entry_price"],
+                "stop_loss": order["stop_loss"],
+                "stop_anchor_label": order.get("stop_anchor_label", ""),
+                "theme": order.get("theme", ""),
+                "thesis": order.get("thesis", ""),
+                "dollar_risk": order.get("dollar_risk", 0),
+            })
+
+    print(f"[Agent 5] Loaded {len(positions)} positions from orders file (fallback)")
+    return positions
+
+
+def calculate_trailing_stops(positions: list, snapshot: dict) -> list:
+    """
+    Pure Python trailing stop calculator. No LLM needed.
+
+    Rules:
+      - Up > 2% from entry  → tighten stop to breakeven (entry price)
+      - Up > 5% from entry  → trail stop to entry + 50% of gains
+      - Up > 10% from entry → trail stop to entry + 75% of gains
+      - Current price <= stop → MECHANICAL_CLOSE
+      - Never widen a stop (new_stop >= original_stop always)
+
+    Returns each position enriched with:
+      new_stop, mechanical_action (HOLD/CLOSE), pnl_pct, pnl_dollars
+    """
+    results = []
+
+    for pos in positions:
+        ticker = pos["ticker"]
+        entry_price = pos["entry_price"]
+        original_stop = pos.get("stop_loss", 0)
+        shares = pos.get("shares", 0)
+
+        price_data = snapshot.get(ticker, {})
+        current_price = price_data.get("current_price")
+
+        if current_price is None or entry_price <= 0:
+            results.append({
+                **pos,
+                "current_price": current_price,
+                "pnl_pct": 0,
+                "pnl_dollars": 0,
+                "new_stop": original_stop,
+                "mechanical_action": "HOLD",
+                "trailing_stop_note": "No price data available",
+                "intraday": price_data,
+            })
+            continue
+
+        # Calculate P&L
+        pnl_pct = round((current_price - entry_price) / entry_price * 100, 2)
+        pnl_dollars = round((current_price - entry_price) * shares, 2)
+
+        # Calculate trailing stop
+        gain_dollars = current_price - entry_price
+        new_stop = original_stop  # Start with original
+
+        trailing_note = "Below 2% gain — original stop unchanged"
+
+        if pnl_pct > 10:
+            # Trail to entry + 75% of gains
+            candidate_stop = round(entry_price + 0.75 * gain_dollars, 2)
+            new_stop = max(new_stop, candidate_stop)
+            trailing_note = f"Up {pnl_pct:.1f}% — stop trailed to entry + 75% of gains"
+        elif pnl_pct > 5:
+            # Trail to entry + 50% of gains
+            candidate_stop = round(entry_price + 0.50 * gain_dollars, 2)
+            new_stop = max(new_stop, candidate_stop)
+            trailing_note = f"Up {pnl_pct:.1f}% — stop trailed to entry + 50% of gains"
+        elif pnl_pct > 2:
+            # Tighten to breakeven
+            candidate_stop = entry_price
+            new_stop = max(new_stop, candidate_stop)
+            trailing_note = f"Up {pnl_pct:.1f}% — stop tightened to breakeven"
+
+        # Never widen a stop
+        new_stop = max(new_stop, original_stop)
+        new_stop = round(new_stop, 2)
+
+        # Check if stop is hit
+        mechanical_action = "HOLD"
+        if current_price <= new_stop:
+            mechanical_action = "CLOSE"
+            trailing_note = f"STOP HIT — current ${current_price} <= stop ${new_stop}"
+
+        results.append({
+            **pos,
+            "current_price": current_price,
+            "pnl_pct": pnl_pct,
+            "pnl_dollars": pnl_dollars,
+            "original_stop": original_stop,
+            "new_stop": new_stop,
+            "mechanical_action": mechanical_action,
+            "trailing_stop_note": trailing_note,
+            "intraday": price_data,
+        })
+
+    return results
+
+
+def call_thesis_monitor(positions_with_stops: list, breaking_news: dict, vix_data: dict) -> dict:
+    """
+    Call Claude to evaluate thesis drift ONLY.
+    Claude does NOT calculate stops or P&L — those are pre-computed by Python.
+    """
+    import anthropic
+    import time
+
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        raise RuntimeError("No ANTHROPIC_API_KEY — run as subagent via OCPlatform.")
+
+    client = anthropic.Anthropic(api_key=api_key)
+
+    # Load Agent 1 morning regime if available
+    morning_regime = "UNKNOWN"
+    try:
+        directive_path = "output/agent1_directive.json"
+        if os.path.exists(directive_path):
+            with open(directive_path) as f:
+                directive = json.load(f)
+            morning_regime = directive.get("regime", "UNKNOWN")
+    except Exception:
+        pass
+
+    # Build position summaries for Claude (thesis focus, not math)
+    position_summaries = []
+    for pos in positions_with_stops:
+        ticker = pos["ticker"]
+        news = breaking_news.get(ticker, ["No news"])
+        position_summaries.append({
+            "ticker": ticker,
+            "original_thesis": pos.get("thesis", "N/A"),
+            "theme": pos.get("theme", "N/A"),
+            "pnl_pct": pos.get("pnl_pct", 0),
+            "mechanical_action": pos.get("mechanical_action", "HOLD"),
+            "breaking_news": news,
+        })
+
+    user_message = f"""Review the fundamental thesis for each open position.
+
+AGENT 1 MORNING REGIME: {morning_regime}
+
+VIX STATUS:
+{json.dumps(vix_data, indent=2)}
+
+POSITIONS (with Python-computed trailing stops already applied):
+{json.dumps(position_summaries, indent=2)}
+
+Your job is ONLY to assess thesis drift. Python has already computed all trailing stops.
+- Do NOT calculate P&L or stops.
+- Focus on: Has the narrative broken? Has the macro regime shifted?
+- If morning regime is CRISIS or VIX > 35, all theses are BROKEN.
+
+Current date/time: {datetime.now().isoformat()}
+
+Respond with ONLY the JSON output."""
+
+    last_error = None
+    for attempt in range(MAX_RETRIES):
+        try:
+            print(f"  [Agent 5] Calling {MODEL} for thesis review (attempt {attempt + 1}/{MAX_RETRIES})...")
+
+            response = client.messages.create(
+                model=MODEL,
+                max_tokens=16000,
+                temperature=1,  # Required when using extended thinking
+                thinking={
+                    "type": "enabled",
+                    "budget_tokens": 10000,
+                },
+                system=SYSTEM_PROMPT,
+                messages=[{"role": "user", "content": user_message}],
+            )
+
+            # With extended thinking, content has thinking + text blocks
+            raw_text = next(b.text for b in response.content if b.type == "text").strip()
+            # Strip scratchpad if present
+            if "</research_scratchpad>" in raw_text:
+                raw_text = raw_text.split("</research_scratchpad>", 1)[1].strip()
+
+            # Try code-fenced JSON first
+            json_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', raw_text, re.DOTALL)
+            if json_match:
+                json_str = json_match.group(1)
+            else:
+                # Find the outermost JSON object by matching balanced braces
+                brace_depth = 0
+                start = None
+                json_str = None
+                for i, ch in enumerate(raw_text):
+                    if ch == '{':
+                        if brace_depth == 0:
+                            start = i
+                        brace_depth += 1
+                    elif ch == '}':
+                        brace_depth -= 1
+                        if brace_depth == 0 and start is not None:
+                            candidate = raw_text[start:i+1]
+                            try:
+                                json.loads(candidate)
+                                json_str = candidate
+                                break
+                            except json.JSONDecodeError:
+                                start = None
+                                continue
+
+                if json_str is None:
+                    raise json.JSONDecodeError("No valid JSON object found in response", raw_text[:200], 0)
+
+            return json.loads(json_str)
+
+        except RuntimeError:
+            raise  # Re-raise missing API key
+        except Exception as e:
+            last_error = e
+            print(f"  [Agent 5] Claude error: {e}. Retrying in {RETRY_DELAY}s...")
+            time.sleep(RETRY_DELAY)
+
+    raise Exception(f"{MODEL} failed after {MAX_RETRIES} attempts. Last error: {last_error}")
+
+
+def run_agent5_preflight() -> dict:
+    """3:25 PM pre-flight: Snapshot current prices for open positions."""
+    print("[Agent 5 Pre-Flight] Snapshotting prices at 3:25 PM...")
+
+    positions = load_open_positions()
+    if not positions:
+        print("[Agent 5 Pre-Flight] No open positions to monitor.")
+        return {"positions": [], "snapshot": {}}
+
+    tickers = [p["ticker"] for p in positions]
+    snapshot = snapshot_prices(tickers)
+
+    # Also grab VIX for end-of-day risk assessment
+    vix_snapshot = snapshot_prices(["^VIX"])
+    snapshot["VIX"] = vix_snapshot.get("^VIX", {"error": "unavailable"})
+
+    # Save snapshot
+    os.makedirs("output", exist_ok=True)
+    with open("output/agent5_snapshot.json", "w") as f:
+        json.dump({"positions": positions, "snapshot": snapshot}, f, indent=2)
+
+    print(f"[Agent 5 Pre-Flight] Snapshot saved for {len(positions)} positions")
+    return {"positions": positions, "snapshot": snapshot}
+
+
+def run_agent5(positions: list = None, snapshot: dict = None) -> dict:
+    """
+    Run Agent 5 at 3:30 PM: Python trailing stops FIRST, then Claude thesis review, then merge.
+
+    Merge logic:
+      - If Python says CLOSE (stop hit) → CLOSE
+      - If Claude says CLOSE (thesis broken) → CLOSE
+      - Otherwise → HOLD
+    """
+    # Load pre-flight data if not passed
+    if positions is None or snapshot is None:
+        preflight_path = "output/agent5_snapshot.json"
+        if not os.path.exists(preflight_path):
+            preflight = run_agent5_preflight()
+            positions = preflight["positions"]
+            snapshot = preflight["snapshot"]
+        else:
+            with open(preflight_path) as f:
+                data = json.load(f)
+            positions = data["positions"]
+            snapshot = data["snapshot"]
+
+    if not positions:
+        return {
+            "success": True,
+            "decisions": [],
+            "note": "No open positions to monitor.",
+        }
+
+    vix_data = snapshot.get("VIX", {})
+
+    # ━━━ STEP 1: Python trailing stops (pure math, no LLM) ━━━
+    print(f"[Agent 5] Step 1: Calculating trailing stops for {len(positions)} positions...")
+    positions_with_stops = calculate_trailing_stops(positions, snapshot)
+
+    for pos in positions_with_stops:
+        action_emoji = "🔴" if pos["mechanical_action"] == "CLOSE" else "🟢"
+        print(
+            f"  {action_emoji} {pos['ticker']}: "
+            f"P&L {pos['pnl_pct']:+.2f}% | "
+            f"Stop ${pos.get('original_stop', 0)} → ${pos['new_stop']} | "
+            f"{pos['mechanical_action']}"
+        )
+
+    # ━━━ STEP 2: Fetch breaking news for thesis review ━━━
+    tickers = [p["ticker"] for p in positions]
+    breaking_news = fetch_breaking_news(tickers)
+
+    # ━━━ STEP 3: Claude thesis review (qualitative only) ━━━
+    print(f"[Agent 5] Step 2: Claude thesis review...")
+
+    thesis_result = None
+    try:
+        thesis_result = call_thesis_monitor(positions_with_stops, breaking_news, vix_data)
+    except RuntimeError:
+        # No API key — return data for subagent execution
+        return {
+            "success": False,
+            "needs_subagent": True,
+            "positions": positions_with_stops,
+            "vix": vix_data,
+            "breaking_news": breaking_news,
+        }
+    except Exception as e:
+        print(f"  [Agent 5] ⚠️ Claude thesis review failed: {e}")
+        print(f"  [Agent 5] Proceeding with mechanical stops only.")
+
+    # ━━━ STEP 4: Merge mechanical stops + thesis review ━━━
+    print(f"[Agent 5] Step 3: Merging mechanical stops + thesis review...")
+
+    # Build thesis lookup
+    thesis_lookup = {}
+    crisis_liquidation = False
+    if thesis_result:
+        crisis_liquidation = thesis_result.get("crisis_liquidation", False)
+        for review in thesis_result.get("thesis_reviews", []):
+            thesis_lookup[review["ticker"]] = review
+
+    decisions = []
+    for pos in positions_with_stops:
+        ticker = pos["ticker"]
+        mechanical = pos["mechanical_action"]
+        thesis_review = thesis_lookup.get(ticker, {})
+        thesis_status = thesis_review.get("thesis_status", "INTACT")
+        thesis_override = thesis_review.get("override_action")
+
+        # Merge logic
+        if crisis_liquidation:
+            action = "CLOSE"
+            reasoning = "CRISIS_LIQUIDATION — all positions closed."
+        elif mechanical == "CLOSE":
+            action = "CLOSE"
+            reasoning = f"MECHANICAL STOP HIT: {pos['trailing_stop_note']}"
+            if thesis_status == "BROKEN":
+                reasoning += f" + THESIS BROKEN: {thesis_review.get('thesis_assessment', '')}"
+        elif thesis_override == "CLOSE":
+            action = "CLOSE"
+            reasoning = f"THESIS OVERRIDE: {thesis_review.get('thesis_assessment', 'Thesis broken per Claude review.')}"
+        else:
+            action = "HOLD"
+            parts = [pos["trailing_stop_note"]]
+            if thesis_status == "DEGRADED":
+                parts.append(f"⚠️ Thesis DEGRADED: {thesis_review.get('thesis_assessment', '')}")
+            elif thesis_status == "INTACT":
+                parts.append("Thesis intact.")
+            reasoning = " | ".join(parts)
+
+        decisions.append({
+            "ticker": ticker,
+            "action": action,
+            "current_price": pos.get("current_price"),
+            "entry_price": pos.get("entry_price"),
+            "original_stop": pos.get("original_stop", pos.get("stop_loss", 0)),
+            "new_stop": pos.get("new_stop"),
+            "pnl_pct": pos.get("pnl_pct", 0),
+            "pnl_dollars": pos.get("pnl_dollars", 0),
+            "mechanical_action": mechanical,
+            "thesis_status": thesis_status,
+            "thesis_override": thesis_override,
+            "trim_pct": None,
+            "reasoning": reasoning,
+        })
+
+        action_emoji = {"HOLD": "✅", "CLOSE": "🚪"}.get(action, "❓")
+        print(f"  {action_emoji} {ticker}: {action} — {reasoning[:80]}")
+
+    portfolio_summary = ""
+    if thesis_result:
+        portfolio_summary = thesis_result.get("macro_assessment", "")
+
+    return {
+        "success": True,
+        "agent": "position_monitor",
+        "timestamp": datetime.now().isoformat(),
+        "crisis_liquidation": crisis_liquidation,
+        "decisions": decisions,
+        "portfolio_summary": portfolio_summary,
+    }
+
+
+def format_agent5_for_telegram(result: dict) -> str:
+    """Format Agent 5 output for Telegram."""
+    if not result.get("success"):
+        return f"⚠️ Agent 5 FAILED: {result.get('error', 'Unknown')}"
+
+    decisions = result.get("decisions", [])
+    if not decisions:
+        return (
+            f"{'='*30}\n"
+            f"🕒 AGENT 5: POSITION MONITOR (3:30 PM)\n"
+            f"{'='*30}\n\n"
+            f"No open positions to review."
+        )
+
+    lines = [
+        f"{'='*30}",
+        f"🕒 AGENT 5: POSITION MONITOR (3:30 PM)",
+        f"{'='*30}",
+        f"",
+    ]
+
+    if result.get("crisis_liquidation"):
+        lines.append("🚨 CRISIS LIQUIDATION — ALL POSITIONS CLOSED")
+        lines.append("")
+
+    for d in decisions:
+        action = d.get("action", "UNKNOWN")
+        emoji = {"HOLD": "✅", "TRIM": "✂️", "CLOSE": "🚪"}.get(action, "❓")
+
+        pnl = d.get("pnl_pct", 0)
+        pnl_emoji = "📈" if pnl >= 0 else "📉"
+
+        thesis = d.get("thesis_status", "N/A")
+        thesis_emoji = {"INTACT": "🟢", "DEGRADED": "🟡", "BROKEN": "🔴"}.get(thesis, "⚪")
+
+        lines.append(f"{'─'*25}")
+        lines.append(f"{emoji} {d.get('ticker')} — {action}")
+        lines.append(f"")
+        lines.append(f"  {pnl_emoji} P&L: {pnl:+.2f}% (${d.get('pnl_dollars', 0):+.2f})")
+        lines.append(f"  💲 Current: ${d.get('current_price')} | Entry: ${d.get('entry_price')}")
+        lines.append(f"  🛑 Stop: ${d.get('original_stop')} → ${d.get('new_stop')}")
+        lines.append(f"  {thesis_emoji} Thesis: {thesis}")
+
+        if d.get("trim_pct"):
+            lines.append(f"  ✂️ Trim: {d.get('trim_pct')}%")
+
+        lines.append(f"  💬 {d.get('reasoning', '')}")
+        lines.append(f"")
+
+    if result.get("portfolio_summary"):
+        lines.append(f"📋 {result.get('portfolio_summary')}")
+
+    return "\n".join(lines)
+
+
+if __name__ == "__main__":
+    # Run pre-flight first
+    preflight = run_agent5_preflight()
+
+    # Then run agent
+    result = run_agent5(preflight["positions"], preflight["snapshot"])
+    print("\n" + format_agent5_for_telegram(result))
+
+    if result.get("success"):
+        os.makedirs("output", exist_ok=True)
+        with open("output/agent5_decisions.json", "w") as f:
+            json.dump(result, f, indent=2, default=str)
+        print(f"\n[Agent 5] Decisions saved to output/agent5_decisions.json")
+
+
+============================================================
+FILE: ./alpaca_data.py (     352 lines)
+============================================================
+"""
+Alpaca Market Data Module — Replaces Yahoo Finance for price data.
+
+Uses Alpaca's Market Data API via the paper trading credentials.
+Free tier provides IEX real-time quotes, 5+ years of historical bars,
+and options chain data.
+
+Drop-in replacement for yfinance calls in preflight.py.
+"""
+import os
+from datetime import datetime, timedelta
+from typing import Dict, List, Optional
+
+from dotenv import load_dotenv
+from pathlib import Path
+
+load_dotenv(Path(__file__).parent / ".env")
+
+from alpaca.data.historical import StockHistoricalDataClient
+from alpaca.data.requests import (
+    StockBarsRequest,
+    StockLatestQuoteRequest,
+    StockSnapshotRequest,
+)
+from alpaca.data.timeframe import TimeFrame
+import pandas as pd
+
+# Initialize client — uses paper trading keys for market data
+_client = None
+
+
+def _get_client() -> StockHistoricalDataClient:
+    global _client
+    if _client is None:
+        api_key = os.environ.get("ALPACA_API_KEY", "")
+        secret_key = os.environ.get("ALPACA_SECRET_KEY", "")
+        if not api_key or not secret_key:
+            raise RuntimeError("ALPACA_API_KEY and ALPACA_SECRET_KEY must be set in .env")
+        _client = StockHistoricalDataClient(api_key, secret_key)
+    return _client
+
+
+def fetch_prior_close(tickers: list) -> dict:
+    """
+    Fetch yesterday's close for a list of tickers via Alpaca.
+    Drop-in replacement for preflight.fetch_prior_close().
+    """
+    client = _get_client()
+    results = {}
+    end = datetime.now()
+    start = end - timedelta(days=10)
+
+    for ticker in tickers:
+        try:
+            request = StockBarsRequest(
+                symbol_or_symbols=ticker,
+                timeframe=TimeFrame.Day,
+                start=start,
+                end=end,
+                feed="iex",
+            )
+            bars = client.get_stock_bars(request)
+            df = bars.df
+
+            if df.empty:
+                results[ticker] = {"error": f"No bar data for {ticker}"}
+                continue
+
+            # If multi-index (symbol, timestamp), slice to this ticker
+            if isinstance(df.index, pd.MultiIndex):
+                if ticker in df.index.get_level_values(0):
+                    df = df.loc[ticker]
+                else:
+                    results[ticker] = {"error": f"No bar data for {ticker}"}
+                    continue
+
+            closes = [round(float(c), 2) for c in df["close"].values]
+            dates = [str(d.date()) for d in df.index]
+
+            # Prior close = last complete bar
+            today_str = str(datetime.now().date())
+            if dates[-1] == today_str and len(closes) >= 2:
+                prior_close = closes[-2]
+                prior_date = dates[-2]
+            else:
+                prior_close = closes[-1]
+                prior_date = dates[-1]
+
+            results[ticker] = {
+                "prior_close": prior_close,
+                "prior_date": prior_date,
+                "closes_30d": closes,
+            }
+        except Exception as e:
+            results[ticker] = {"error": str(e)}
+
+    return results
+
+
+def fetch_latest_quotes(tickers: list) -> dict:
+    """
+    Fetch real-time (IEX) quotes for a list of tickers.
+    Returns bid, ask, and mid price for each.
+    """
+    client = _get_client()
+    results = {}
+
+    try:
+        request = StockLatestQuoteRequest(symbol_or_symbols=tickers)
+        quotes = client.get_stock_latest_quote(request)
+
+        for ticker, quote in quotes.items():
+            results[ticker] = {
+                "bid": float(quote.bid_price) if quote.bid_price else 0.0,
+                "ask": float(quote.ask_price) if quote.ask_price else 0.0,
+                "bid_size": int(quote.bid_size) if quote.bid_size else 0,
+                "ask_size": int(quote.ask_size) if quote.ask_size else 0,
+                "mid": round((float(quote.bid_price or 0) + float(quote.ask_price or 0)) / 2, 2),
+                "timestamp": quote.timestamp.isoformat() if quote.timestamp else "",
+            }
+    except Exception as e:
+        for ticker in tickers:
+            results[ticker] = {"error": str(e)}
+
+    return results
+
+
+def fetch_snapshots(tickers: list) -> dict:
+    """
+    Fetch full snapshots (latest trade, quote, minute bar, daily bar, prev daily bar).
+    Richer than just quotes — includes today's OHLCV and previous day's bar.
+    """
+    client = _get_client()
+    results = {}
+
+    try:
+        request = StockSnapshotRequest(symbol_or_symbols=tickers)
+        snapshots = client.get_stock_snapshot(request)
+
+        for ticker, snap in snapshots.items():
+            entry = {}
+
+            if snap.latest_trade:
+                entry["latest_trade"] = {
+                    "price": float(snap.latest_trade.price),
+                    "size": int(snap.latest_trade.size),
+                    "timestamp": snap.latest_trade.timestamp.isoformat() if snap.latest_trade.timestamp else "",
+                }
+
+            if snap.latest_quote:
+                entry["latest_quote"] = {
+                    "bid": float(snap.latest_quote.bid_price) if snap.latest_quote.bid_price else 0,
+                    "ask": float(snap.latest_quote.ask_price) if snap.latest_quote.ask_price else 0,
+                }
+
+            if snap.daily_bar:
+                entry["daily_bar"] = {
+                    "open": float(snap.daily_bar.open),
+                    "high": float(snap.daily_bar.high),
+                    "low": float(snap.daily_bar.low),
+                    "close": float(snap.daily_bar.close),
+                    "volume": int(snap.daily_bar.volume),
+                }
+
+            if snap.previous_daily_bar:
+                entry["prev_daily_bar"] = {
+                    "open": float(snap.previous_daily_bar.open),
+                    "high": float(snap.previous_daily_bar.high),
+                    "low": float(snap.previous_daily_bar.low),
+                    "close": float(snap.previous_daily_bar.close),
+                    "volume": int(snap.previous_daily_bar.volume),
+                }
+
+            if snap.minute_bar:
+                entry["minute_bar"] = {
+                    "open": float(snap.minute_bar.open),
+                    "high": float(snap.minute_bar.high),
+                    "low": float(snap.minute_bar.low),
+                    "close": float(snap.minute_bar.close),
+                    "volume": int(snap.minute_bar.volume),
+                    "timestamp": snap.minute_bar.timestamp.isoformat() if snap.minute_bar.timestamp else "",
+                }
+
+            results[ticker] = entry
+    except Exception as e:
+        for ticker in tickers:
+            results[ticker] = {"error": str(e)}
+
+    return results
+
+
+def fetch_historical_bars(
+    tickers: list,
+    days: int = 30,
+    timeframe: str = "day",
+) -> dict:
+    """
+    Fetch historical OHLCV bars for a list of tickers.
+    
+    Args:
+        tickers: List of ticker symbols
+        days: Number of days of history (default 30)
+        timeframe: "day", "hour", or "minute"
+    """
+    client = _get_client()
+
+    tf_map = {
+        "day": TimeFrame.Day,
+        "hour": TimeFrame.Hour,
+        "minute": TimeFrame.Minute,
+    }
+    tf = tf_map.get(timeframe, TimeFrame.Day)
+
+    end = datetime.now()
+    start = end - timedelta(days=days)
+    results = {}
+
+    for ticker in tickers:
+        try:
+            request = StockBarsRequest(
+                symbol_or_symbols=ticker,
+                timeframe=tf,
+                start=start,
+                end=end,
+                feed="iex",
+            )
+            bars = client.get_stock_bars(request)
+            df = bars.df
+
+            if df.empty:
+                results[ticker] = {"bars": [], "count": 0}
+                continue
+
+            # Handle multi-index
+            if isinstance(df.index, pd.MultiIndex):
+                if ticker in df.index.get_level_values(0):
+                    df = df.loc[ticker]
+                else:
+                    results[ticker] = {"bars": [], "count": 0}
+                    continue
+
+            bar_list = []
+            for ts, row in df.iterrows():
+                bar_list.append({
+                    "date": str(ts.date()) if tf == TimeFrame.Day else ts.isoformat(),
+                    "open": round(float(row["open"]), 2),
+                    "high": round(float(row["high"]), 2),
+                    "low": round(float(row["low"]), 2),
+                    "close": round(float(row["close"]), 2),
+                    "volume": int(row["volume"]),
+                    "vwap": round(float(row["vwap"]), 2) if pd.notna(row.get("vwap")) else None,
+                })
+
+            results[ticker] = {
+                "bars": bar_list,
+                "count": len(bar_list),
+            }
+        except Exception as e:
+            results[ticker] = {"error": str(e)}
+
+    return results
+
+
+def fetch_macro_tickers() -> dict:
+    """
+    Fetch macro indicator tickers that Alpaca supports.
+    Replaces yfinance for VIX, sector ETFs, etc.
+    
+    Note: Alpaca doesn't support index tickers like ^VIX directly.
+    We use VIXY/UVXY as VIX proxies, and sector ETFs work fine.
+    For ^VIX, ^TNX, etc. we still fall back to yfinance.
+    """
+    # Alpaca supports ETFs and stocks, not raw indices
+    # These are the tickers we CAN get from Alpaca
+    alpaca_tickers = [
+        # Sector ETFs (for breadth)
+        "XLK", "XLF", "XLV", "XLE", "XLI", "XLY", "XLP", "XLU", "XLB", "XLRE", "XLC",
+        # Credit/bond ETFs
+        "HYG", "LQD", "TLT", "JNK",
+        # Broad market
+        "SPY", "QQQ", "IWM",
+        # Commodity proxies
+        "GLD", "USO",
+    ]
+
+    return fetch_snapshots(alpaca_tickers)
+
+
+def enrich_screener_universe(screener: list) -> list:
+    """
+    Enrich screener results with accurate prior_close from Alpaca.
+    Drop-in replacement for preflight._enrich_prior_close().
+    """
+    tickers = [t["ticker"] for t in screener]
+
+    # Batch into groups of 50 to avoid request size limits
+    batch_size = 50
+    all_closes = {}
+
+    for i in range(0, len(tickers), batch_size):
+        batch = tickers[i:i + batch_size]
+        batch_results = fetch_prior_close(batch)
+        all_closes.update(batch_results)
+
+    for entry in screener:
+        ticker = entry["ticker"]
+        if ticker in all_closes and "prior_close" in all_closes[ticker]:
+            entry["prior_close"] = all_closes[ticker]["prior_close"]
+            entry["price_source"] = "alpaca"
+
+    return screener
+
+
+# Quick smoke test
+if __name__ == "__main__":
+    print("Testing Alpaca Market Data connection...\n")
+
+    # Test 1: Latest quotes
+    print("1. Latest quotes for SPY, AAPL, NVDA:")
+    quotes = fetch_latest_quotes(["SPY", "AAPL", "NVDA"])
+    for t, q in quotes.items():
+        if "error" not in q:
+            print(f"   {t}: bid={q['bid']:.2f} ask={q['ask']:.2f} mid={q['mid']:.2f}")
+        else:
+            print(f"   {t}: ERROR - {q['error']}")
+
+    # Test 2: Prior close
+    print("\n2. Prior close for SPY, AAPL:")
+    closes = fetch_prior_close(["SPY", "AAPL"])
+    for t, c in closes.items():
+        if "error" not in c:
+            print(f"   {t}: {c['prior_close']} (date: {c['prior_date']})")
+        else:
+            print(f"   {t}: ERROR - {c['error']}")
+
+    # Test 3: Historical bars
+    print("\n3. Last 5 daily bars for NVDA:")
+    hist = fetch_historical_bars(["NVDA"], days=7)
+    for bar in hist.get("NVDA", {}).get("bars", [])[-5:]:
+        print(f"   {bar['date']}: O={bar['open']} H={bar['high']} L={bar['low']} C={bar['close']} V={bar['volume']:,}")
+
+    # Test 4: Snapshot
+    print("\n4. Snapshot for SPY:")
+    snaps = fetch_snapshots(["SPY"])
+    spy = snaps.get("SPY", {})
+    if "latest_trade" in spy:
+        print(f"   Latest trade: ${spy['latest_trade']['price']:.2f}")
+    if "daily_bar" in spy:
+        db = spy["daily_bar"]
+        print(f"   Today's bar: O={db['open']} H={db['high']} L={db['low']} C={db['close']} V={db['volume']:,}")
+
+    print("\n✅ Alpaca Market Data module working!")
+
+
+============================================================
+FILE: ./assembly_scraper.py (     217 lines)
+============================================================
+"""
+Assembly Private Scraper — Browser-based extraction.
+
+Assembly is a Next.js SPA that renders data client-side.
+This scraper uses the browser DOM snapshots (from OCPlatform BrowserControl)
+or falls back to a pre-saved JSON file.
+
+For automated pipeline runs, the orchestrator calls scrape via browser,
+saves to output/assembly_data.json, and agents read from that file.
+
+Usage:
+  python assembly_scraper.py parse-snapshot <snapshot_file>
+  python assembly_scraper.py load  (reads from output/assembly_data.json)
+"""
+
+import json
+import re
+import os
+from datetime import datetime
+
+
+def parse_sentiment_from_text(text: str) -> dict:
+    """Parse sentiment data from page text content."""
+    result = {"timestamp": datetime.utcnow().isoformat(), "source": "assembly_sentiment"}
+
+    # Composite score
+    composite_match = re.search(r"(\d+)\s+(Greed|Fear|Neutral|Extreme\s*Greed|Extreme\s*Fear|Ex\.\s*Greed|Ex\.\s*Fear)", text)
+    if composite_match:
+        result["composite_score"] = int(composite_match.group(1))
+        result["composite_label"] = composite_match.group(2)
+
+    # Historical values
+    for label, key in [
+        ("Prev Close", "prev_close"),
+        ("Previous Close", "prev_close"),
+        ("1 Week Ago", "one_week_ago"),
+        ("1W Ago", "one_week_ago"),
+        ("1 Month Ago", "one_month_ago"),
+        ("1M Ago", "one_month_ago"),
+        ("1 Year Ago", "one_year_ago"),
+        ("1Y Ago", "one_year_ago"),
+        ("30-Day Avg", "thirty_day_avg"),
+        ("52-Week High", "fifty_two_week_high"),
+        ("52-Week Low", "fifty_two_week_low"),
+    ]:
+        match = re.search(rf"{re.escape(label)}\s+(\d+)", text)
+        if match and key not in result:
+            result[key] = int(match.group(1))
+
+    # Sub-components
+    components = {}
+    patterns = [
+        (r"Market Volatility\s*\(VIX\)\s*(\d+)", "market_volatility_vix"),
+        (r"S&P 125-day Momentum\s*(\d+)", "sp500_momentum_125d"),
+        (r"S&P 500 Momentum\s*(\d+)", "sp500_momentum"),
+        (r"Stock Price Strength\s*(\d+)", "stock_price_strength"),
+        (r"Stock Price Breadth\s*(\d+)", "stock_price_breadth"),
+        (r"Put\s*/\s*Call Options\s*(\d+)", "put_call_options"),
+        (r"Junk Bond Demand\s*(\d+)", "junk_bond_demand"),
+        (r"Safe Haven Demand\s*(\d+)", "safe_haven_demand"),
+    ]
+    for pattern, key in patterns:
+        match = re.search(pattern, text)
+        if match:
+            components[key] = int(match.group(1))
+
+    # VIX actual value
+    vix_match = re.search(r"VIX\)\s*\d+\s+(\d+\.?\d*)", text)
+    if vix_match:
+        components["vix_value"] = float(vix_match.group(1))
+
+    result["components"] = components
+
+    # Sector breadth
+    sectors = {}
+    sector_pattern = re.findall(
+        r"(Energy|Healthcare|Utilities|Real Estate|Consumer Defensive|Technology|"
+        r"Communication Services|Consumer Cyclical|Industrials|Financial Services|"
+        r"Basic Materials)\s+([+\-]?\d+\.?\d*%)",
+        text
+    )
+    for sector, change in sector_pattern:
+        sectors[sector] = change
+    result["sector_breadth"] = sectors
+
+    return result
+
+
+def parse_macro_from_snapshot(snapshot_text: str) -> dict:
+    """Parse macro data from a browser snapshot."""
+    result = {"timestamp": datetime.utcnow().isoformat(), "source": "assembly_macro"}
+
+    # Yield curve
+    yield_curve = {}
+    for tenor in ["1M", "3M", "6M", "1Y", "2Y", "3Y", "5Y", "7Y", "10Y", "20Y", "30Y"]:
+        match = re.search(rf"\b{tenor}\s+(\d+\.?\d*)", snapshot_text)
+        if match:
+            yield_curve[tenor] = float(match.group(1))
+    result["yield_curve"] = yield_curve
+
+    # Key macro
+    for label, key in [
+        ("Fed Funds", "fed_funds"),
+        ("Unemployment", "unemployment"),
+    ]:
+        match = re.search(rf"{re.escape(label)}\s+([\d.]+%?)", snapshot_text)
+        if match:
+            result[key] = match.group(1)
+
+    # Cross-asset rotation — parse from structured snapshot
+    cross_asset = []
+    # Pattern: "SPY US Large Cap Equity $733.73 -0.67% +6.1% +8.4% 91%"
+    asset_pattern = re.findall(
+        r'([A-Z]{2,5})\s+([\w\s]+?)\s+(Equity|Bond|Commodity|FX|Crypto)\s+\$([\d,.]+)\s+'
+        r'([+\-]?\d+\.?\d*%)\s+([+\-]?\d+\.?\d*%)\s+([+\-]?\d+\.?\d*%)\s+(\d+%)',
+        snapshot_text
+    )
+    for ticker, name, asset_class, price, today, vs50, vs200, range52 in asset_pattern:
+        cross_asset.append({
+            "ticker": ticker.strip(),
+            "name": name.strip(),
+            "asset_class": asset_class,
+            "price": f"${price}",
+            "today": today,
+            "vs_50d": vs50,
+            "vs_200d": vs200,
+            "range_52w": range52,
+        })
+    result["cross_asset_rotation"] = cross_asset
+
+    return result
+
+
+def format_sentiment_for_prompt(sentiment: dict) -> str:
+    """Format sentiment data for Agent 1's system prompt."""
+    lines = [
+        "ASSEMBLY SENTIMENT DATA",
+        "=" * 40,
+        f"Composite Score: {sentiment.get('composite_score', '?')} ({sentiment.get('composite_label', '?')})",
+        f"Prev Close: {sentiment.get('prev_close', '?')} | 1W Ago: {sentiment.get('one_week_ago', '?')} | 1M Ago: {sentiment.get('one_month_ago', '?')}",
+        f"30D Avg: {sentiment.get('thirty_day_avg', '?')} | 52W High: {sentiment.get('fifty_two_week_high', '?')} | 52W Low: {sentiment.get('fifty_two_week_low', '?')}",
+        "",
+        "Sub-Components:",
+    ]
+    components = sentiment.get("components", {})
+    for key, label in [
+        ("market_volatility_vix", "Market Volatility (VIX)"),
+        ("vix_value", "VIX Actual"),
+        ("sp500_momentum_125d", "S&P 125d Momentum"),
+        ("sp500_momentum", "S&P 500 Momentum"),
+        ("stock_price_strength", "Stock Price Strength"),
+        ("stock_price_breadth", "Stock Price Breadth"),
+        ("put_call_options", "Put/Call Options"),
+        ("junk_bond_demand", "Junk Bond Demand"),
+        ("safe_haven_demand", "Safe Haven Demand"),
+    ]:
+        val = components.get(key)
+        if val is not None:
+            lines.append(f"  {label}: {val}")
+
+    sectors = sentiment.get("sector_breadth", {})
+    if sectors:
+        lines.append("")
+        lines.append("Sector Breadth:")
+        for sector, change in sectors.items():
+            lines.append(f"  {sector}: {change}")
+
+    return "\n".join(lines)
+
+
+def format_macro_for_prompt(macro: dict) -> str:
+    """Format macro data for Agent 1's system prompt."""
+    lines = [
+        "ASSEMBLY MACRO DATA",
+        "=" * 40,
+    ]
+
+    yc = macro.get("yield_curve", {})
+    if yc:
+        curve_str = " | ".join(f"{t}: {v}" for t, v in yc.items())
+        lines.append(f"Yield Curve: {curve_str}")
+
+    for key, label in [("fed_funds", "Fed Funds"), ("unemployment", "Unemployment")]:
+        if key in macro:
+            lines.append(f"{label}: {macro[key]}")
+
+    cross_asset = macro.get("cross_asset_rotation", [])
+    if cross_asset:
+        lines.append("")
+        lines.append("Cross-Asset Rotation:")
+        for a in cross_asset:
+            lines.append(f"  {a['ticker']} ({a['name']}): {a['price']} | Today: {a['today']} | vs50d: {a['vs_50d']} | vs200d: {a['vs_200d']} | 52wk: {a['range_52w']}")
+
+    return "\n".join(lines)
+
+
+def load_assembly_data() -> dict:
+    """Load pre-scraped Assembly data from output file."""
+    path = "output/assembly_data.json"
+    if os.path.exists(path):
+        with open(path) as f:
+            return json.load(f)
+    return {}
+
+
+if __name__ == "__main__":
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] == "load":
+        data = load_assembly_data()
+        if "sentiment" in data:
+            print(format_sentiment_for_prompt(data["sentiment"]))
+            print()
+        if "macro" in data:
+            print(format_macro_for_prompt(data["macro"]))
+    else:
+        print("Usage: python assembly_scraper.py load")
+        print("  (Assembly data must be scraped via browser and saved to output/assembly_data.json)")
+
+
+============================================================
+FILE: ./broker.py (     249 lines)
+============================================================
+"""
+Broker Module — Alpaca Paper Trading Integration
+Executes tear sheet orders, manages positions, and tracks fills.
+
+All orders go through Alpaca's paper trading API.
+Real account size from Alpaca overrides config.py ACCOUNT_SIZE.
+
+Usage:
+  from broker import AlpacaBroker
+  broker = AlpacaBroker()
+  broker.execute_tear_sheet(trade_orders)
+  broker.get_positions()
+  broker.close_position("AAPL")
+"""
+import json
+import os
+from datetime import datetime
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+load_dotenv(Path(__file__).parent / ".env")
+
+from alpaca.trading.client import TradingClient
+from alpaca.trading.requests import (
+    MarketOrderRequest,
+    LimitOrderRequest,
+    GetOrdersRequest,
+    StopLossRequest,
+)
+from alpaca.trading.enums import OrderSide, TimeInForce, OrderStatus, QueryOrderStatus
+
+
+class AlpacaBroker:
+    def __init__(self):
+        self.client = TradingClient(
+            api_key=os.environ.get("ALPACA_API_KEY", ""),
+            secret_key=os.environ.get("ALPACA_SECRET_KEY", ""),
+            paper=True,
+        )
+        self._verify_connection()
+
+    def _verify_connection(self):
+        account = self.client.get_account()
+        if account.status != "ACTIVE":
+            raise RuntimeError(f"Alpaca account not active: {account.status}")
+        print(f"[Broker] Connected to Alpaca paper account")
+        print(f"[Broker] Cash: ${float(account.cash):,.2f} | Equity: ${float(account.equity):,.2f}")
+
+    def get_account_summary(self) -> dict:
+        """Get current account state."""
+        account = self.client.get_account()
+        return {
+            "cash": float(account.cash),
+            "equity": float(account.equity),
+            "portfolio_value": float(account.portfolio_value),
+            "buying_power": float(account.buying_power),
+            "status": account.status,
+        }
+
+    def get_positions(self) -> list:
+        """Get all open positions."""
+        positions = self.client.get_all_positions()
+        result = []
+        for p in positions:
+            result.append({
+                "ticker": p.symbol,
+                "shares": int(p.qty),
+                "avg_entry_price": float(p.avg_entry_price),
+                "current_price": float(p.current_price),
+                "market_value": float(p.market_value),
+                "unrealized_pl": float(p.unrealized_pl),
+                "unrealized_plpc": float(p.unrealized_plpc),
+            })
+        return result
+
+    def get_existing_exposure(self) -> float:
+        """Get total dollar value of existing positions (for dry powder calc)."""
+        positions = self.get_positions()
+        return sum(p["market_value"] for p in positions)
+
+    def get_position_tickers(self) -> list:
+        """Get list of tickers with open positions (for correlation veto)."""
+        positions = self.get_positions()
+        return [p["ticker"] for p in positions]
+
+    def execute_tear_sheet(self, trade_orders: list) -> list:
+        """
+        Execute BUY orders from Agent 4B's tear sheet.
+        Uses market orders at 9:30 AM (market open).
+        Returns list of fill results.
+        """
+        fills = []
+        for order in trade_orders:
+            if order.get("action") != "BUY":
+                fills.append({
+                    "ticker": order.get("ticker", "?"),
+                    "status": "skipped",
+                    "reason": order.get("reason", order.get("action", "not a BUY")),
+                })
+                continue
+
+            ticker = order["ticker"]
+            shares = order["shares"]
+
+            try:
+                # Use OTC (One-Triggers-Cancel) with attached stop-loss if stop price available
+                stop_price = order.get("stop_loss")
+                if stop_price and stop_price > 0:
+                    req = MarketOrderRequest(
+                        symbol=ticker,
+                        qty=shares,
+                        side=OrderSide.BUY,
+                        time_in_force=TimeInForce.DAY,
+                        order_class="oto",
+                        stop_loss=StopLossRequest(stop_price=round(stop_price, 2)),
+                    )
+                else:
+                    req = MarketOrderRequest(
+                        symbol=ticker,
+                        qty=shares,
+                        side=OrderSide.BUY,
+                        time_in_force=TimeInForce.DAY,
+                    )
+                result = self.client.submit_order(req)
+                fills.append({
+                    "ticker": ticker,
+                    "status": "submitted",
+                    "order_id": str(result.id),
+                    "shares": shares,
+                    "order_type": "market",
+                    "submitted_at": result.submitted_at.isoformat() if result.submitted_at else "",
+                })
+                print(f"  [Broker] BUY {shares} {ticker} — order submitted ({result.id})")
+
+            except Exception as e:
+                fills.append({
+                    "ticker": ticker,
+                    "status": "error",
+                    "error": str(e),
+                })
+                print(f"  [Broker] ERROR on {ticker}: {e}")
+
+        # Save fills
+        os.makedirs("output", exist_ok=True)
+        with open("output/broker_fills.json", "w") as f:
+            json.dump({
+                "timestamp": datetime.now().isoformat(),
+                "fills": fills,
+            }, f, indent=2)
+
+        return fills
+
+    def close_position(self, ticker: str, qty: int = None) -> dict:
+        """
+        Close a position (full or partial).
+        Used by Agent 5 for CLOSE and TRIM decisions.
+        """
+        try:
+            if qty:
+                # Partial close (TRIM)
+                req = MarketOrderRequest(
+                    symbol=ticker,
+                    qty=qty,
+                    side=OrderSide.SELL,
+                    time_in_force=TimeInForce.DAY,
+                )
+                result = self.client.submit_order(req)
+                print(f"  [Broker] TRIM {qty} shares of {ticker} — submitted ({result.id})")
+            else:
+                # Full close
+                result = self.client.close_position(ticker, cancel_orders=True)
+                print(f"  [Broker] CLOSE {ticker} — submitted")
+
+            return {
+                "ticker": ticker,
+                "status": "submitted",
+                "action": "trim" if qty else "close",
+                "qty": qty,
+            }
+        except Exception as e:
+            print(f"  [Broker] ERROR closing {ticker}: {e}")
+            return {"ticker": ticker, "status": "error", "error": str(e)}
+
+    def close_all_positions(self) -> dict:
+        """
+        CRISIS_LIQUIDATION — close everything at market.
+        Used by Agent 5 when CRISIS pre-check triggers.
+        """
+        try:
+            result = self.client.close_all_positions(cancel_orders=True)
+            print(f"  [Broker] CRISIS_LIQUIDATION — closing all positions")
+            return {"status": "submitted", "action": "close_all"}
+        except Exception as e:
+            print(f"  [Broker] ERROR on close_all: {e}")
+            return {"status": "error", "error": str(e)}
+
+    def execute_agent5_decisions(self, decisions: list, crisis: bool = False) -> list:
+        """
+        Execute Agent 5's HOLD/TRIM/CLOSE decisions.
+        """
+        if crisis:
+            self.close_all_positions()
+            return [{"action": "CRISIS_LIQUIDATION", "status": "submitted"}]
+
+        results = []
+        for d in decisions:
+            ticker = d.get("ticker")
+            action = d.get("action", "HOLD")
+
+            if action == "HOLD":
+                results.append({"ticker": ticker, "action": "HOLD", "status": "no_action"})
+
+            elif action == "CLOSE":
+                result = self.close_position(ticker)
+                results.append(result)
+
+            elif action == "TRIM":
+                trim_pct = d.get("trim_pct", 50) / 100
+                positions = self.get_positions()
+                pos = next((p for p in positions if p["ticker"] == ticker), None)
+                if pos:
+                    trim_qty = max(1, int(pos["shares"] * trim_pct))
+                    result = self.close_position(ticker, qty=trim_qty)
+                    results.append(result)
+                else:
+                    results.append({"ticker": ticker, "action": "TRIM", "status": "no_position"})
+
+        return results
+
+    def get_orders_today(self) -> list:
+        """Get all orders from today."""
+        try:
+            req = GetOrdersRequest(
+                status=QueryOrderStatus.ALL,
+                limit=50,
+            )
+            orders = self.client.get_orders(req)
+            return [{
+                "ticker": o.symbol,
+                "side": str(o.side),
+                "qty": str(o.qty),
+                "filled_qty": str(o.filled_qty),
+                "status": str(o.status),
+                "filled_avg_price": str(o.filled_avg_price) if o.filled_avg_price else None,
+                "submitted_at": o.submitted_at.isoformat() if o.submitted_at else "",
+            } for o in orders]
+        except Exception as e:
+            return [{"error": str(e)}]
+
+
+============================================================
+FILE: ./config.py (     112 lines)
+============================================================
 """
 Trading Pipeline Configuration — "Golden Path" v2
 Incorporates Jamie's finalized tweaks.
@@ -120,9 +3822,1714 @@ FRED_API_KEY = os.environ.get("FRED_API_KEY", "")
 MASSIVE_API_KEY = os.environ.get("MASSIVE_API_KEY", "")
 
 
-==================================================================
-FILE: orchestrator.py (     638 lines)
-==================================================================
+============================================================
+FILE: ./deprecated/agent2b_deep_research.py (     303 lines)
+============================================================
+"""
+Agent 2.5: Deep Research Analyst (Red Team)
+Model: Gemini 3.1 Pro (Google)
+Role: Qualitatively attack Agent 2's quantitative candidates using
+      pre-fetched news, short interest, and near-term options flow.
+"""
+import json
+import os
+import time
+from datetime import datetime
+
+import yfinance as yf
+from dotenv import load_dotenv
+from google import genai
+
+load_dotenv()
+
+GEMINI_MODEL = "deep-research-preview-04-2026"
+MAX_RETRIES = 3
+RETRY_DELAY = 5
+GEMINI_TEMPERATURE = 0.2  # Slightly higher than Agent 2 to allow qualitative reasoning
+
+SYSTEM_PROMPT = """You are Agent 2.5: The Deep Research Analyst (Red Team) for a $100,000 speculative spot-only trading account.
+
+YOUR JOB: Agent 2 has passed you a list of 1-3 surviving candidates based on a rigid quantitative screen. Your role is to brutally stress-test the bullish thesis using the QUALITATIVE_CONTEXT provided by Python (recent news headlines, options flow, short interest).
+
+CRITICAL RULES:
+1. You may NOT look up or fetch external data. Rely ONLY on the QUALITATIVE_CONTEXT injected into this prompt.
+2. For each candidate, you must assign a RED_TEAM_VERDICT:
+   - PASS: The qualitative data reveals no major red flags.
+   - DOWNGRADE: The thesis is okay, but crowded options flow or negative news sentiment warrants caution. Lower the conviction tier (e.g., EXCEPTIONAL -> STRONG). You may NEVER upgrade a tier.
+   - VETO: Fatal flaw discovered (e.g., looming regulatory action, terrible earnings reaction, highly skewed put volume). The trade is dead.
+3. You must generate a "red_flag_warnings" array for each candidate. Even if the setup is clean, identify the biggest risk factor.
+4. Synthesize a "qualitative_thesis" that combines Agent 2's quantitative thesis with your qualitative realities.
+
+<deep_research_protocol>
+CRITICAL: You must conduct your analysis inside a <deep_research_scratchpad> block before generating your final JSON output.
+Step 1: Inventory the qualitative context (News Headlines, Options Flow, Short Interest).
+Step 2: Red Team the Catalyst: Is it already priced in? Is the market ignoring a macro headwind?
+Step 3: Analyze Options Flow: Does the Call/Put ratio confirm the bullish quantitative thesis, or are institutions hedging heavily?
+Step 4: Re-evaluate the CONVICTION_TIER (PASS, STRONG, EXCEPTIONAL, or REJECTED).
+Step 5: Write the qualitative_thesis.
+</deep_research_protocol>
+
+OUTPUT FORMAT:
+First, output your <deep_research_scratchpad>...</deep_research_scratchpad> analysis.
+Then, output ONLY this JSON structure:
+{
+  "agent": "deep_research_analyst",
+  "timestamp": "<ISO timestamp>",
+  "evaluations": [
+    {
+      "ticker": "<SYMBOL>",
+      "red_team_verdict": "<PASS | DOWNGRADE | VETO>",
+      "updated_conviction_tier": "<PASS | STRONG | EXCEPTIONAL | REJECTED>",
+      "red_flag_warnings": ["<specific risk 1>", "<specific risk 2>"],
+      "qualitative_thesis": "<2-3 sentences merging the quant thesis with qualitative realities>"
+    }
+  ],
+  "research_notes": "<Overall summary of your qualitative teardown>"
+}"""
+
+
+def prefetch_qualitative_context(candidates: list) -> dict:
+    """Pre-fetch news and options data to feed Gemini's qualitative deep dive."""
+    context = {}
+    print(f"  [Agent 2.5] Pre-fetching qualitative context for {len(candidates)} candidates...")
+
+    for c in candidates:
+        ticker = c["ticker"]
+        try:
+            stock = yf.Ticker(ticker)
+
+            # 1. Fetch News Headlines
+            news_items = stock.news
+            headlines = [
+                f"- {n.get('providerPublishTime', '')}: {n.get('title', '')} [{n.get('publisher', '')}]"
+                for n in news_items[:5]
+            ] if news_items else ["- No recent news available"]
+
+            # 2. Fetch Options Flow (Put/Call OI Ratio for nearest expiration)
+            options_context = "No options data available"
+            try:
+                expirations = stock.options
+                if expirations:
+                    nearest_exp = expirations[0]
+                    chain = stock.option_chain(nearest_exp)
+                    puts_oi = int(chain.puts['openInterest'].fillna(0).sum()) if not chain.puts.empty else 0
+                    calls_oi = int(chain.calls['openInterest'].fillna(0).sum()) if not chain.calls.empty else 0
+                    pc_ratio = round(puts_oi / calls_oi, 2) if calls_oi > 0 else 0
+                    options_context = f"Nearest Expiration ({nearest_exp}): Put OI = {puts_oi}, Call OI = {calls_oi}, P/C Ratio = {pc_ratio}"
+            except Exception:
+                pass
+
+            # 3. Short Interest
+            info = stock.info
+            short_pct = info.get("shortPercentOfFloat")
+            short_context = f"{round(short_pct * 100, 2)}%" if short_pct else "N/A"
+
+            context[ticker] = {
+                "recent_headlines": headlines,
+                "options_flow": options_context,
+                "short_interest_pct_of_float": short_context,
+            }
+        except Exception as e:
+            context[ticker] = {"error": str(e)}
+
+    return context
+
+
+def call_gemini_red_team(candidates: list, qual_context: dict) -> dict:
+    """Call Gemini 3.1 Pro to red-team candidates with qualitative context."""
+    client = genai.Client(api_key=os.environ.get("GOOGLE_API_KEY"))
+
+    context_lines = []
+    for c in candidates:
+        ticker = c["ticker"]
+        qc = qual_context.get(ticker, {})
+
+        line = (
+            f"TICKER: {ticker}\n"
+            f"  Quantitative Thesis: {c.get('thesis', 'N/A')}\n"
+            f"  Current Conviction: {c.get('conviction_tier', 'PASS')}\n"
+            f"  --- QUALITATIVE DATA ---\n"
+            f"  Short Interest: {qc.get('short_interest_pct_of_float', 'N/A')}\n"
+            f"  Options Flow: {qc.get('options_flow', 'N/A')}\n"
+            f"  Recent Headlines:\n" + "\n".join([f"    {h}" for h in qc.get('recent_headlines', [])]) + "\n"
+        )
+        context_lines.append(line)
+
+    user_message = f"""Here are the candidates from Agent 2, alongside pre-fetched qualitative context (news, short interest, and options flow).
+ALL data has been pre-fetched by Python.
+
+CANDIDATES & QUALITATIVE CONTEXT:
+{"=" * 50}
+{"".join(context_lines)}
+{"=" * 50}
+
+Perform your deep research and red team evaluation.
+Current date/time: {datetime.now().isoformat()}"""
+
+    last_error = None
+    for attempt in range(MAX_RETRIES):
+        try:
+            print(f"  [Agent 2.5] Calling {GEMINI_MODEL} (attempt {attempt + 1}/{MAX_RETRIES})...")
+            response = client.models.generate_content(
+                model=GEMINI_MODEL,
+                contents=user_message,
+                config=genai.types.GenerateContentConfig(
+                    system_instruction=SYSTEM_PROMPT,
+                    temperature=GEMINI_TEMPERATURE,
+                    max_output_tokens=8192,
+                ),
+            )
+
+            raw_text = response.text.strip()
+
+            # Extract JSON after the scratchpad
+            if "</deep_research_scratchpad>" in raw_text:
+                after_scratchpad = raw_text.split("</deep_research_scratchpad>", 1)[1].strip()
+            else:
+                after_scratchpad = raw_text
+
+            # Strip markdown code fences if present
+            if after_scratchpad.startswith("```"):
+                after_scratchpad = after_scratchpad.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+
+            brace_start = after_scratchpad.find("{")
+            if brace_start >= 0:
+                result = json.loads(after_scratchpad[brace_start:])
+                return result
+            else:
+                raise json.JSONDecodeError("No JSON object found", after_scratchpad, 0)
+
+        except Exception as e:
+            last_error = e
+            print(f"  [Agent 2.5] Gemini Error: {e}. Retrying in {RETRY_DELAY}s...")
+            time.sleep(RETRY_DELAY)
+
+    raise Exception(f"{GEMINI_MODEL} failed after {MAX_RETRIES} attempts. Last error: {last_error}")
+
+
+def run_agent2b(agent2_result: dict = None) -> dict:
+    """Run Agent 2.5: Pre-fetch qualitative context, call Gemini, merge output."""
+    if agent2_result is None:
+        path = "output/agent2_candidates.json"
+        if not os.path.exists(path):
+            return {"success": False, "error": "No Agent 2 candidates found."}
+        with open(path) as f:
+            agent2_result = json.load(f)
+
+    candidates = agent2_result.get("candidates", [])
+    if not candidates:
+        return {
+            "success": True,
+            "evaluations": [],
+            "updated_agent2_result": agent2_result,
+            "note": "No candidates to red-team.",
+        }
+
+    # Pre-fetch qualitative context (news, options, short interest)
+    qual_context = prefetch_qualitative_context(candidates)
+
+    # Call Gemini Red Team
+    try:
+        gemini_result = call_gemini_red_team(candidates, qual_context)
+    except Exception as e:
+        return {"success": False, "error": f"Gemini error: {e}"}
+
+    # Merge evaluations and filter VETOs
+    evaluations = {ev["ticker"]: ev for ev in gemini_result.get("evaluations", [])}
+    surviving_candidates = []
+
+    for c in candidates:
+        ticker = c["ticker"]
+        ev = evaluations.get(ticker)
+
+        if not ev:
+            surviving_candidates.append(c)
+            continue
+
+        verdict = ev.get("red_team_verdict", "PASS")
+
+        if verdict == "VETO" or ev.get("updated_conviction_tier") == "REJECTED":
+            print(f"  [Agent 2.5] 🚫 VETOED {ticker}")
+            continue
+
+        # Update conviction tier if downgraded; apply updated qualitative thesis
+        c["conviction_tier"] = ev.get("updated_conviction_tier", c["conviction_tier"])
+        c["thesis"] = ev.get("qualitative_thesis", c["thesis"])
+
+        # Attach red team metadata for downstream reporting/sizing
+        c["red_flag_warnings"] = ev.get("red_flag_warnings", [])
+        c["red_team_verdict"] = verdict
+        surviving_candidates.append(c)
+
+    # Reconstruct output mimicking Agent 2 shape, but with filtered candidates
+    updated_agent2_result = agent2_result.copy()
+    updated_agent2_result["candidates"] = surviving_candidates
+    updated_agent2_result["agent2b_research_notes"] = gemini_result.get("research_notes", "")
+
+    return {
+        "success": True,
+        "evaluations": gemini_result.get("evaluations", []),
+        "research_notes": gemini_result.get("research_notes", ""),
+        "updated_agent2_result": updated_agent2_result,
+    }
+
+
+def format_agent2b_for_slack(result: dict) -> str:
+    """Format Agent 2.5 output using Slack-friendly mrkdwn."""
+    if not result.get("success"):
+        return f"⚠️ *Agent 2.5 FAILED:* {result.get('error')}"
+
+    evaluations = result.get("evaluations", [])
+    updated_candidates = result.get("updated_agent2_result", {}).get("candidates", [])
+
+    lines = [
+        f"🕵️ *AGENT 2.5: RED TEAM DEEP DIVE*",
+        f"> *Survived Red Team:* {len(updated_candidates)}/{len(evaluations)}",
+        f"> *Model:* Gemini 3.1 Pro (Temp: {GEMINI_TEMPERATURE})",
+        f"",
+    ]
+
+    if not evaluations:
+        lines.append("🚫 No evaluations performed.")
+        return "\n".join(lines)
+
+    for i, ev in enumerate(evaluations, 1):
+        verdict = ev.get("red_team_verdict", "PASS")
+        emoji = "⚠️" if verdict == "DOWNGRADE" else "✅"
+        if verdict == "VETO" or ev.get("updated_conviction_tier") == "REJECTED":
+            emoji = "🚫"
+
+        lines.append(f"*{i}. {ev.get('ticker')}* — {emoji} *{verdict}*")
+        lines.append(f"• *Tier:* {ev.get('updated_conviction_tier')}")
+
+        flags = ev.get("red_flag_warnings", [])
+        if flags:
+            lines.append("• *Red Flags:*")
+            for flag in flags:
+                lines.append(f"  - {flag}")
+
+        if verdict != "VETO":
+            lines.append(f"• *Thesis:* {ev.get('qualitative_thesis', '')}")
+
+        lines.append(f"")
+
+    lines.append(f"📝 *Notes:* _{result.get('research_notes', '')}_")
+    return "\n".join(lines)
+
+
+if __name__ == "__main__":
+    result = run_agent2b()
+    print("\n" + format_agent2b_for_slack(result))
+
+    if result.get("success"):
+        os.makedirs("output", exist_ok=True)
+        with open("output/agent2b_evaluations.json", "w") as f:
+            json.dump(result, f, indent=2, default=str)
+        with open("output/agent2_candidates.json", "w") as f:
+            json.dump(result["updated_agent2_result"], f, indent=2, default=str)
+        print(f"\n[Agent 2.5] Filtered candidates saved to output/agent2_candidates.json")
+
+
+============================================================
+FILE: ./deprecated/agent3_signal_verifier.py (     255 lines)
+============================================================
+"""
+Agent 3: Smart Money Verifier — v2.1
+Model: Claude (Anthropic)
+Role: Reads smart money Twitter/X sentiment for surviving tickers and
+      outputs a VERIFICATION_SCORE (0-10).
+
+X/Twitter research is MANDATORY — no bypass. If data is unavailable,
+the pipeline halts with an error rather than skipping.
+"""
+import json
+import os
+from datetime import datetime, timedelta
+
+from dotenv import load_dotenv
+
+load_dotenv()
+
+# Curated smart money accounts to monitor
+# These are the accounts whose sentiment we track
+CURATED_ACCOUNTS = [
+    "unusual_whales",
+    "DeItaone",
+    "Fxhedgers",
+    "zaborsky",
+    "jimcramer",
+    "GurufocusData",
+    "OptionsHawk",
+    "PeterSchiff",
+    "TruthGundlach",
+    "elerianm",
+    "SqueezeMetrics",
+    "sentimentrader",
+    "DarkPoolChart",
+    "WallStJesus",
+    "VolSignals",
+]
+
+SYSTEM_PROMPT = """You are Agent 3: The Smart Money Verifier for a $100,000 speculative spot-only trading account.
+
+YOUR JOB: Given curated smart money mentions from X/Twitter (7-day lookback, 31 institutional-grade accounts), determine whether smart money sentiment supports or vetoes each candidate trade.
+
+OUTPUT EXACTLY ONE OF THE FOLLOWING VERDICTS per candidate:
+
+- PASS_THROUGH: Default verdict. Smart money is silent, mildly mixed, or moderately positive. The trade proceeds as-is using Agent 2's conviction tier. No numeric score.
+
+- VETO_DIVERGENT: 3 or more curated accounts are bearish on the ticker, OR at least 1 hedge fund principal (boazweinstein, CliffordAsness, DylanLeClair_, cngarabedian, RayDalio) is bearish. Effect: REJECT the trade. It does not proceed to Agent 4.
+
+- VETO_CROWDED: 8 or more curated accounts are bullish on the same ticker within the last 48 hours. Effect: REJECT the trade (contrarian signal — too crowded).
+
+- CONFIRM_ENHANCED: 2 or more sector specialists or hedge fund principals are publicly aligned with the thesis, AND zero curated accounts are bearish. Effect: Trade proceeds with a CONFIRM_BONUS applied in Agent 4B sizing.
+
+RULES:
+- Do NOT produce a numeric score. The verdict IS the output.
+- Cite specific tweets or accounts that drove your verdict.
+- If no mentions exist for a ticker, the verdict is PASS_THROUGH (silence is not a red flag).
+- Be rigorous about VETO thresholds — do not veto on 1-2 mildly negative mentions.
+
+OUTPUT FORMAT — respond with ONLY this JSON:
+{
+  "agent": "smart_money_verifier",
+  "timestamp": "<ISO timestamp>",
+  "verifications": [
+    {
+      "ticker": "<SYMBOL>",
+      "verdict": "<PASS_THROUGH | VETO_DIVERGENT | VETO_CROWDED | CONFIRM_ENHANCED>",
+      "sentiment_read": "<1-2 sentence summary of smart money stance>",
+      "cited_accounts": ["<specific accounts that drove this verdict>"],
+      "cited_tweets": ["<key tweet excerpts>"]
+    }
+  ],
+  "overall_note": "<any cross-candidate observations>"
+}"""
+
+
+def fetch_x_mentions(tickers: list) -> dict:
+    """
+    Fetch Twitter/X mentions from curated smart money accounts
+    for the given tickers over the last 14 days.
+    
+    Uses the x_search tool via the OpenClaw pipeline.
+    Returns structured mention data per ticker.
+    """
+    # This function is called by the orchestrator, which has access to x_search.
+    # When running standalone, it reads from the pre-fetched file.
+    mentions_path = "output/smart_money_mentions.json"
+    if os.path.exists(mentions_path):
+        with open(mentions_path) as f:
+            data = json.load(f)
+        # x_fetch.py saves mentions nested under "mentions" key
+        if "mentions" in data:
+            return data["mentions"]
+        return data
+
+    # If no pre-fetched data exists, raise an error — X research is mandatory
+    raise RuntimeError(
+        "No smart money X/Twitter data found at output/smart_money_mentions.json. "
+        "X research is MANDATORY — run x_fetch.py first. "
+        "The pipeline cannot proceed without smart money sentiment data."
+    )
+
+
+def run_agent3(agent2_result: dict = None, x_mentions: dict = None) -> dict:
+    """
+    Run Agent 3: Analyze smart money X/Twitter sentiment.
+    X research is MANDATORY — pipeline halts if data is unavailable.
+    """
+    # Load Agent 2 candidates
+    if agent2_result is None:
+        path = "output/agent2_candidates.json"
+        if not os.path.exists(path):
+            return {"success": False, "error": "No Agent 2 candidates found."}
+        with open(path) as f:
+            agent2_result = json.load(f)
+
+    candidates = agent2_result.get("candidates", [])
+    if not candidates:
+        return {
+            "success": True,
+            "verifications": [],
+            "note": "No candidates to verify.",
+        }
+
+    tickers = [c.get("ticker") for c in candidates]
+
+    # Fetch X mentions — MANDATORY, no bypass
+    if x_mentions is None:
+        try:
+            x_mentions = fetch_x_mentions(tickers)
+        except RuntimeError as e:
+            return {"success": False, "error": str(e)}
+
+    # Filter mentions for our specific tickers
+    ticker_mentions = {}
+    for ticker in tickers:
+        ticker_mentions[ticker] = x_mentions.get(ticker, x_mentions.get(ticker.lower(), []))
+
+    print(f"[Agent 3] Analyzing X/Twitter sentiment for {len(tickers)} tickers: {tickers}")
+    for t, mentions in ticker_mentions.items():
+        count = len(mentions) if isinstance(mentions, list) else 0
+        print(f"  [Agent 3] {t}: {count} mentions from curated accounts")
+
+    # Send to Claude for interpretation
+    try:
+        import anthropic
+        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        if not api_key:
+            raise RuntimeError("No ANTHROPIC_API_KEY — run as subagent via OpenClaw.")
+
+        client = anthropic.Anthropic(api_key=api_key)
+
+        user_message = f"""Analyze smart money X/Twitter sentiment for these candidates.
+
+CANDIDATES FROM AGENT 2:
+{json.dumps([{"ticker": c.get("ticker"), "thesis": c.get("thesis"), "theme": c.get("theme_match")} for c in candidates], indent=2)}
+
+CURATED SMART MONEY X/TWITTER MENTIONS (last 7 days):
+{json.dumps(ticker_mentions, indent=2)}
+
+CURATED ACCOUNTS MONITORED:
+{json.dumps(CURATED_ACCOUNTS)}
+
+Current date/time: {datetime.now().isoformat()}
+
+Score each ticker's smart money alignment. Respond with ONLY the JSON output."""
+
+        response = client.messages.create(
+            model="claude-opus-4-7",
+            max_tokens=16000,
+            thinking={
+                "type": "enabled",
+                "budget_tokens": 10000,
+            },
+            system=SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": user_message}],
+        )
+
+        # With extended thinking, content has thinking + text blocks
+        raw_text = next(b.text for b in response.content if b.type == "text").strip()
+        if raw_text.startswith("```"):
+            raw_text = raw_text.split("\n", 1)[1]
+            raw_text = raw_text.rsplit("```", 1)[0]
+            raw_text = raw_text.strip()
+
+        result = json.loads(raw_text)
+
+        # Validate verification_score is integer
+        for v in result.get("verifications", []):
+            score = v.get("verification_score")
+            if not isinstance(score, int):
+                raise ValueError(f"verification_score must be int, got: {score}")
+
+        result["success"] = True
+        result["candidates_passthrough"] = candidates
+        return result
+
+    except RuntimeError as e:
+        # No API key — return data for subagent execution
+        return {
+            "success": False,
+            "needs_subagent": True,
+            "prompt": SYSTEM_PROMPT,
+            "candidates": candidates,
+            "x_mentions": ticker_mentions,
+        }
+    except Exception as e:
+        return {"success": False, "error": f"Claude API error: {e}"}
+
+
+def format_agent3_for_telegram(result: dict) -> str:
+    """Format Agent 3 output for Telegram."""
+    if not result.get("success"):
+        return f"⚠️ Agent 3 FAILED: {result.get('error')}"
+
+    lines = [
+        f"{'='*30}",
+        f"📡 AGENT 3: SMART MONEY VERIFIER (v2.1)",
+        f"{'='*30}",
+        f"",
+    ]
+
+    for v in result.get("verifications", []):
+        score = v.get("verification_score", "?")
+        flag = v.get("flag", "unknown")
+
+        flag_emoji = {
+            "aligned": "🟢",
+            "contested": "🟡",
+            "silent": "⚪",
+            "crowded": "🔴",
+            "divergent": "🔴",
+        }.get(flag, "❓")
+
+        lines.append(f"{'─'*25}")
+        lines.append(f"{flag_emoji} {v.get('ticker')} — Score: {score}/10 [{flag.upper()}]")
+        lines.append(f"  💬 {v.get('sentiment_read', 'N/A')}")
+        mentions = v.get("key_mentions", [])
+        if mentions:
+            lines.append(f"  📣 Key: {', '.join(mentions)}")
+        lines.append(f"")
+
+    if result.get("overall_note"):
+        lines.append(f"📝 {result.get('overall_note')}")
+
+    return "\n".join(lines)
+
+
+if __name__ == "__main__":
+    result = run_agent3()
+    print("\n" + format_agent3_for_telegram(result))
+
+    if result.get("success"):
+        os.makedirs("output", exist_ok=True)
+        with open("output/agent3_verified.json", "w") as f:
+            json.dump(result, f, indent=2, default=str)
+        print(f"\n[Agent 3] Results saved to output/agent3_verified.json")
+
+
+============================================================
+FILE: ./discord_fetch.py (     293 lines)
+============================================================
+"""
+Discord Smart Money Fetch — Pulls recent messages from curated Discord channels
+for use in the Open Claw trading pipeline (Agent 3 signal verification).
+
+Reads from The Assembly and ClearValue Investing Discord servers.
+Filters for ticker mentions and saves structured JSON for Agent 3.
+
+Uses the same Discord token and config as the daily email summarizer.
+
+Usage:
+  python3 discord_fetch.py                    # Fetch all high-signal channels (24h)
+  python3 discord_fetch.py --tickers V EOG LLY  # Filter for specific tickers
+  python3 discord_fetch.py --hours 48          # Custom lookback window
+"""
+
+import json
+import os
+import re
+import sys
+import time
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+import requests
+
+# Discord API
+DISCORD_API = "https://discord.com/api/v10"
+
+# Config from discord-summarizer
+SUMMARIZER_CONFIG = Path("/Users/chris/code/discord-summarizer/config.json")
+
+# High-signal channels for trading pipeline (skip lounge, scam_alert, youtube, etc.)
+# Jamie's curated channel list (May 19, 2026)
+HIGH_SIGNAL_CHANNELS = {
+    "The Assembly": [
+        # MARKETS
+        "market-sentiment",    # Sentiment discussion
+        "requested-analysis",  # Requested analysis
+        "important-news",      # Curated important news
+        "live-news",           # Breaking news
+        "live-intel",          # Real-time market intelligence
+        # INTELLIGENCE
+        "insider-moves",       # Insider trading activity
+        "flow-desk",           # Options flow, unusual activity
+        "institutional-flow",  # Institutional buying/selling
+        "macro-desk",          # Macro analysis
+        "geo-intel",           # Geopolitical intelligence
+        # CONVICTION
+        "high-conviction-long-term-ideas",  # High-conviction plays
+        "undervalued-stocks",  # Value plays
+        "names-we-track",      # Tracked ticker discussion
+    ],
+    "ClearValue Investing": [
+        # JD ORDERS ONLY channel — update channel name once confirmed
+        "short-term-trades",   # Placeholder until Jamie confirms exact channel
+    ],
+}
+
+# Ticker mention patterns
+TICKER_PATTERN = re.compile(r'\$([A-Z]{1,5})\b')
+TICKER_WORD_PATTERN = re.compile(r'\b([A-Z]{2,5})\b')
+
+# Common words that look like tickers but aren't
+TICKER_BLACKLIST = {
+    "THE", "AND", "FOR", "ARE", "BUT", "NOT", "YOU", "ALL", "CAN", "HER",
+    "WAS", "ONE", "OUR", "OUT", "HAS", "HIS", "HOW", "MAN", "NEW", "NOW",
+    "OLD", "SEE", "WAY", "WHO", "DID", "GET", "HIM", "LET", "SAY", "SHE",
+    "TOO", "USE", "DAY", "HAD", "HOT", "OIL", "SIT", "TOP", "RED", "RUN",
+    "YES", "YET", "BIG", "END", "FAR", "PUT", "SET", "TRY", "ASK", "OWN",
+    "WHY", "MEN", "READ", "NEED", "LAND", "JUST", "ALSO", "BEEN", "CALL",
+    "VERY", "WHEN", "COME", "MADE", "FIND", "BACK", "ONLY", "LONG", "MUCH",
+    "TAKE", "THAN", "THEM", "TURN", "INTO", "YEAR", "SOME", "WANT", "SHOW",
+    "GOOD", "GIVE", "MOST", "TOLD", "WITH", "THIS", "THAT", "WILL", "EACH",
+    "MAKE", "LIKE", "HAVE", "FROM", "WORD", "WHAT", "WERE", "DOES", "KEEP",
+    "HIGH", "LOW", "BUY", "SELL", "HOLD", "LONG", "SHORT", "BULL", "BEAR",
+    "IPO", "SEC", "GDP", "CPI", "FED", "IMF", "CEO", "CFO", "COO", "ETF",
+    "USD", "EUR", "GBP", "JPY", "CNY", "BPS", "YOY", "QOQ", "MOM", "ATH",
+    "ATL", "EPS", "PE", "PB", "ROE", "ROA", "FCF", "DCF", "EBITDA", "FOMC",
+    "NFP", "PMI", "ISM", "PPI", "PCE", "TIPS", "MOVE", "DIX", "GEX",
+    "MAX", "MIN", "AVG", "SUM", "NET", "WIN", "LOSS", "GAIN", "DROP",
+    "RISK", "SAFE", "PUMP", "DUMP", "MOON", "DIP", "FOMO", "YOLO",
+    "HUGE", "MEGA", "NICE", "LMAO", "BTFD", "HODL", "WAGMI", "NGMI",
+    "NEWS", "JUST", "LOOK", "DONT", "STOP", "WAIT", "OPEN", "CLOSE",
+    "RIP", "LOL", "BTW", "IMO", "TBH", "NEXT", "LAST", "WEEK", "SURE",
+    "PLAY", "MOVE", "TAKE", "BEEN", "DONE", "REAL", "FREE", "BEST",
+}
+
+
+def load_config() -> dict:
+    """Load Discord config from the summarizer."""
+    if not SUMMARIZER_CONFIG.exists():
+        raise FileNotFoundError(f"Discord config not found at {SUMMARIZER_CONFIG}")
+    with open(SUMMARIZER_CONFIG) as f:
+        return json.load(f)
+
+
+def snowflake_from_datetime(dt: datetime) -> str:
+    """Convert datetime to Discord snowflake for pagination."""
+    discord_epoch = 1420070400000
+    timestamp_ms = int(dt.timestamp() * 1000)
+    return str((timestamp_ms - discord_epoch) << 22)
+
+
+def fetch_channel_messages(token: str, channel_id: str, after_dt: datetime, limit: int = 200) -> list:
+    """Fetch messages from a Discord channel after a given datetime."""
+    headers = {"Authorization": token}
+    after_snowflake = snowflake_from_datetime(after_dt)
+    all_messages = []
+    last_id = after_snowflake
+
+    while True:
+        params = {"after": last_id, "limit": 100}
+        resp = requests.get(
+            f"{DISCORD_API}/channels/{channel_id}/messages",
+            headers=headers,
+            params=params,
+        )
+        if resp.status_code == 403:
+            return []  # No access
+        if resp.status_code == 429:
+            retry_after = resp.json().get("retry_after", 1)
+            time.sleep(retry_after + 0.5)
+            continue
+        if resp.status_code != 200:
+            return []
+        messages = resp.json()
+        if not messages:
+            break
+        all_messages.extend(messages)
+        if len(messages) < 100 or len(all_messages) >= limit:
+            break
+        last_id = max(m["id"] for m in messages)
+        time.sleep(0.5)
+
+    return all_messages
+
+
+def extract_tickers(text: str) -> list:
+    """Extract stock ticker mentions from message text."""
+    tickers = set()
+
+    # $TICKER pattern (high confidence)
+    for match in TICKER_PATTERN.findall(text):
+        if match not in TICKER_BLACKLIST:
+            tickers.add(match)
+
+    return list(tickers)
+
+
+def fetch_discord_mentions(tickers: list = None, hours: int = 24) -> dict:
+    """
+    Fetch Discord messages from high-signal channels and extract ticker mentions.
+
+    Args:
+        tickers: If provided, only return mentions for these tickers
+        hours: Lookback window in hours (default 24)
+
+    Returns:
+        {
+            "timestamp": "ISO",
+            "lookback_hours": 24,
+            "channels_scraped": 27,
+            "total_messages": 150,
+            "mentions": {
+                "TICKER": [
+                    {
+                        "text": "message content",
+                        "author": "username",
+                        "channel": "channel-name",
+                        "server": "server-name",
+                        "timestamp": "ISO",
+                        "channel_type": "flow-desk"
+                    }
+                ]
+            }
+        }
+    """
+    config = load_config()
+    token = config["discord_token"]
+    servers = config["servers"]
+
+    after_dt = datetime.now(timezone.utc) - timedelta(hours=hours)
+
+    all_mentions = {}  # ticker -> [mentions]
+    total_messages = 0
+    channels_scraped = 0
+
+    for server_name, channel_list in HIGH_SIGNAL_CHANNELS.items():
+        if server_name not in servers:
+            print(f"[Discord] Server '{server_name}' not in config, skipping")
+            continue
+
+        server_config = servers[server_name]
+        server_channels = server_config["channels"]
+
+        for channel_name in channel_list:
+            if channel_name not in server_channels:
+                continue
+
+            channel_id = server_channels[channel_name]
+            messages = fetch_channel_messages(token, channel_id, after_dt)
+            channels_scraped += 1
+
+            for msg in messages:
+                total_messages += 1
+                content = msg.get("content", "")
+                if not content:
+                    continue
+
+                # Also check embeds
+                for embed in msg.get("embeds", []):
+                    if embed.get("title"):
+                        content += " " + embed["title"]
+                    if embed.get("description"):
+                        content += " " + embed["description"]
+
+                found_tickers = extract_tickers(content)
+                author = msg.get("author", {}).get("username", "unknown")
+                msg_time = msg.get("timestamp", "")
+
+                for ticker in found_tickers:
+                    if tickers and ticker not in tickers:
+                        continue  # Skip if not in requested ticker list
+
+                    if ticker not in all_mentions:
+                        all_mentions[ticker] = []
+
+                    all_mentions[ticker].append({
+                        "text": content[:500],  # Truncate long messages
+                        "author": author,
+                        "channel": channel_name,
+                        "server": server_name,
+                        "timestamp": msg_time,
+                    })
+
+            if messages:
+                print(f"  [Discord] {server_name}/{channel_name}: {len(messages)} messages")
+
+    result = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "lookback_hours": hours,
+        "channels_scraped": channels_scraped,
+        "total_messages": total_messages,
+        "tickers_found": len(all_mentions),
+        "mentions": all_mentions,
+    }
+
+    # Save output
+    os.makedirs("output", exist_ok=True)
+    with open("output/discord_mentions.json", "w") as f:
+        json.dump(result, f, indent=2, default=str)
+
+    # Summary
+    print(f"\n[Discord] Complete. {channels_scraped} channels, {total_messages} messages, {len(all_mentions)} tickers mentioned")
+    for ticker in sorted(all_mentions, key=lambda t: len(all_mentions[t]), reverse=True)[:10]:
+        mentions = all_mentions[ticker]
+        channels = set(m["channel"] for m in mentions)
+        print(f"  {ticker}: {len(mentions)} mentions across {len(channels)} channels")
+
+    return result
+
+
+def format_discord_for_agent3(discord_data: dict, tickers: list) -> str:
+    """Format Discord mentions for Agent 3's prompt."""
+    mentions = discord_data.get("mentions", {})
+    lines = [
+        f"DISCORD SMART MONEY MENTIONS (last {discord_data.get('lookback_hours', 24)}h)",
+        f"Sources: The Assembly + ClearValue Investing ({discord_data.get('channels_scraped', 0)} channels)",
+        "=" * 50,
+    ]
+
+    for ticker in tickers:
+        ticker_mentions = mentions.get(ticker, [])
+        if not ticker_mentions:
+            lines.append(f"\n{ticker} -- 0 Discord mentions (silent)")
+        else:
+            channels = set(m["channel"] for m in ticker_mentions)
+            lines.append(f"\n{ticker} -- {len(ticker_mentions)} mentions across {', '.join(channels)}:")
+            for m in ticker_mentions[:5]:  # Cap at 5 per ticker
+                lines.append(f"  [{m['server']}/{m['channel']}] @{m['author']}: {m['text'][:200]}")
+
+    return "\n".join(lines)
+
+
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description="Discord Smart Money Fetch")
+    parser.add_argument("--tickers", nargs="*", help="Filter for specific tickers")
+    parser.add_argument("--hours", type=int, default=24, help="Lookback hours (default 24)")
+    args = parser.parse_args()
+
+    print(f"[Discord] Fetching messages from last {args.hours} hours...")
+    result = fetch_discord_mentions(tickers=args.tickers, hours=args.hours)
+
+
+============================================================
+FILE: ./flash_crash_daemon.py (     362 lines)
+============================================================
+"""
+Flash-Crash Daemon — Lightweight intraday safety net (NO LLM)
+Runs every 5-10 minutes during market hours.
+
+Checks:
+  1. SPY intraday drop > 1.5% from today's open → defensive protocol
+  2. VIX intraday spike > 20% from today's open → defensive protocol
+  3. Individual position down > 5% intraday → tighten that stop to breakeven
+
+Defensive protocol:
+  - Profitable positions → tighten stop to breakeven (entry price)
+  - Losing positions → close immediately
+  - Log all actions to output/daemon_log.json
+  - Save alert to output/daemon_alert.json for Agent 5 visibility
+
+Usage:
+  python3 flash_crash_daemon.py
+"""
+import json
+import os
+import sys
+from datetime import datetime, time
+
+import pytz
+import yfinance as yf
+
+from broker import AlpacaBroker
+
+OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
+
+# Thresholds
+SPY_DROP_THRESHOLD = -0.015       # -1.5% from today's open
+VIX_SPIKE_THRESHOLD = 0.20        # +20% from today's open
+POSITION_DROP_THRESHOLD = -0.05   # -5% intraday for individual positions
+
+
+def is_market_hours() -> bool:
+    """Check if current time is within regular market hours (9:30-16:00 ET, Mon-Fri)."""
+    et = pytz.timezone("America/New_York")
+    now = datetime.now(et)
+
+    # Skip weekends (Monday=0, Sunday=6)
+    if now.weekday() >= 5:
+        return False
+
+    market_open = time(9, 30)
+    market_close = time(16, 0)
+
+    return market_open <= now.time() <= market_close
+
+
+def get_intraday_change(ticker: str) -> dict:
+    """
+    Fetch intraday data for a ticker and compute change from today's open.
+    Returns {"open": float, "current": float, "change_pct": float} or {"error": str}.
+    """
+    try:
+        data = yf.download(ticker, period="1d", interval="1m", progress=False)
+        if data.empty:
+            return {"error": f"No intraday data for {ticker}"}
+
+        # Handle multi-level columns from yfinance
+        if hasattr(data.columns, 'levels') and len(data.columns.levels) > 1:
+            open_price = float(data["Open"][ticker].iloc[0])
+            current_price = float(data["Close"][ticker].iloc[-1])
+        else:
+            open_price = float(data["Open"].iloc[0])
+            current_price = float(data["Close"].iloc[-1])
+
+        if open_price <= 0:
+            return {"error": f"Invalid open price for {ticker}"}
+
+        change_pct = (current_price - open_price) / open_price
+
+        return {
+            "open": round(open_price, 2),
+            "current": round(current_price, 2),
+            "change_pct": round(change_pct, 4),
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def _save_json(filepath: str, data: dict):
+    """Write JSON to file, creating output dir if needed."""
+    os.makedirs(os.path.dirname(filepath), exist_ok=True)
+    with open(filepath, "w") as f:
+        json.dump(data, f, indent=2, default=str)
+
+
+def _append_daemon_log(entry: dict):
+    """Append an entry to the daemon log (keeps history)."""
+    log_path = os.path.join(OUTPUT_DIR, "daemon_log.json")
+    logs = []
+    if os.path.exists(log_path):
+        try:
+            with open(log_path) as f:
+                logs = json.load(f)
+                if not isinstance(logs, list):
+                    logs = [logs]
+        except (json.JSONDecodeError, Exception):
+            logs = []
+    logs.append(entry)
+    # Keep last 500 entries to avoid unbounded growth
+    logs = logs[-500:]
+    _save_json(log_path, logs)
+
+
+def _get_current_stop_price(broker: AlpacaBroker, ticker: str) -> float:
+    """Get the current stop-loss price for a ticker from Alpaca open orders."""
+    try:
+        from alpaca.trading.requests import GetOrdersRequest
+        from alpaca.trading.enums import QueryOrderStatus
+        req = GetOrdersRequest(status=QueryOrderStatus.OPEN, symbols=[ticker], limit=20)
+        orders = broker.client.get_orders(req)
+        for order in orders:
+            if order.order_type == "stop" or (hasattr(order, 'stop_price') and order.stop_price):
+                return float(order.stop_price)
+    except Exception:
+        pass
+    return None
+
+
+def execute_defensive_protocol(broker: AlpacaBroker, trigger_reason: str, positions: list) -> list:
+    """
+    Execute defensive protocol on all positions:
+    - Profitable positions: tighten stop to breakeven (entry price)
+    - Losing positions: close immediately
+    Returns list of actions taken.
+    """
+    actions = []
+
+    for pos in positions:
+        ticker = pos["ticker"]
+        entry_price = pos["avg_entry_price"]
+        unrealized_pl = pos["unrealized_pl"]
+
+        if unrealized_pl >= 0:
+            # Profitable — tighten stop to breakeven, but NEVER widen an existing stop
+            # Check if there's already a stop above entry price
+            current_stop = _get_current_stop_price(broker, ticker)
+            if current_stop and current_stop > entry_price:
+                # Stop already trailed above entry — do NOT widen it
+                actions.append({
+                    "ticker": ticker,
+                    "action": "SKIP",
+                    "note": f"Stop already at ${current_stop:.2f} > entry ${entry_price:.2f} — not widening",
+                })
+                continue
+            # We cancel existing orders and resubmit with breakeven stop.
+            action = {
+                "ticker": ticker,
+                "action": "TIGHTEN_STOP_BREAKEVEN",
+                "entry_price": entry_price,
+                "unrealized_pl": unrealized_pl,
+                "note": f"Stop tightened to breakeven (${entry_price:.2f})",
+            }
+            # Attempt to cancel existing orders and place a new stop at breakeven
+            try:
+                from alpaca.trading.requests import StopOrderRequest
+                from alpaca.trading.enums import OrderSide, TimeInForce
+                # Cancel existing orders for this ticker
+                orders = broker.client.get_orders()
+                for o in orders:
+                    if o.symbol == ticker:
+                        try:
+                            broker.client.cancel_order_by_id(o.id)
+                        except Exception:
+                            pass
+                # Place new stop at breakeven
+                from alpaca.trading.requests import StopOrderRequest
+                stop_req = StopOrderRequest(
+                    symbol=ticker,
+                    qty=pos["shares"],
+                    side=OrderSide.SELL,
+                    time_in_force=TimeInForce.GTC,
+                    stop_price=round(entry_price, 2),
+                )
+                broker.client.submit_order(stop_req)
+                action["status"] = "executed"
+            except Exception as e:
+                action["status"] = "logged_only"
+                action["error"] = str(e)
+
+            actions.append(action)
+            print(f"  [Daemon] {ticker}: Profitable (+${unrealized_pl:.2f}) → stop tightened to ${entry_price:.2f}")
+        else:
+            # Losing — close immediately
+            result = broker.close_position(ticker)
+            action = {
+                "ticker": ticker,
+                "action": "CLOSE_LOSING",
+                "entry_price": entry_price,
+                "unrealized_pl": unrealized_pl,
+                "close_result": result,
+            }
+            actions.append(action)
+            print(f"  [Daemon] {ticker}: Losing (${unrealized_pl:.2f}) → CLOSED")
+
+    return actions
+
+
+def tighten_individual_stop(broker: AlpacaBroker, pos: dict) -> dict:
+    """Tighten a single position's stop to breakeven when it's down >5% intraday."""
+    ticker = pos["ticker"]
+    entry_price = pos["avg_entry_price"]
+
+    action = {
+        "ticker": ticker,
+        "action": "INDIVIDUAL_STOP_TIGHTEN",
+        "entry_price": entry_price,
+        "note": f"Position down >5% intraday — stop moved to breakeven (${entry_price:.2f})",
+    }
+
+    try:
+        # Cancel existing orders for this ticker
+        orders = broker.client.get_orders()
+        for o in orders:
+            if o.symbol == ticker:
+                try:
+                    broker.client.cancel_order_by_id(o.id)
+                except Exception:
+                    pass
+
+        from alpaca.trading.requests import StopOrderRequest
+        from alpaca.trading.enums import OrderSide, TimeInForce
+        stop_req = StopOrderRequest(
+            symbol=ticker,
+            qty=pos["shares"],
+            side=OrderSide.SELL,
+            time_in_force=TimeInForce.GTC,
+            stop_price=round(entry_price, 2),
+        )
+        broker.client.submit_order(stop_req)
+        action["status"] = "executed"
+    except Exception as e:
+        action["status"] = "logged_only"
+        action["error"] = str(e)
+
+    print(f"  [Daemon] {ticker}: Down >5% intraday → stop tightened to ${entry_price:.2f}")
+    return action
+
+
+def run_daemon():
+    """
+    Main daemon entry point. Checks market conditions and positions.
+    If no triggers, exits silently. If triggers fire, executes defensive protocol.
+    """
+    # Check market hours
+    if not is_market_hours():
+        return  # Silent exit outside market hours
+
+    triggers = []
+    actions = []
+
+    # --- Check SPY ---
+    spy_data = get_intraday_change("SPY")
+    if "error" not in spy_data:
+        if spy_data["change_pct"] <= SPY_DROP_THRESHOLD:
+            trigger = {
+                "type": "SPY_DROP",
+                "detail": f"SPY down {spy_data['change_pct']*100:.2f}% (threshold: {SPY_DROP_THRESHOLD*100:.1f}%)",
+                "open": spy_data["open"],
+                "current": spy_data["current"],
+                "change_pct": spy_data["change_pct"],
+            }
+            triggers.append(trigger)
+            print(f"[Daemon] ⚠️ TRIGGER: {trigger['detail']}")
+    else:
+        print(f"[Daemon] Warning: Could not fetch SPY data — {spy_data['error']}")
+
+    # --- Check VIX ---
+    vix_data = get_intraday_change("^VIX")
+    if "error" not in vix_data:
+        if vix_data["change_pct"] >= VIX_SPIKE_THRESHOLD:
+            trigger = {
+                "type": "VIX_SPIKE",
+                "detail": f"VIX up {vix_data['change_pct']*100:.2f}% (threshold: +{VIX_SPIKE_THRESHOLD*100:.0f}%)",
+                "open": vix_data["open"],
+                "current": vix_data["current"],
+                "change_pct": vix_data["change_pct"],
+            }
+            triggers.append(trigger)
+            print(f"[Daemon] ⚠️ TRIGGER: {trigger['detail']}")
+    else:
+        print(f"[Daemon] Warning: Could not fetch VIX data — {vix_data['error']}")
+
+    # --- Load positions ---
+    try:
+        broker = AlpacaBroker()
+        positions = broker.get_positions()
+    except Exception as e:
+        print(f"[Daemon] ERROR: Could not connect to Alpaca — {e}")
+        return
+
+    if not positions:
+        if triggers:
+            # Triggers fired but no positions to defend — just log
+            alert = {
+                "timestamp": datetime.now().isoformat(),
+                "triggers": triggers,
+                "actions": [],
+                "note": "Triggers fired but no open positions",
+            }
+            _save_json(os.path.join(OUTPUT_DIR, "daemon_alert.json"), alert)
+            _append_daemon_log(alert)
+            print("[Daemon] Triggers fired but no positions to defend. Alert saved.")
+        return  # Silent exit if no positions and no triggers
+
+    # --- Check individual positions for >5% intraday drop ---
+    for pos in positions:
+        ticker = pos["ticker"]
+        pos_data = get_intraday_change(ticker)
+        if "error" not in pos_data:
+            if pos_data["change_pct"] <= POSITION_DROP_THRESHOLD:
+                trigger = {
+                    "type": "POSITION_DROP",
+                    "ticker": ticker,
+                    "detail": f"{ticker} down {pos_data['change_pct']*100:.2f}% intraday (threshold: {POSITION_DROP_THRESHOLD*100:.0f}%)",
+                    "change_pct": pos_data["change_pct"],
+                }
+                triggers.append(trigger)
+                print(f"[Daemon] ⚠️ TRIGGER: {trigger['detail']}")
+                # Tighten this specific position's stop to breakeven
+                action = tighten_individual_stop(broker, pos)
+                actions.append(action)
+
+    # --- If market-wide triggers fired, run full defensive protocol ---
+    market_wide_triggers = [t for t in triggers if t["type"] in ("SPY_DROP", "VIX_SPIKE")]
+    if market_wide_triggers:
+        trigger_reasons = "; ".join(t["detail"] for t in market_wide_triggers)
+        print(f"\n[Daemon] 🛡️ DEFENSIVE PROTOCOL ACTIVATED: {trigger_reasons}")
+        defensive_actions = execute_defensive_protocol(broker, trigger_reasons, positions)
+        actions.extend(defensive_actions)
+
+    # --- If any triggers fired, save outputs ---
+    if triggers:
+        timestamp = datetime.now().isoformat()
+
+        alert = {
+            "timestamp": timestamp,
+            "triggers": triggers,
+            "actions": actions,
+            "positions_at_trigger": positions,
+        }
+        _save_json(os.path.join(OUTPUT_DIR, "daemon_alert.json"), alert)
+        _append_daemon_log(alert)
+
+        # Print summary
+        print(f"\n{'='*40}")
+        print(f"[Daemon] SUMMARY")
+        print(f"  Triggers: {len(triggers)}")
+        for t in triggers:
+            print(f"    - {t['detail']}")
+        print(f"  Actions: {len(actions)}")
+        for a in actions:
+            print(f"    - {a['ticker']}: {a['action']} ({a.get('status', 'n/a')})")
+        print(f"{'='*40}")
+
+
+if __name__ == "__main__":
+    run_daemon()
+
+
+============================================================
+FILE: ./massive_data.py (     467 lines)
+============================================================
+"""
+Massive Market Data Module — Polygon-compatible API for stocks, options, and technical indicators.
+
+Free tier includes:
+- Historical OHLCV bars (2 years, end-of-day)
+- Previous day bar
+- Built-in technical indicators (SMA, EMA, RSI, MACD)
+- Minute aggregates
+- 5 API calls/minute rate limit
+
+Paid tiers add: real-time snapshots, options chains, greeks, WebSockets.
+
+API base: https://api.massive.com
+Auth: apiKey query parameter
+"""
+import os
+import time
+import json
+from datetime import datetime, timedelta
+from typing import Dict, List, Optional
+
+from dotenv import load_dotenv
+from pathlib import Path
+
+load_dotenv(Path(__file__).parent / ".env")
+
+BASE_URL = "https://api.massive.com"
+API_KEY = os.environ.get("MASSIVE_API_KEY", "")
+
+# Rate limiter: free tier = 5 calls/min
+_call_times: list = []
+RATE_LIMIT = 5
+RATE_WINDOW = 60  # seconds
+
+
+def _rate_limit():
+    """Simple rate limiter for free tier (5 calls/min)."""
+    global _call_times
+    now = time.time()
+    _call_times = [t for t in _call_times if now - t < RATE_WINDOW]
+    if len(_call_times) >= RATE_LIMIT:
+        wait = RATE_WINDOW - (now - _call_times[0]) + 0.5
+        if wait > 0:
+            print(f"[Massive] Rate limit reached — waiting {wait:.1f}s")
+            time.sleep(wait)
+    _call_times.append(time.time())
+
+
+def _get(endpoint: str, params: dict = None) -> dict:
+    """Make an authenticated GET request to Massive API."""
+    import requests
+
+    if not API_KEY:
+        return {"error": "MASSIVE_API_KEY not set in .env"}
+
+    _rate_limit()
+
+    url = f"{BASE_URL}{endpoint}"
+    if params is None:
+        params = {}
+    params["apiKey"] = API_KEY
+
+    try:
+        resp = requests.get(url, params=params, timeout=15)
+        data = resp.json()
+        if data.get("status") == "NOT_AUTHORIZED":
+            return {"error": f"Not authorized: {data.get('message', 'upgrade plan')}"}
+        return data
+    except Exception as e:
+        return {"error": str(e)}
+
+
+# ─── Stock Aggregates ───────────────────────────────────────────────
+
+def fetch_previous_day(ticker: str) -> dict:
+    """Fetch previous trading day's OHLCV bar for a single ticker."""
+    data = _get(f"/v2/aggs/ticker/{ticker}/prev")
+    if "error" in data:
+        return data
+
+    results = data.get("results", [])
+    if not results:
+        return {"error": f"No previous day data for {ticker}"}
+
+    bar = results[0]
+    return {
+        "ticker": ticker,
+        "open": bar.get("o"),
+        "high": bar.get("h"),
+        "low": bar.get("l"),
+        "close": bar.get("c"),
+        "volume": bar.get("v"),
+        "vwap": bar.get("vw"),
+        "transactions": bar.get("n"),
+        "timestamp": bar.get("t"),
+        "date": datetime.fromtimestamp(bar["t"] / 1000).strftime("%Y-%m-%d") if bar.get("t") else None,
+    }
+
+
+def fetch_prior_close_batch(tickers: list) -> dict:
+    """
+    Fetch previous day's close for multiple tickers.
+    Note: free tier is 5 calls/min, so this is rate-limited.
+    For large batches, prefer Alpaca. Use Massive for enrichment.
+    """
+    results = {}
+    for ticker in tickers:
+        prev = fetch_previous_day(ticker)
+        if "error" not in prev:
+            results[ticker] = {
+                "prior_close": round(prev["close"], 2),
+                "prior_date": prev["date"],
+                "prior_open": round(prev["open"], 2),
+                "prior_high": round(prev["high"], 2),
+                "prior_low": round(prev["low"], 2),
+                "prior_volume": prev["volume"],
+                "prior_vwap": round(prev["vwap"], 2) if prev["vwap"] else None,
+                "source": "massive",
+            }
+        else:
+            results[ticker] = {"error": prev["error"]}
+    return results
+
+
+def fetch_historical_bars(
+    ticker: str,
+    days: int = 30,
+    timespan: str = "day",
+    multiplier: int = 1,
+) -> dict:
+    """
+    Fetch historical OHLCV bars for a ticker.
+
+    Args:
+        ticker: Stock symbol
+        days: Number of calendar days of history
+        timespan: "day", "hour", or "minute"
+        multiplier: Bar size multiplier (e.g., 5 with minute = 5-min bars)
+    """
+    end = datetime.now().strftime("%Y-%m-%d")
+    start = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+
+    data = _get(
+        f"/v2/aggs/ticker/{ticker}/range/{multiplier}/{timespan}/{start}/{end}",
+        params={"sort": "asc", "limit": 5000},
+    )
+
+    if "error" in data:
+        return data
+
+    results = data.get("results", [])
+    bars = []
+    for bar in results:
+        bars.append({
+            "date": datetime.fromtimestamp(bar["t"] / 1000).strftime("%Y-%m-%d") if timespan == "day" else datetime.fromtimestamp(bar["t"] / 1000).isoformat(),
+            "open": round(bar["o"], 2),
+            "high": round(bar["h"], 2),
+            "low": round(bar["l"], 2),
+            "close": round(bar["c"], 2),
+            "volume": bar.get("v", 0),
+            "vwap": round(bar["vw"], 2) if bar.get("vw") else None,
+            "transactions": bar.get("n"),
+        })
+
+    return {
+        "ticker": ticker,
+        "bars": bars,
+        "count": len(bars),
+        "source": "massive",
+    }
+
+
+# ─── Technical Indicators (FREE — this is the killer feature) ────────
+
+def fetch_sma(ticker: str, window: int = 20, timespan: str = "day", limit: int = 30) -> dict:
+    """
+    Fetch Simple Moving Average values.
+    Built-in — no local calculation needed.
+    """
+    data = _get(
+        f"/v1/indicators/sma/{ticker}",
+        params={"timespan": timespan, "window": window, "series_type": "close", "limit": limit, "order": "desc"},
+    )
+    if "error" in data:
+        return data
+
+    values = data.get("results", {}).get("values", [])
+    return {
+        "ticker": ticker,
+        "indicator": f"SMA_{window}",
+        "values": [
+            {
+                "date": datetime.fromtimestamp(v["timestamp"] / 1000).strftime("%Y-%m-%d"),
+                "value": round(v["value"], 4),
+            }
+            for v in values
+        ],
+        "current": round(values[0]["value"], 4) if values else None,
+        "source": "massive",
+    }
+
+
+def fetch_ema(ticker: str, window: int = 20, timespan: str = "day", limit: int = 30) -> dict:
+    """Fetch Exponential Moving Average values."""
+    data = _get(
+        f"/v1/indicators/ema/{ticker}",
+        params={"timespan": timespan, "window": window, "series_type": "close", "limit": limit, "order": "desc"},
+    )
+    if "error" in data:
+        return data
+
+    values = data.get("results", {}).get("values", [])
+    return {
+        "ticker": ticker,
+        "indicator": f"EMA_{window}",
+        "values": [
+            {
+                "date": datetime.fromtimestamp(v["timestamp"] / 1000).strftime("%Y-%m-%d"),
+                "value": round(v["value"], 4),
+            }
+            for v in values
+        ],
+        "current": round(values[0]["value"], 4) if values else None,
+        "source": "massive",
+    }
+
+
+def fetch_rsi(ticker: str, window: int = 14, timespan: str = "day", limit: int = 30) -> dict:
+    """
+    Fetch Relative Strength Index.
+    RSI > 70 = overbought, RSI < 30 = oversold.
+    """
+    data = _get(
+        f"/v1/indicators/rsi/{ticker}",
+        params={"timespan": timespan, "window": window, "series_type": "close", "limit": limit, "order": "desc"},
+    )
+    if "error" in data:
+        return data
+
+    values = data.get("results", {}).get("values", [])
+    current_rsi = round(values[0]["value"], 2) if values else None
+
+    # Classify RSI
+    signal = "neutral"
+    if current_rsi:
+        if current_rsi >= 70:
+            signal = "overbought"
+        elif current_rsi >= 60:
+            signal = "bullish"
+        elif current_rsi <= 30:
+            signal = "oversold"
+        elif current_rsi <= 40:
+            signal = "bearish"
+
+    return {
+        "ticker": ticker,
+        "indicator": f"RSI_{window}",
+        "current": current_rsi,
+        "signal": signal,
+        "values": [
+            {
+                "date": datetime.fromtimestamp(v["timestamp"] / 1000).strftime("%Y-%m-%d"),
+                "value": round(v["value"], 2),
+            }
+            for v in values
+        ],
+        "source": "massive",
+    }
+
+
+def fetch_macd(
+    ticker: str,
+    short_window: int = 12,
+    long_window: int = 26,
+    signal_window: int = 9,
+    timespan: str = "day",
+    limit: int = 30,
+) -> dict:
+    """
+    Fetch MACD (Moving Average Convergence Divergence).
+    Returns MACD line, signal line, and histogram.
+    """
+    data = _get(
+        f"/v1/indicators/macd/{ticker}",
+        params={
+            "timespan": timespan,
+            "short_window": short_window,
+            "long_window": long_window,
+            "signal_window": signal_window,
+            "series_type": "close",
+            "limit": limit,
+            "order": "desc",
+        },
+    )
+    if "error" in data:
+        return data
+
+    values = data.get("results", {}).get("values", [])
+    if not values:
+        return {"ticker": ticker, "indicator": "MACD", "error": "No data"}
+
+    current = values[0]
+    macd_val = round(current.get("value", 0), 4)
+    signal_val = round(current.get("signal", 0), 4)
+    histogram = round(current.get("histogram", 0), 4)
+
+    # Classify signal
+    signal = "neutral"
+    if histogram > 0 and macd_val > signal_val:
+        signal = "bullish"
+    elif histogram < 0 and macd_val < signal_val:
+        signal = "bearish"
+
+    # Check for crossover (compare current vs previous)
+    crossover = None
+    if len(values) >= 2:
+        prev = values[1]
+        prev_hist = prev.get("histogram", 0)
+        if prev_hist <= 0 < histogram:
+            crossover = "bullish_crossover"
+        elif prev_hist >= 0 > histogram:
+            crossover = "bearish_crossover"
+
+    return {
+        "ticker": ticker,
+        "indicator": "MACD",
+        "macd": macd_val,
+        "signal_line": signal_val,
+        "histogram": histogram,
+        "signal": signal,
+        "crossover": crossover,
+        "values": [
+            {
+                "date": datetime.fromtimestamp(v["timestamp"] / 1000).strftime("%Y-%m-%d"),
+                "macd": round(v.get("value", 0), 4),
+                "signal": round(v.get("signal", 0), 4),
+                "histogram": round(v.get("histogram", 0), 4),
+            }
+            for v in values[:10]  # Last 10 days
+        ],
+        "source": "massive",
+    }
+
+
+def fetch_full_technicals(ticker: str) -> dict:
+    """
+    Fetch a complete technical analysis package for a single ticker.
+    Returns previous day bar + RSI(14) + MACD.
+    
+    Optimized for free tier rate limits (5 calls/min):
+    - 3 API calls per ticker (prev_day, RSI, MACD)
+    - SMA is computed locally from historical bars when possible
+    """
+    result = {"ticker": ticker, "source": "massive", "timestamp": datetime.now().isoformat()}
+
+    # 1. Previous day bar (1 call)
+    prev = fetch_previous_day(ticker)
+    if "error" not in prev:
+        result["price"] = round(prev["close"], 2)
+        result["prev_open"] = round(prev["open"], 2)
+        result["prev_high"] = round(prev["high"], 2)
+        result["prev_low"] = round(prev["low"], 2)
+        result["prev_volume"] = prev["volume"]
+        result["prev_vwap"] = round(prev["vwap"], 2) if prev.get("vwap") else None
+
+    # 2. RSI (1 call)
+    rsi = fetch_rsi(ticker, window=14, limit=5)
+    result["rsi_14"] = rsi.get("current")
+    result["rsi_signal"] = rsi.get("signal")
+
+    # 3. MACD (1 call)
+    macd = fetch_macd(ticker, limit=5)
+    result["macd"] = macd.get("macd")
+    result["macd_signal"] = macd.get("signal_line")
+    result["macd_histogram"] = macd.get("histogram")
+    result["macd_trend"] = macd.get("signal")
+    result["macd_crossover"] = macd.get("crossover")
+
+    return result
+
+
+def fetch_technicals_with_sma(ticker: str) -> dict:
+    """
+    Full technicals including SMA(20) and SMA(50).
+    Uses 5 API calls — consumes entire free tier minute quota for one ticker.
+    Use sparingly (e.g., only for SPY or the top pick).
+    """
+    result = fetch_full_technicals(ticker)  # 3 calls
+
+    # 4. SMA(20) (1 call)
+    sma_20 = fetch_sma(ticker, window=20, limit=3)
+    result["sma_20"] = sma_20.get("current")
+
+    # 5. SMA(50) (1 call)
+    sma_50 = fetch_sma(ticker, window=50, limit=3)
+    result["sma_50"] = sma_50.get("current")
+
+    # Price vs MAs
+    price = result.get("price")
+    if price:
+        if result.get("sma_20"):
+            result["price_vs_sma20"] = "above" if price > result["sma_20"] else "below"
+        if result.get("sma_50"):
+            result["price_vs_sma50"] = "above" if price > result["sma_50"] else "below"
+
+    return result
+
+
+def format_technicals_for_prompt(technicals: dict) -> str:
+    """Format technical analysis data for agent prompts."""
+    t = technicals
+    lines = [
+        f"TECHNICAL ANALYSIS: {t['ticker']}",
+        f"  Price: ${t.get('price', '?')}",
+        f"  SMA(20): {t.get('sma_20', 'N/A')} ({t.get('price_vs_sma20', '?')})",
+        f"  SMA(50): {t.get('sma_50', 'N/A')} ({t.get('price_vs_sma50', '?')})",
+        f"  RSI(14): {t.get('rsi_14', 'N/A')} ({t.get('rsi_signal', '?')})",
+        f"  MACD: {t.get('macd', 'N/A')} | Signal: {t.get('macd_signal', 'N/A')} | Hist: {t.get('macd_histogram', 'N/A')}",
+        f"  MACD Trend: {t.get('macd_trend', '?')} | Crossover: {t.get('macd_crossover', 'none')}",
+    ]
+    return "\n".join(lines)
+
+
+# ─── Smoke Test ──────────────────────────────────────────────────────
+
+if __name__ == "__main__":
+    print("Testing Massive Market Data API...\n")
+
+    # Test 1: Previous day bar
+    print("1. Previous day bar for AAPL:")
+    prev = fetch_previous_day("AAPL")
+    if "error" not in prev:
+        print(f"   {prev['date']}: O={prev['open']} H={prev['high']} L={prev['low']} C={prev['close']} V={prev['volume']:,.0f}")
+    else:
+        print(f"   ERROR: {prev['error']}")
+
+    # Test 2: Historical bars
+    print("\n2. Last 5 daily bars for NVDA:")
+    hist = fetch_historical_bars("NVDA", days=7)
+    if "error" not in hist:
+        for bar in hist["bars"][-5:]:
+            print(f"   {bar['date']}: O={bar['open']} H={bar['high']} L={bar['low']} C={bar['close']} VWAP={bar['vwap']}")
+    else:
+        print(f"   ERROR: {hist['error']}")
+
+    # Test 3: Technical indicators
+    print("\n3. RSI(14) for NVDA:")
+    rsi = fetch_rsi("NVDA")
+    if "error" not in rsi:
+        print(f"   Current RSI: {rsi['current']} ({rsi['signal']})")
+    else:
+        print(f"   ERROR: {rsi}")
+
+    print("\n4. MACD for NVDA:")
+    macd = fetch_macd("NVDA")
+    if "error" not in macd:
+        print(f"   MACD: {macd['macd']} | Signal: {macd['signal_line']} | Hist: {macd['histogram']}")
+        print(f"   Trend: {macd['signal']} | Crossover: {macd['crossover']}")
+    else:
+        print(f"   ERROR: {macd}")
+
+    # Test 4: Full technicals package
+    print("\n5. Full technicals for SPY:")
+    tech = fetch_full_technicals("SPY")
+    print(format_technicals_for_prompt(tech))
+
+    print("\n✅ Massive Market Data module working!")
+
+
+============================================================
+FILE: ./orchestrator.py (     690 lines)
+============================================================
 """
 Open Claw Orchestrator — "Golden Path" v2
 Runs the full 5-agent pipeline in sequence.
@@ -161,6 +5568,7 @@ from broker import AlpacaBroker
 from trade_journal import log_close, build_trade_record
 from watchlist import Watchlist, promote_ready_candidates
 from vwap_gate import check_vwap, vwap_gate
+from run_archiver import archive_run
 from safeguards import (
     is_market_open_today,
     send_telegram,
@@ -359,7 +5767,7 @@ def run_morning_pipeline(verbose: bool = False) -> dict:
             # Only pass READY candidates forward (in Agent 2 format)
             ready_candidates = promote_ready_candidates()
             # Replace candidates with only the READY ones
-            candidates = ready_candidates
+            candidates = candidates + ready_candidates
             agent2_result = dict(agent2_result)
             agent2_result["candidates"] = candidates
             print(f"\n  ✅ Promoting {len(candidates)} READY candidates to Agent 3")
@@ -468,9 +5876,9 @@ def run_morning_pipeline(verbose: bool = False) -> dict:
         results["agent4"] = {"success": False, "error": str(e)}
         return results
     
-    # ━━━ STEP 6: EXECUTE TRADES ON ALPACA (9:30 AM) ━━━
+    # ━━━ STEP 6: SAVE ORDERS FOR DEFERRED EXECUTION ━━━
     print("\n" + "━" * 40)
-    print("💰 STEP 6: BROKER EXECUTION — ALPACA")
+    print("💾 STEP 6: ORDERS SAVED — EXECUTION DEFERRED")
     print("━" * 40)
     
     trade_orders = agent4_result.get("trade_orders", [])
@@ -479,47 +5887,27 @@ def run_morning_pipeline(verbose: bool = False) -> dict:
     if not buy_orders:
         print("📋 No BUY orders in tear sheet — nothing to execute.")
     else:
-        # ━━━ VWAP GATE ━━━
-        print("\n  🔒 VWAP Gate: Checking intraday VWAP for BUY orders...")
-        approved_orders, rejected_orders = vwap_gate(trade_orders)
+        # Save orders for deferred execution at 9:45-10:15 AM
+        pending = {
+            "timestamp": datetime.now().isoformat(),
+            "orders": trade_orders,
+            "directive": directive,
+            "note": "Execute after 9:45 AM ET when VWAP has a mature volume profile",
+        }
+        os.makedirs("output", exist_ok=True)
+        with open("output/pending_orders.json", "w") as f:
+            json.dump(pending, f, indent=2)
         
-        if rejected_orders:
-            print(f"  ❌ VWAP Rejected ({len(rejected_orders)}):")
-            for r in rejected_orders:
-                print(f"     {r['ticker']}: {r.get('reject_reason')} "
-                      f"(price vs VWAP: {r.get('vwap_pct', '?')}%)")
-        
-        approved_buys = [o for o in approved_orders if o.get('action') == 'BUY']
-        if not approved_buys:
-            print("  📋 All BUY orders rejected by VWAP gate — nothing to execute.")
-        else:
-            print(f"  ✅ VWAP Approved: {len(approved_buys)} BUY order(s)")
-        
-        trade_orders = approved_orders  # only execute approved
-        buy_orders = approved_buys
-        
-        if not buy_orders:
-            print("📋 No BUY orders passed VWAP gate — nothing to execute.")
-        else:
-            try:
-                broker = AlpacaBroker()
-                fills = broker.execute_tear_sheet(trade_orders)
-                results["broker"] = {"success": True, "fills": fills}
-            
-                submitted = [f for f in fills if f.get("status") == "submitted"]
-                skipped = [f for f in fills if f.get("status") == "skipped"]
-                errors = [f for f in fills if f.get("status") == "error"]
-                
-                print(f"\n📊 Broker Results:")
-                print(f"  ✅ Submitted: {len(submitted)}")
-                print(f"  ⏭️  Skipped:   {len(skipped)}")
-                print(f"  ❌ Errors:    {len(errors)}")
-                
-                for f in errors:
-                    print(f"     {f['ticker']}: {f.get('error', 'unknown')}")
-            except Exception as e:
-                print(f"❌ Broker execution FAILED: {e}")
-                results["broker"] = {"success": False, "error": str(e)}
+        print(f"  📋 {len(buy_orders)} BUY order(s) saved to output/pending_orders.json")
+        print(f"  ⏰ Execute at 9:45-10:15 AM via: python3 orchestrator.py execute")
+        for o in buy_orders:
+            print(f"     BUY {o.get('shares', '?')} {o.get('ticker', '?')} @ ~${o.get('entry_price', '?')}")
+    
+    # ━━━ ARCHIVE RUN ━━━
+    try:
+        archive_run("morning")
+    except Exception as e:
+        print(f"⚠️ Archiver failed: {e}")
     
     # ━━━ DONE ━━━
     print("\n" + "=" * 50)
@@ -654,6 +6042,12 @@ def run_afternoon_monitor(verbose: bool = False) -> dict:
             print(f"\u26a0\ufe0f hb_signal send failed: {he}")
             send_hb_signal(errors=[str(he)])
         
+        # ━━━ ARCHIVE RUN ━━━
+        try:
+            archive_run("monitor")
+        except Exception as e:
+            print(f"⚠️ Archiver failed: {e}")
+        
         return {"agent5": agent5_result}
     except Exception as e:
         print(f"❌ Agent 5 FAILED: {e}")
@@ -742,6 +6136,69 @@ def resume_from_agent3(verbose: bool = False) -> dict:
     return {"agent3": agent3_result, "agent4": agent4_result}
 
 
+def run_deferred_execution() -> dict:
+    """
+    Execute pending orders with VWAP gate.
+    Run at 9:45-10:15 AM when intraday VWAP has matured.
+    """
+    pending_path = "output/pending_orders.json"
+    if not os.path.exists(pending_path):
+        print("❌ No pending orders found. Run morning pipeline first.")
+        return {"error": "no_pending_orders"}
+    
+    with open(pending_path) as f:
+        pending = json.load(f)
+    
+    trade_orders = pending.get("orders", [])
+    buy_orders = [o for o in trade_orders if o.get("action") == "BUY"]
+    
+    if not buy_orders:
+        print("📋 No BUY orders to execute.")
+        return {"success": True, "fills": []}
+    
+    print("=" * 50)
+    print("💰 DEFERRED EXECUTION — VWAP GATE + BROKER")
+    print(f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M:%S ET')}")
+    print("=" * 50)
+    
+    # Run VWAP gate with mature intraday data
+    print("\n🔒 VWAP Gate: Checking intraday VWAP...")
+    approved_orders, rejected_orders = vwap_gate(trade_orders)
+    
+    if rejected_orders:
+        print(f"  ❌ VWAP Rejected ({len(rejected_orders)}):")
+        for r in rejected_orders:
+            print(f"     {r['ticker']}: {r.get('reject_reason')}")
+    
+    approved_buys = [o for o in approved_orders if o.get('action') == 'BUY']
+    
+    if not approved_buys:
+        print("📋 All orders rejected by VWAP gate.")
+        return {"success": True, "fills": [], "all_rejected": True}
+    
+    print(f"  ✅ VWAP Approved: {len(approved_buys)} BUY order(s)")
+    
+    # Execute
+    try:
+        broker = AlpacaBroker()
+        fills = broker.execute_tear_sheet(approved_orders)
+        
+        submitted = [f for f in fills if f.get("status") == "submitted"]
+        errors = [f for f in fills if f.get("status") == "error"]
+        
+        print(f"\n📊 Broker Results:")
+        print(f"  ✅ Submitted: {len(submitted)}")
+        print(f"  ❌ Errors: {len(errors)}")
+        
+        # Clean up pending file
+        os.rename(pending_path, pending_path.replace(".json", f"_executed_{datetime.now().strftime('%Y%m%d_%H%M')}.json"))
+        
+        return {"success": True, "fills": fills}
+    except Exception as e:
+        print(f"❌ Execution failed: {e}")
+        return {"success": False, "error": str(e)}
+
+
 if __name__ == "__main__":
     from safeguards import run_with_crash_protection
     
@@ -754,18 +6211,405 @@ if __name__ == "__main__":
         run_with_crash_protection(run_afternoon_monitor, "Afternoon Monitor", verbose=verbose)
     elif mode == "resume":
         run_with_crash_protection(resume_from_agent3, "Resume from Agent 3", verbose=verbose)
+    elif mode == "execute":
+        run_with_crash_protection(run_deferred_execution, "Deferred Execution")
     elif mode == "full":
         results = run_with_crash_protection(run_morning_pipeline, "Morning Pipeline", verbose=verbose)
         if results and all(r.get("success", False) for r in results.values() if isinstance(r, dict)):
             print("\n⏰ Morning pipeline done. Agent 5 runs at 3:30 PM.")
     else:
         print(f"Unknown mode: {mode}")
-        print("Usage: python3 orchestrator.py [morning|monitor|resume|full]")
+        print("Usage: python3 orchestrator.py [morning|monitor|resume|execute|full]")
 
 
-==================================================================
-FILE: preflight.py (    1007 lines)
-==================================================================
+============================================================
+FILE: ./performance_review.py (     380 lines)
+============================================================
+"""
+Open Claw - Performance Review Engine
+Implements the 3-tier review system. Outputs reports to output/reviews/
+and prints to console for Slack delivery.
+
+Three tiers:
+  1. Weekly Pulse — lightweight P&L summary, portfolio heat, stops hit. 30-second read.
+  2. Bi-Weekly Deep Review — trade performance analysis + agent scorecards + data source audit.
+  3. Monthly Parameter Review — config change recommendations based on accumulated data.
+
+Usage:
+  python3 performance_review.py              # Run all three reviews
+  python3 performance_review.py weekly        # Weekly pulse only
+  python3 performance_review.py biweekly      # Bi-weekly deep review only
+  python3 performance_review.py monthly       # Monthly parameter review only
+"""
+import os
+import json
+import pandas as pd
+import numpy as np
+from datetime import datetime, timedelta
+
+JOURNAL_PATH = "journal/trades.csv"
+ARCHIVE_DIR = "output/archive"
+REVIEWS_DIR = "output/reviews"
+OUTPUT_DIR = "output"
+
+
+def load_journal(days=None):
+    """Loads trade journal and filters by days back."""
+    if not os.path.exists(JOURNAL_PATH):
+        return pd.DataFrame()
+    try:
+        df = pd.read_csv(JOURNAL_PATH)
+        if df.empty:
+            return df
+        # Convert date columns using UTC explicitly
+        df['entry_dt'] = pd.to_datetime(df['entry_dt'], errors='coerce', utc=True)
+        df['exit_dt'] = pd.to_datetime(df['exit_dt'], errors='coerce', utc=True)
+        if days:
+            now = datetime.now(df['exit_dt'].dt.tz) if df['exit_dt'].dt.tz else datetime.now()
+            cutoff = now - timedelta(days=days)
+            df = df[df['exit_dt'] >= cutoff]
+        return df
+    except Exception as e:
+        print(f"Error loading journal: {e}")
+        return pd.DataFrame()
+
+
+def calculate_portfolio_heat():
+    """Calculate current portfolio heat from open positions."""
+    try:
+        from agent4_risk_manager import calculate_portfolio_heat as calc_heat
+        heat_data = calc_heat()
+        return heat_data.get('heat_pct_of_equity', 0.0) * 100
+    except Exception:
+        return 0.0
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# TIER 1: WEEKLY PULSE
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def generate_weekly_pulse():
+    """
+    Lightweight weekly summary. Just the numbers, no recommendations.
+    30-second read.
+    """
+    df = load_journal(days=7)
+    report = [
+        f"📊 *OPEN CLAW WEEKLY PULSE* — {datetime.now().strftime('%Y-%m-%d')}",
+        "_" * 40,
+        ""
+    ]
+
+    report.append(f"*Portfolio Heat:* {calculate_portfolio_heat():.1f}% of equity at risk\n")
+
+    if df.empty:
+        report.append("_Journal is currently empty. Pipeline is in early accumulation phase (Week 1)._")
+    else:
+        total = len(df)
+        winners = df[df["pnl_dollars"] > 0]
+        win_rate = (len(winners) / total) * 100
+        avg_r = df["r_multiple"].mean()
+        pnl = df["pnl_dollars"].sum()
+        stops = len(df[df["exit_reason"].str.contains("STOP|MECHANICAL", case=False, na=False)])
+
+        report.append("*Closed Trade Performance:*")
+        report.append(f" • *Trades Closed:* {total}")
+        report.append(f" • *Win Rate:* {win_rate:.0f}%")
+        report.append(f" • *Avg R-Multiple:* {avg_r:.2f}R")
+        report.append(f" • *Total P&L:* ${pnl:,.2f}")
+        report.append(f" • *Hit Stops:* {stops} trades")
+
+    return "\n".join(report)
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# DATA SOURCE QUALITY AUDIT
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def audit_data_sources():
+    """
+    Audit data source quality across archived pipeline runs.
+    Grades each source: Strong 🟢, Neutral ⚪, or Weak 🔴.
+    """
+    if not os.path.exists(ARCHIVE_DIR):
+        return "  ⚠️ No archive data available for audit."
+
+    runs = sorted(os.listdir(ARCHIVE_DIR))[-14:]  # Last 14 runs
+    mentions_list = []
+    missing_data_flags = []
+
+    for run in runs:
+        run_dir = os.path.join(ARCHIVE_DIR, run)
+        if not os.path.isdir(run_dir):
+            continue
+
+        # Twitter/X Audit
+        sm_file = os.path.join(run_dir, "smart_money_mentions.json")
+        if os.path.exists(sm_file):
+            try:
+                with open(sm_file) as f:
+                    data = json.load(f)
+                # Handle both formats: list of mentions or dict with total
+                if isinstance(data, dict):
+                    mentions_list.append(data.get("total_mentions", 0))
+                elif isinstance(data, list):
+                    mentions_list.append(len(data))
+            except Exception:
+                pass
+
+        # Macro Audit
+        macro_file = os.path.join(run_dir, "preflight_macro.json")
+        if os.path.exists(macro_file):
+            try:
+                with open(macro_file) as f:
+                    macro = json.load(f)
+                if isinstance(macro, dict):
+                    if "DIX" not in macro or (isinstance(macro.get("DIX"), dict) and "error" in macro["DIX"]):
+                        missing_data_flags.append(f"DIX missing in {run}")
+                    if "MOVE" not in macro or (isinstance(macro.get("MOVE"), dict) and "error" in macro["MOVE"]):
+                        missing_data_flags.append(f"MOVE missing in {run}")
+            except Exception:
+                pass
+
+    report = ["\n*3. Data Source Quality Audit*"]
+
+    avg_mentions = np.mean(mentions_list) if mentions_list else 0
+
+    x_grade = "Neutral ⚪"
+    x_note = "Awaiting sufficient data"
+    if avg_mentions < 5 and len(mentions_list) > 0:
+        x_grade = "Weak 🔴"
+        x_note = f"Mention volume too low (Avg {avg_mentions:.1f}). Consider expanding accounts."
+    elif avg_mentions >= 5:
+        x_grade = "Strong 🟢"
+        x_note = f"Solid institutional coverage (Avg {avg_mentions:.1f})."
+
+    report.append(f"  🐦 *X/Twitter Smart Money:* {x_grade} — _{x_note}_")
+    report.append("  💬 *Discord:* Neutral ⚪ — _Output only right now, signal-to-noise TBD._")
+
+    macro_grade = "Strong 🟢"
+    macro_note = "Clean data"
+    if missing_data_flags:
+        macro_grade = "Weak 🔴"
+        macro_note = f"Missing critical data (e.g., {missing_data_flags[-1]})."
+
+    report.append(f"  📊 *Assembly/FRED Macro:* {macro_grade} — _{macro_note}_")
+
+    tech_grade = "Strong 🟢" if os.path.exists(os.path.join(OUTPUT_DIR, "technicals.json")) else "Weak 🔴"
+    tech_note = "Technicals correlating well" if tech_grade == "Strong 🟢" else "No technicals data found"
+    report.append(f"  📈 *Polygon/Massive API:* {tech_grade} — _{tech_note}_")
+
+    return "\n".join(report)
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# TIER 2: BI-WEEKLY DEEP REVIEW
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def generate_biweekly_deep():
+    """
+    Deep review with two sections:
+    1. Trade Performance Analysis (tier performance, R-multiples, MAE/MFE, beta check)
+    2. Agent Performance Scorecards (per-agent accuracy)
+    3. Data Source Quality Audit (X/Twitter, Discord, macro, technicals)
+    """
+    df = load_journal(days=14)
+    report = [
+        f"🔍 *OPEN CLAW BI-WEEKLY DEEP REVIEW* — {datetime.now().strftime('%Y-%m-%d')}",
+        "_" * 40,
+        ""
+    ]
+
+    # ── Section 1: Trade Performance ──
+    report.append("*1. Trade Performance Analysis*")
+    if df.empty:
+        report.append("  _Insufficient closed trade data for quantitative attribution._")
+    else:
+        # Tier R-multiples
+        if "tier" in df.columns and "r_multiple" in df.columns:
+            tier_r = df.groupby("tier")["r_multiple"].agg(["count", "mean"])
+            for tier, row in tier_r.iterrows():
+                report.append(f"  • *{tier} Picks:* {row['mean']:.2f}R avg ({int(row['count'])} trades)")
+
+        # CONFIRM_ENHANCED alpha
+        if "confirm_enhanced" in df.columns and "r_multiple" in df.columns:
+            conf = df.groupby("confirm_enhanced")["r_multiple"].mean().to_dict()
+            ce = conf.get(True, conf.get("True", 0))
+            reg = conf.get(False, conf.get("False", 0))
+            report.append(f"  • *CONFIRM_ENHANCED:* {ce:.2f}R vs {reg:.2f}R (Standard)")
+
+        # MAE analysis
+        if "max_adverse_excursion_pct" in df.columns:
+            mae = pd.to_numeric(df["max_adverse_excursion_pct"], errors='coerce').mean()
+            if pd.notna(mae):
+                report.append(f"  • *Avg MAE:* {mae:.2f}% (Stop-loss tightness check)")
+
+        # SPX beta check
+        if "spx_change_over_hold_pct" in df.columns:
+            spx = pd.to_numeric(df["spx_change_over_hold_pct"], errors='coerce')
+            r = pd.to_numeric(df["r_multiple"], errors='coerce')
+            if not spx.isna().all() and not r.isna().all() and len(df) > 3:
+                corr = r.corr(spx)
+                report.append(f"  • *SPX Beta Check:* {corr:.2f} correlation")
+                if abs(corr) > 0.7:
+                    report.append("    ⚠️ High SPX correlation — may just be beta, not alpha")
+
+        # Binding constraints
+        if "binding_constraint" in df.columns:
+            bc = df["binding_constraint"].value_counts().to_dict()
+            bc_str = ", ".join(f"{k}: {v}" for k, v in bc.items())
+            report.append(f"  • *Binding Constraints:* {bc_str}")
+
+    # ── Section 2: Agent Scorecards ──
+    report.append("\n*2. Agent Performance Scorecards*")
+
+    report.append("  🎭 *Agent 1 (Macro Director):*")
+    report.append("  _Regime tracking active. Awaiting SPX/VIX 1-2 day correlation to score accuracy._")
+
+    report.append("  🔍 *Agent 2 (Fundamental Screener):*")
+    if df.empty:
+        report.append("  _Pick profitability pending closed trades._")
+    else:
+        win_rate = (len(df[df["pnl_dollars"] > 0]) / len(df)) * 100
+        report.append(f"  _Pick Profitability:_ {win_rate:.0f}%")
+
+    report.append("  🧪 *Agent 3 (Synthesizer):*")
+    if df.empty:
+        report.append("  _CONFIRM_ENHANCED alpha pending closed trades._")
+    else:
+        report.append("  _Tracking CONFIRM_ENHANCED outcomes vs regular verdicts._")
+
+    report.append("  🛡️ *Agent 4 (Risk Manager):*")
+    report.append("  _Stop tightness (MAE) being monitored. Allocation logic functioning._")
+
+    report.append("  📉 *Agent 5 (Position Monitor):*")
+    report.append("  _HOLD/SELL decisions being tracked against subsequent price drift._")
+
+    # ── Section 3: Data Source Audit ──
+    report.append(audit_data_sources())
+
+    return "\n".join(report)
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# TIER 3: MONTHLY PARAMETER REVIEW
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def generate_monthly_params():
+    """
+    Monthly review that evaluates config.py parameters against trade data.
+    The ONLY time actual config changes get recommended.
+    """
+    df = load_journal(days=30)
+    report = [
+        f"⚙️ *OPEN CLAW MONTHLY PARAMETER REVIEW* — {datetime.now().strftime('%Y-%m-%d')}",
+        "_" * 40,
+        ""
+    ]
+
+    if len(df) < 10:
+        report.append("⚠️ *Not enough data yet to confidently recommend configuration changes.*")
+        report.append(f"_Have {len(df)} closed trades. Need ~10-20 to statistically validate multiplier adjustments._")
+        return "\n".join(report)
+
+    report.append("*Configuration Change Recommendations:*\n")
+
+    # Tier risk multiplier check
+    if "tier" in df.columns and "r_multiple" in df.columns:
+        tier_mean = df.groupby("tier")["r_multiple"].mean()
+        exc = tier_mean.get("EXCEPTIONAL", 0)
+        strong = tier_mean.get("STRONG", 0)
+        pas = tier_mean.get("PASS", 0)
+
+        if exc < pas:
+            report.append("  • *TIER_RISK_MULT:* ⚠️ EXCEPTIONAL is underperforming PASS. Recommend lowering EXCEPTIONAL multiplier or investigating pick quality.")
+        elif exc < strong:
+            report.append("  • *TIER_RISK_MULT:* ⚠️ EXCEPTIONAL underperforming STRONG. Monitor — may need recalibration.")
+        else:
+            report.append("  • *TIER_RISK_MULT:* ✅ Aligned correctly (EXCEPTIONAL > STRONG > PASS).")
+
+    # Allocation cap check
+    if "binding_constraint" in df.columns:
+        alloc_bound = len(df[df["binding_constraint"] == "allocation"]) / len(df)
+        if alloc_bound > 0.7:
+            report.append(f"  • *MAX_ALLOCATION_PCT:* ⚠️ {alloc_bound*100:.0f}% of trades are allocation-bound. Consider raising cap.")
+        elif alloc_bound < 0.2:
+            report.append(f"  • *MAX_ALLOCATION_PCT:* Consider tightening. Only {alloc_bound*100:.0f}% are allocation-bound (trades mostly risk-bound).")
+        else:
+            report.append("  • *MAX_ALLOCATION_PCT:* ✅ Risk vs Allocation balance is healthy.")
+
+    # Stop-loss tightness
+    if "max_adverse_excursion_pct" in df.columns:
+        losers = df[df["r_multiple"] < 0]
+        if not losers.empty:
+            mae = pd.to_numeric(losers["max_adverse_excursion_pct"], errors='coerce').mean()
+            if pd.notna(mae) and mae > -2.0:
+                report.append("  • *Stop Distances:* ⚠️ Losers are getting stopped out with very little adverse excursion. Consider widening stops.")
+            elif pd.notna(mae):
+                report.append(f"  • *Stop Distances:* ✅ Avg loser MAE is {mae:.1f}% — stops appear appropriately placed.")
+
+    # Win rate sanity check
+    total = len(df)
+    winners = len(df[df["pnl_dollars"] > 0])
+    win_rate = winners / total * 100
+    avg_r = df["r_multiple"].mean()
+    report.append(f"\n  📊 *Overall:* {win_rate:.0f}% win rate, {avg_r:.2f}R avg across {total} trades")
+
+    if avg_r < 0:
+        report.append("  ⚠️ *Negative average R — system is losing money. Priority: review stop placement and entry criteria.*")
+
+    return "\n".join(report)
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# RUNNER
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def run_all_reviews():
+    """Run all three review tiers and save to output/reviews/."""
+    os.makedirs(REVIEWS_DIR, exist_ok=True)
+
+    pulse = generate_weekly_pulse()
+    deep = generate_biweekly_deep()
+    params = generate_monthly_params()
+
+    ts = datetime.now().strftime("%Y%m%d_%H%M")
+    with open(os.path.join(REVIEWS_DIR, f"weekly_pulse_{ts}.txt"), "w") as f:
+        f.write(pulse)
+    with open(os.path.join(REVIEWS_DIR, f"biweekly_deep_review_{ts}.txt"), "w") as f:
+        f.write(deep)
+    with open(os.path.join(REVIEWS_DIR, f"monthly_params_{ts}.txt"), "w") as f:
+        f.write(params)
+
+    print(pulse)
+    print("\n" + "=" * 50 + "\n")
+    print(deep)
+    print("\n" + "=" * 50 + "\n")
+    print(params)
+
+    return {
+        "weekly_pulse": pulse,
+        "biweekly_deep": deep,
+        "monthly_params": params,
+    }
+
+
+if __name__ == "__main__":
+    import sys
+    mode = sys.argv[1] if len(sys.argv) > 1 else "all"
+    if mode == "weekly":
+        print(generate_weekly_pulse())
+    elif mode == "biweekly":
+        print(generate_biweekly_deep())
+    elif mode == "monthly":
+        print(generate_monthly_params())
+    else:
+        run_all_reviews()
+
+
+============================================================
+FILE: ./preflight.py (    1007 lines)
+============================================================
 """
 Pre-Flight Data Fetch — runs at 7:55 AM ET
 Fetches:
@@ -1775,9 +7619,189 @@ if __name__ == "__main__":
     print(f"Smart Money: {data['smart_money']['status']}")
 
 
-==================================================================
-FILE: safeguards.py (     508 lines)
-==================================================================
+============================================================
+FILE: ./run_archiver.py (     175 lines)
+============================================================
+#!/usr/bin/env python3
+"""
+Run Archiver — Preserves each pipeline run's output files for historical analysis.
+
+Problem: The pipeline overwrites output/*.json on every run. Without archiving,
+the review system has no historical data to analyze.
+
+Solution: After each pipeline run, archive all output files into a timestamped
+directory under output/archive/YYYY-MM-DD_HHMM/.
+
+Usage:
+  python3 run_archiver.py                # Archive current output files
+  python3 run_archiver.py --list         # List all archived runs
+  python3 run_archiver.py --load 2026-05-22_0808  # Load a specific run's data
+"""
+import json
+import os
+import shutil
+import sys
+from datetime import datetime
+from pathlib import Path
+
+OUTPUT_DIR = Path("output")
+ARCHIVE_DIR = OUTPUT_DIR / "archive"
+
+# Files to archive per run
+ARCHIVE_FILES = [
+    "agent1_directive.json",
+    "agent2_candidates.json",
+    "agent2_fundamentals.json",
+    "agent3_verified.json",
+    "agent4_orders.json",
+    "agent4a_stops.json",
+    "agent5_decisions.json",
+    "agent5_snapshot.json",
+    "broker_fills.json",
+    "preflight_macro.json",
+    "screener_universe.json",
+    "smart_money_mentions.json",
+    "x_mentions.json",
+    "tear_sheet.txt",
+    "assembly_data.json",
+]
+
+
+def archive_run(label: str = None) -> str:
+    """
+    Copy current output files into a timestamped archive folder.
+    Returns the archive directory path.
+    """
+    ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
+
+    if label:
+        run_dir = ARCHIVE_DIR / label
+    else:
+        run_dir = ARCHIVE_DIR / datetime.now().strftime("%Y-%m-%d_%H%M")
+
+    if run_dir.exists():
+        # Append seconds to avoid collision
+        run_dir = ARCHIVE_DIR / datetime.now().strftime("%Y-%m-%d_%H%M%S")
+
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    archived = []
+    for fname in ARCHIVE_FILES:
+        src = OUTPUT_DIR / fname
+        if src.exists():
+            shutil.copy2(src, run_dir / fname)
+            archived.append(fname)
+
+    # Write manifest
+    manifest = {
+        "archived_at": datetime.now().isoformat(),
+        "files": archived,
+        "run_label": run_dir.name,
+    }
+    with open(run_dir / "manifest.json", "w") as f:
+        json.dump(manifest, f, indent=2)
+
+    print(f"[Archiver] Archived {len(archived)} files to {run_dir}")
+    return str(run_dir)
+
+
+def list_runs() -> list:
+    """List all archived runs, sorted by date."""
+    if not ARCHIVE_DIR.exists():
+        return []
+
+    runs = []
+    for d in sorted(ARCHIVE_DIR.iterdir()):
+        if d.is_dir():
+            manifest_path = d / "manifest.json"
+            if manifest_path.exists():
+                with open(manifest_path) as f:
+                    manifest = json.load(f)
+                runs.append({
+                    "label": d.name,
+                    "path": str(d),
+                    "archived_at": manifest.get("archived_at"),
+                    "file_count": len(manifest.get("files", [])),
+                })
+            else:
+                runs.append({
+                    "label": d.name,
+                    "path": str(d),
+                    "archived_at": None,
+                    "file_count": len(list(d.glob("*.json"))),
+                })
+    return runs
+
+
+def load_run(label: str) -> dict:
+    """Load all JSON files from an archived run."""
+    run_dir = ARCHIVE_DIR / label
+    if not run_dir.exists():
+        raise FileNotFoundError(f"No archived run found: {label}")
+
+    data = {}
+    for f in run_dir.glob("*.json"):
+        if f.name == "manifest.json":
+            continue
+        with open(f) as fh:
+            try:
+                data[f.stem] = json.load(fh)
+            except json.JSONDecodeError:
+                data[f.stem] = {"error": "invalid JSON"}
+
+    # Load tear sheet text if present
+    tear_sheet = run_dir / "tear_sheet.txt"
+    if tear_sheet.exists():
+        data["tear_sheet"] = tear_sheet.read_text()
+
+    return data
+
+
+def load_all_runs() -> list:
+    """Load all archived runs with their data. Returns list of (label, data) tuples."""
+    runs = list_runs()
+    result = []
+    for run in runs:
+        try:
+            data = load_run(run["label"])
+            data["_label"] = run["label"]
+            data["_archived_at"] = run.get("archived_at")
+            result.append(data)
+        except Exception as e:
+            print(f"[Archiver] Warning: Could not load {run['label']}: {e}")
+    return result
+
+
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Archive pipeline output files")
+    parser.add_argument("--list", action="store_true", help="List all archived runs")
+    parser.add_argument("--load", type=str, help="Load a specific archived run")
+    parser.add_argument("--label", type=str, help="Custom label for this archive")
+    args = parser.parse_args()
+
+    if args.list:
+        runs = list_runs()
+        if not runs:
+            print("No archived runs found.")
+        else:
+            print(f"\n{'Label':<25} {'Files':<8} {'Archived At'}")
+            print("-" * 60)
+            for r in runs:
+                print(f"{r['label']:<25} {r['file_count']:<8} {r.get('archived_at', 'unknown')}")
+    elif args.load:
+        data = load_run(args.load)
+        print(f"Loaded {len(data)} files from {args.load}")
+        for k in sorted(data.keys()):
+            print(f"  - {k}")
+    else:
+        archive_run(label=args.label)
+
+
+============================================================
+FILE: ./safeguards.py (     508 lines)
+============================================================
 """
 Pipeline Safeguards — Production hardening for Open Claw.
 
@@ -2288,3753 +8312,9 @@ if __name__ == "__main__":
     print("\n✅ Safeguards module ready!")
 
 
-==================================================================
-FILE: alpaca_data.py (     352 lines)
-==================================================================
-"""
-Alpaca Market Data Module — Replaces Yahoo Finance for price data.
-
-Uses Alpaca's Market Data API via the paper trading credentials.
-Free tier provides IEX real-time quotes, 5+ years of historical bars,
-and options chain data.
-
-Drop-in replacement for yfinance calls in preflight.py.
-"""
-import os
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional
-
-from dotenv import load_dotenv
-from pathlib import Path
-
-load_dotenv(Path(__file__).parent / ".env")
-
-from alpaca.data.historical import StockHistoricalDataClient
-from alpaca.data.requests import (
-    StockBarsRequest,
-    StockLatestQuoteRequest,
-    StockSnapshotRequest,
-)
-from alpaca.data.timeframe import TimeFrame
-import pandas as pd
-
-# Initialize client — uses paper trading keys for market data
-_client = None
-
-
-def _get_client() -> StockHistoricalDataClient:
-    global _client
-    if _client is None:
-        api_key = os.environ.get("ALPACA_API_KEY", "")
-        secret_key = os.environ.get("ALPACA_SECRET_KEY", "")
-        if not api_key or not secret_key:
-            raise RuntimeError("ALPACA_API_KEY and ALPACA_SECRET_KEY must be set in .env")
-        _client = StockHistoricalDataClient(api_key, secret_key)
-    return _client
-
-
-def fetch_prior_close(tickers: list) -> dict:
-    """
-    Fetch yesterday's close for a list of tickers via Alpaca.
-    Drop-in replacement for preflight.fetch_prior_close().
-    """
-    client = _get_client()
-    results = {}
-    end = datetime.now()
-    start = end - timedelta(days=10)
-
-    for ticker in tickers:
-        try:
-            request = StockBarsRequest(
-                symbol_or_symbols=ticker,
-                timeframe=TimeFrame.Day,
-                start=start,
-                end=end,
-                feed="iex",
-            )
-            bars = client.get_stock_bars(request)
-            df = bars.df
-
-            if df.empty:
-                results[ticker] = {"error": f"No bar data for {ticker}"}
-                continue
-
-            # If multi-index (symbol, timestamp), slice to this ticker
-            if isinstance(df.index, pd.MultiIndex):
-                if ticker in df.index.get_level_values(0):
-                    df = df.loc[ticker]
-                else:
-                    results[ticker] = {"error": f"No bar data for {ticker}"}
-                    continue
-
-            closes = [round(float(c), 2) for c in df["close"].values]
-            dates = [str(d.date()) for d in df.index]
-
-            # Prior close = last complete bar
-            today_str = str(datetime.now().date())
-            if dates[-1] == today_str and len(closes) >= 2:
-                prior_close = closes[-2]
-                prior_date = dates[-2]
-            else:
-                prior_close = closes[-1]
-                prior_date = dates[-1]
-
-            results[ticker] = {
-                "prior_close": prior_close,
-                "prior_date": prior_date,
-                "closes_30d": closes,
-            }
-        except Exception as e:
-            results[ticker] = {"error": str(e)}
-
-    return results
-
-
-def fetch_latest_quotes(tickers: list) -> dict:
-    """
-    Fetch real-time (IEX) quotes for a list of tickers.
-    Returns bid, ask, and mid price for each.
-    """
-    client = _get_client()
-    results = {}
-
-    try:
-        request = StockLatestQuoteRequest(symbol_or_symbols=tickers)
-        quotes = client.get_stock_latest_quote(request)
-
-        for ticker, quote in quotes.items():
-            results[ticker] = {
-                "bid": float(quote.bid_price) if quote.bid_price else 0.0,
-                "ask": float(quote.ask_price) if quote.ask_price else 0.0,
-                "bid_size": int(quote.bid_size) if quote.bid_size else 0,
-                "ask_size": int(quote.ask_size) if quote.ask_size else 0,
-                "mid": round((float(quote.bid_price or 0) + float(quote.ask_price or 0)) / 2, 2),
-                "timestamp": quote.timestamp.isoformat() if quote.timestamp else "",
-            }
-    except Exception as e:
-        for ticker in tickers:
-            results[ticker] = {"error": str(e)}
-
-    return results
-
-
-def fetch_snapshots(tickers: list) -> dict:
-    """
-    Fetch full snapshots (latest trade, quote, minute bar, daily bar, prev daily bar).
-    Richer than just quotes — includes today's OHLCV and previous day's bar.
-    """
-    client = _get_client()
-    results = {}
-
-    try:
-        request = StockSnapshotRequest(symbol_or_symbols=tickers)
-        snapshots = client.get_stock_snapshot(request)
-
-        for ticker, snap in snapshots.items():
-            entry = {}
-
-            if snap.latest_trade:
-                entry["latest_trade"] = {
-                    "price": float(snap.latest_trade.price),
-                    "size": int(snap.latest_trade.size),
-                    "timestamp": snap.latest_trade.timestamp.isoformat() if snap.latest_trade.timestamp else "",
-                }
-
-            if snap.latest_quote:
-                entry["latest_quote"] = {
-                    "bid": float(snap.latest_quote.bid_price) if snap.latest_quote.bid_price else 0,
-                    "ask": float(snap.latest_quote.ask_price) if snap.latest_quote.ask_price else 0,
-                }
-
-            if snap.daily_bar:
-                entry["daily_bar"] = {
-                    "open": float(snap.daily_bar.open),
-                    "high": float(snap.daily_bar.high),
-                    "low": float(snap.daily_bar.low),
-                    "close": float(snap.daily_bar.close),
-                    "volume": int(snap.daily_bar.volume),
-                }
-
-            if snap.previous_daily_bar:
-                entry["prev_daily_bar"] = {
-                    "open": float(snap.previous_daily_bar.open),
-                    "high": float(snap.previous_daily_bar.high),
-                    "low": float(snap.previous_daily_bar.low),
-                    "close": float(snap.previous_daily_bar.close),
-                    "volume": int(snap.previous_daily_bar.volume),
-                }
-
-            if snap.minute_bar:
-                entry["minute_bar"] = {
-                    "open": float(snap.minute_bar.open),
-                    "high": float(snap.minute_bar.high),
-                    "low": float(snap.minute_bar.low),
-                    "close": float(snap.minute_bar.close),
-                    "volume": int(snap.minute_bar.volume),
-                    "timestamp": snap.minute_bar.timestamp.isoformat() if snap.minute_bar.timestamp else "",
-                }
-
-            results[ticker] = entry
-    except Exception as e:
-        for ticker in tickers:
-            results[ticker] = {"error": str(e)}
-
-    return results
-
-
-def fetch_historical_bars(
-    tickers: list,
-    days: int = 30,
-    timeframe: str = "day",
-) -> dict:
-    """
-    Fetch historical OHLCV bars for a list of tickers.
-    
-    Args:
-        tickers: List of ticker symbols
-        days: Number of days of history (default 30)
-        timeframe: "day", "hour", or "minute"
-    """
-    client = _get_client()
-
-    tf_map = {
-        "day": TimeFrame.Day,
-        "hour": TimeFrame.Hour,
-        "minute": TimeFrame.Minute,
-    }
-    tf = tf_map.get(timeframe, TimeFrame.Day)
-
-    end = datetime.now()
-    start = end - timedelta(days=days)
-    results = {}
-
-    for ticker in tickers:
-        try:
-            request = StockBarsRequest(
-                symbol_or_symbols=ticker,
-                timeframe=tf,
-                start=start,
-                end=end,
-                feed="iex",
-            )
-            bars = client.get_stock_bars(request)
-            df = bars.df
-
-            if df.empty:
-                results[ticker] = {"bars": [], "count": 0}
-                continue
-
-            # Handle multi-index
-            if isinstance(df.index, pd.MultiIndex):
-                if ticker in df.index.get_level_values(0):
-                    df = df.loc[ticker]
-                else:
-                    results[ticker] = {"bars": [], "count": 0}
-                    continue
-
-            bar_list = []
-            for ts, row in df.iterrows():
-                bar_list.append({
-                    "date": str(ts.date()) if tf == TimeFrame.Day else ts.isoformat(),
-                    "open": round(float(row["open"]), 2),
-                    "high": round(float(row["high"]), 2),
-                    "low": round(float(row["low"]), 2),
-                    "close": round(float(row["close"]), 2),
-                    "volume": int(row["volume"]),
-                    "vwap": round(float(row["vwap"]), 2) if pd.notna(row.get("vwap")) else None,
-                })
-
-            results[ticker] = {
-                "bars": bar_list,
-                "count": len(bar_list),
-            }
-        except Exception as e:
-            results[ticker] = {"error": str(e)}
-
-    return results
-
-
-def fetch_macro_tickers() -> dict:
-    """
-    Fetch macro indicator tickers that Alpaca supports.
-    Replaces yfinance for VIX, sector ETFs, etc.
-    
-    Note: Alpaca doesn't support index tickers like ^VIX directly.
-    We use VIXY/UVXY as VIX proxies, and sector ETFs work fine.
-    For ^VIX, ^TNX, etc. we still fall back to yfinance.
-    """
-    # Alpaca supports ETFs and stocks, not raw indices
-    # These are the tickers we CAN get from Alpaca
-    alpaca_tickers = [
-        # Sector ETFs (for breadth)
-        "XLK", "XLF", "XLV", "XLE", "XLI", "XLY", "XLP", "XLU", "XLB", "XLRE", "XLC",
-        # Credit/bond ETFs
-        "HYG", "LQD", "TLT", "JNK",
-        # Broad market
-        "SPY", "QQQ", "IWM",
-        # Commodity proxies
-        "GLD", "USO",
-    ]
-
-    return fetch_snapshots(alpaca_tickers)
-
-
-def enrich_screener_universe(screener: list) -> list:
-    """
-    Enrich screener results with accurate prior_close from Alpaca.
-    Drop-in replacement for preflight._enrich_prior_close().
-    """
-    tickers = [t["ticker"] for t in screener]
-
-    # Batch into groups of 50 to avoid request size limits
-    batch_size = 50
-    all_closes = {}
-
-    for i in range(0, len(tickers), batch_size):
-        batch = tickers[i:i + batch_size]
-        batch_results = fetch_prior_close(batch)
-        all_closes.update(batch_results)
-
-    for entry in screener:
-        ticker = entry["ticker"]
-        if ticker in all_closes and "prior_close" in all_closes[ticker]:
-            entry["prior_close"] = all_closes[ticker]["prior_close"]
-            entry["price_source"] = "alpaca"
-
-    return screener
-
-
-# Quick smoke test
-if __name__ == "__main__":
-    print("Testing Alpaca Market Data connection...\n")
-
-    # Test 1: Latest quotes
-    print("1. Latest quotes for SPY, AAPL, NVDA:")
-    quotes = fetch_latest_quotes(["SPY", "AAPL", "NVDA"])
-    for t, q in quotes.items():
-        if "error" not in q:
-            print(f"   {t}: bid={q['bid']:.2f} ask={q['ask']:.2f} mid={q['mid']:.2f}")
-        else:
-            print(f"   {t}: ERROR - {q['error']}")
-
-    # Test 2: Prior close
-    print("\n2. Prior close for SPY, AAPL:")
-    closes = fetch_prior_close(["SPY", "AAPL"])
-    for t, c in closes.items():
-        if "error" not in c:
-            print(f"   {t}: {c['prior_close']} (date: {c['prior_date']})")
-        else:
-            print(f"   {t}: ERROR - {c['error']}")
-
-    # Test 3: Historical bars
-    print("\n3. Last 5 daily bars for NVDA:")
-    hist = fetch_historical_bars(["NVDA"], days=7)
-    for bar in hist.get("NVDA", {}).get("bars", [])[-5:]:
-        print(f"   {bar['date']}: O={bar['open']} H={bar['high']} L={bar['low']} C={bar['close']} V={bar['volume']:,}")
-
-    # Test 4: Snapshot
-    print("\n4. Snapshot for SPY:")
-    snaps = fetch_snapshots(["SPY"])
-    spy = snaps.get("SPY", {})
-    if "latest_trade" in spy:
-        print(f"   Latest trade: ${spy['latest_trade']['price']:.2f}")
-    if "daily_bar" in spy:
-        db = spy["daily_bar"]
-        print(f"   Today's bar: O={db['open']} H={db['high']} L={db['low']} C={db['close']} V={db['volume']:,}")
-
-    print("\n✅ Alpaca Market Data module working!")
-
-
-==================================================================
-FILE: massive_data.py (     467 lines)
-==================================================================
-"""
-Massive Market Data Module — Polygon-compatible API for stocks, options, and technical indicators.
-
-Free tier includes:
-- Historical OHLCV bars (2 years, end-of-day)
-- Previous day bar
-- Built-in technical indicators (SMA, EMA, RSI, MACD)
-- Minute aggregates
-- 5 API calls/minute rate limit
-
-Paid tiers add: real-time snapshots, options chains, greeks, WebSockets.
-
-API base: https://api.massive.com
-Auth: apiKey query parameter
-"""
-import os
-import time
-import json
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional
-
-from dotenv import load_dotenv
-from pathlib import Path
-
-load_dotenv(Path(__file__).parent / ".env")
-
-BASE_URL = "https://api.massive.com"
-API_KEY = os.environ.get("MASSIVE_API_KEY", "")
-
-# Rate limiter: free tier = 5 calls/min
-_call_times: list = []
-RATE_LIMIT = 5
-RATE_WINDOW = 60  # seconds
-
-
-def _rate_limit():
-    """Simple rate limiter for free tier (5 calls/min)."""
-    global _call_times
-    now = time.time()
-    _call_times = [t for t in _call_times if now - t < RATE_WINDOW]
-    if len(_call_times) >= RATE_LIMIT:
-        wait = RATE_WINDOW - (now - _call_times[0]) + 0.5
-        if wait > 0:
-            print(f"[Massive] Rate limit reached — waiting {wait:.1f}s")
-            time.sleep(wait)
-    _call_times.append(time.time())
-
-
-def _get(endpoint: str, params: dict = None) -> dict:
-    """Make an authenticated GET request to Massive API."""
-    import requests
-
-    if not API_KEY:
-        return {"error": "MASSIVE_API_KEY not set in .env"}
-
-    _rate_limit()
-
-    url = f"{BASE_URL}{endpoint}"
-    if params is None:
-        params = {}
-    params["apiKey"] = API_KEY
-
-    try:
-        resp = requests.get(url, params=params, timeout=15)
-        data = resp.json()
-        if data.get("status") == "NOT_AUTHORIZED":
-            return {"error": f"Not authorized: {data.get('message', 'upgrade plan')}"}
-        return data
-    except Exception as e:
-        return {"error": str(e)}
-
-
-# ─── Stock Aggregates ───────────────────────────────────────────────
-
-def fetch_previous_day(ticker: str) -> dict:
-    """Fetch previous trading day's OHLCV bar for a single ticker."""
-    data = _get(f"/v2/aggs/ticker/{ticker}/prev")
-    if "error" in data:
-        return data
-
-    results = data.get("results", [])
-    if not results:
-        return {"error": f"No previous day data for {ticker}"}
-
-    bar = results[0]
-    return {
-        "ticker": ticker,
-        "open": bar.get("o"),
-        "high": bar.get("h"),
-        "low": bar.get("l"),
-        "close": bar.get("c"),
-        "volume": bar.get("v"),
-        "vwap": bar.get("vw"),
-        "transactions": bar.get("n"),
-        "timestamp": bar.get("t"),
-        "date": datetime.fromtimestamp(bar["t"] / 1000).strftime("%Y-%m-%d") if bar.get("t") else None,
-    }
-
-
-def fetch_prior_close_batch(tickers: list) -> dict:
-    """
-    Fetch previous day's close for multiple tickers.
-    Note: free tier is 5 calls/min, so this is rate-limited.
-    For large batches, prefer Alpaca. Use Massive for enrichment.
-    """
-    results = {}
-    for ticker in tickers:
-        prev = fetch_previous_day(ticker)
-        if "error" not in prev:
-            results[ticker] = {
-                "prior_close": round(prev["close"], 2),
-                "prior_date": prev["date"],
-                "prior_open": round(prev["open"], 2),
-                "prior_high": round(prev["high"], 2),
-                "prior_low": round(prev["low"], 2),
-                "prior_volume": prev["volume"],
-                "prior_vwap": round(prev["vwap"], 2) if prev["vwap"] else None,
-                "source": "massive",
-            }
-        else:
-            results[ticker] = {"error": prev["error"]}
-    return results
-
-
-def fetch_historical_bars(
-    ticker: str,
-    days: int = 30,
-    timespan: str = "day",
-    multiplier: int = 1,
-) -> dict:
-    """
-    Fetch historical OHLCV bars for a ticker.
-
-    Args:
-        ticker: Stock symbol
-        days: Number of calendar days of history
-        timespan: "day", "hour", or "minute"
-        multiplier: Bar size multiplier (e.g., 5 with minute = 5-min bars)
-    """
-    end = datetime.now().strftime("%Y-%m-%d")
-    start = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
-
-    data = _get(
-        f"/v2/aggs/ticker/{ticker}/range/{multiplier}/{timespan}/{start}/{end}",
-        params={"sort": "asc", "limit": 5000},
-    )
-
-    if "error" in data:
-        return data
-
-    results = data.get("results", [])
-    bars = []
-    for bar in results:
-        bars.append({
-            "date": datetime.fromtimestamp(bar["t"] / 1000).strftime("%Y-%m-%d") if timespan == "day" else datetime.fromtimestamp(bar["t"] / 1000).isoformat(),
-            "open": round(bar["o"], 2),
-            "high": round(bar["h"], 2),
-            "low": round(bar["l"], 2),
-            "close": round(bar["c"], 2),
-            "volume": bar.get("v", 0),
-            "vwap": round(bar["vw"], 2) if bar.get("vw") else None,
-            "transactions": bar.get("n"),
-        })
-
-    return {
-        "ticker": ticker,
-        "bars": bars,
-        "count": len(bars),
-        "source": "massive",
-    }
-
-
-# ─── Technical Indicators (FREE — this is the killer feature) ────────
-
-def fetch_sma(ticker: str, window: int = 20, timespan: str = "day", limit: int = 30) -> dict:
-    """
-    Fetch Simple Moving Average values.
-    Built-in — no local calculation needed.
-    """
-    data = _get(
-        f"/v1/indicators/sma/{ticker}",
-        params={"timespan": timespan, "window": window, "series_type": "close", "limit": limit, "order": "desc"},
-    )
-    if "error" in data:
-        return data
-
-    values = data.get("results", {}).get("values", [])
-    return {
-        "ticker": ticker,
-        "indicator": f"SMA_{window}",
-        "values": [
-            {
-                "date": datetime.fromtimestamp(v["timestamp"] / 1000).strftime("%Y-%m-%d"),
-                "value": round(v["value"], 4),
-            }
-            for v in values
-        ],
-        "current": round(values[0]["value"], 4) if values else None,
-        "source": "massive",
-    }
-
-
-def fetch_ema(ticker: str, window: int = 20, timespan: str = "day", limit: int = 30) -> dict:
-    """Fetch Exponential Moving Average values."""
-    data = _get(
-        f"/v1/indicators/ema/{ticker}",
-        params={"timespan": timespan, "window": window, "series_type": "close", "limit": limit, "order": "desc"},
-    )
-    if "error" in data:
-        return data
-
-    values = data.get("results", {}).get("values", [])
-    return {
-        "ticker": ticker,
-        "indicator": f"EMA_{window}",
-        "values": [
-            {
-                "date": datetime.fromtimestamp(v["timestamp"] / 1000).strftime("%Y-%m-%d"),
-                "value": round(v["value"], 4),
-            }
-            for v in values
-        ],
-        "current": round(values[0]["value"], 4) if values else None,
-        "source": "massive",
-    }
-
-
-def fetch_rsi(ticker: str, window: int = 14, timespan: str = "day", limit: int = 30) -> dict:
-    """
-    Fetch Relative Strength Index.
-    RSI > 70 = overbought, RSI < 30 = oversold.
-    """
-    data = _get(
-        f"/v1/indicators/rsi/{ticker}",
-        params={"timespan": timespan, "window": window, "series_type": "close", "limit": limit, "order": "desc"},
-    )
-    if "error" in data:
-        return data
-
-    values = data.get("results", {}).get("values", [])
-    current_rsi = round(values[0]["value"], 2) if values else None
-
-    # Classify RSI
-    signal = "neutral"
-    if current_rsi:
-        if current_rsi >= 70:
-            signal = "overbought"
-        elif current_rsi >= 60:
-            signal = "bullish"
-        elif current_rsi <= 30:
-            signal = "oversold"
-        elif current_rsi <= 40:
-            signal = "bearish"
-
-    return {
-        "ticker": ticker,
-        "indicator": f"RSI_{window}",
-        "current": current_rsi,
-        "signal": signal,
-        "values": [
-            {
-                "date": datetime.fromtimestamp(v["timestamp"] / 1000).strftime("%Y-%m-%d"),
-                "value": round(v["value"], 2),
-            }
-            for v in values
-        ],
-        "source": "massive",
-    }
-
-
-def fetch_macd(
-    ticker: str,
-    short_window: int = 12,
-    long_window: int = 26,
-    signal_window: int = 9,
-    timespan: str = "day",
-    limit: int = 30,
-) -> dict:
-    """
-    Fetch MACD (Moving Average Convergence Divergence).
-    Returns MACD line, signal line, and histogram.
-    """
-    data = _get(
-        f"/v1/indicators/macd/{ticker}",
-        params={
-            "timespan": timespan,
-            "short_window": short_window,
-            "long_window": long_window,
-            "signal_window": signal_window,
-            "series_type": "close",
-            "limit": limit,
-            "order": "desc",
-        },
-    )
-    if "error" in data:
-        return data
-
-    values = data.get("results", {}).get("values", [])
-    if not values:
-        return {"ticker": ticker, "indicator": "MACD", "error": "No data"}
-
-    current = values[0]
-    macd_val = round(current.get("value", 0), 4)
-    signal_val = round(current.get("signal", 0), 4)
-    histogram = round(current.get("histogram", 0), 4)
-
-    # Classify signal
-    signal = "neutral"
-    if histogram > 0 and macd_val > signal_val:
-        signal = "bullish"
-    elif histogram < 0 and macd_val < signal_val:
-        signal = "bearish"
-
-    # Check for crossover (compare current vs previous)
-    crossover = None
-    if len(values) >= 2:
-        prev = values[1]
-        prev_hist = prev.get("histogram", 0)
-        if prev_hist <= 0 < histogram:
-            crossover = "bullish_crossover"
-        elif prev_hist >= 0 > histogram:
-            crossover = "bearish_crossover"
-
-    return {
-        "ticker": ticker,
-        "indicator": "MACD",
-        "macd": macd_val,
-        "signal_line": signal_val,
-        "histogram": histogram,
-        "signal": signal,
-        "crossover": crossover,
-        "values": [
-            {
-                "date": datetime.fromtimestamp(v["timestamp"] / 1000).strftime("%Y-%m-%d"),
-                "macd": round(v.get("value", 0), 4),
-                "signal": round(v.get("signal", 0), 4),
-                "histogram": round(v.get("histogram", 0), 4),
-            }
-            for v in values[:10]  # Last 10 days
-        ],
-        "source": "massive",
-    }
-
-
-def fetch_full_technicals(ticker: str) -> dict:
-    """
-    Fetch a complete technical analysis package for a single ticker.
-    Returns previous day bar + RSI(14) + MACD.
-    
-    Optimized for free tier rate limits (5 calls/min):
-    - 3 API calls per ticker (prev_day, RSI, MACD)
-    - SMA is computed locally from historical bars when possible
-    """
-    result = {"ticker": ticker, "source": "massive", "timestamp": datetime.now().isoformat()}
-
-    # 1. Previous day bar (1 call)
-    prev = fetch_previous_day(ticker)
-    if "error" not in prev:
-        result["price"] = round(prev["close"], 2)
-        result["prev_open"] = round(prev["open"], 2)
-        result["prev_high"] = round(prev["high"], 2)
-        result["prev_low"] = round(prev["low"], 2)
-        result["prev_volume"] = prev["volume"]
-        result["prev_vwap"] = round(prev["vwap"], 2) if prev.get("vwap") else None
-
-    # 2. RSI (1 call)
-    rsi = fetch_rsi(ticker, window=14, limit=5)
-    result["rsi_14"] = rsi.get("current")
-    result["rsi_signal"] = rsi.get("signal")
-
-    # 3. MACD (1 call)
-    macd = fetch_macd(ticker, limit=5)
-    result["macd"] = macd.get("macd")
-    result["macd_signal"] = macd.get("signal_line")
-    result["macd_histogram"] = macd.get("histogram")
-    result["macd_trend"] = macd.get("signal")
-    result["macd_crossover"] = macd.get("crossover")
-
-    return result
-
-
-def fetch_technicals_with_sma(ticker: str) -> dict:
-    """
-    Full technicals including SMA(20) and SMA(50).
-    Uses 5 API calls — consumes entire free tier minute quota for one ticker.
-    Use sparingly (e.g., only for SPY or the top pick).
-    """
-    result = fetch_full_technicals(ticker)  # 3 calls
-
-    # 4. SMA(20) (1 call)
-    sma_20 = fetch_sma(ticker, window=20, limit=3)
-    result["sma_20"] = sma_20.get("current")
-
-    # 5. SMA(50) (1 call)
-    sma_50 = fetch_sma(ticker, window=50, limit=3)
-    result["sma_50"] = sma_50.get("current")
-
-    # Price vs MAs
-    price = result.get("price")
-    if price:
-        if result.get("sma_20"):
-            result["price_vs_sma20"] = "above" if price > result["sma_20"] else "below"
-        if result.get("sma_50"):
-            result["price_vs_sma50"] = "above" if price > result["sma_50"] else "below"
-
-    return result
-
-
-def format_technicals_for_prompt(technicals: dict) -> str:
-    """Format technical analysis data for agent prompts."""
-    t = technicals
-    lines = [
-        f"TECHNICAL ANALYSIS: {t['ticker']}",
-        f"  Price: ${t.get('price', '?')}",
-        f"  SMA(20): {t.get('sma_20', 'N/A')} ({t.get('price_vs_sma20', '?')})",
-        f"  SMA(50): {t.get('sma_50', 'N/A')} ({t.get('price_vs_sma50', '?')})",
-        f"  RSI(14): {t.get('rsi_14', 'N/A')} ({t.get('rsi_signal', '?')})",
-        f"  MACD: {t.get('macd', 'N/A')} | Signal: {t.get('macd_signal', 'N/A')} | Hist: {t.get('macd_histogram', 'N/A')}",
-        f"  MACD Trend: {t.get('macd_trend', '?')} | Crossover: {t.get('macd_crossover', 'none')}",
-    ]
-    return "\n".join(lines)
-
-
-# ─── Smoke Test ──────────────────────────────────────────────────────
-
-if __name__ == "__main__":
-    print("Testing Massive Market Data API...\n")
-
-    # Test 1: Previous day bar
-    print("1. Previous day bar for AAPL:")
-    prev = fetch_previous_day("AAPL")
-    if "error" not in prev:
-        print(f"   {prev['date']}: O={prev['open']} H={prev['high']} L={prev['low']} C={prev['close']} V={prev['volume']:,.0f}")
-    else:
-        print(f"   ERROR: {prev['error']}")
-
-    # Test 2: Historical bars
-    print("\n2. Last 5 daily bars for NVDA:")
-    hist = fetch_historical_bars("NVDA", days=7)
-    if "error" not in hist:
-        for bar in hist["bars"][-5:]:
-            print(f"   {bar['date']}: O={bar['open']} H={bar['high']} L={bar['low']} C={bar['close']} VWAP={bar['vwap']}")
-    else:
-        print(f"   ERROR: {hist['error']}")
-
-    # Test 3: Technical indicators
-    print("\n3. RSI(14) for NVDA:")
-    rsi = fetch_rsi("NVDA")
-    if "error" not in rsi:
-        print(f"   Current RSI: {rsi['current']} ({rsi['signal']})")
-    else:
-        print(f"   ERROR: {rsi}")
-
-    print("\n4. MACD for NVDA:")
-    macd = fetch_macd("NVDA")
-    if "error" not in macd:
-        print(f"   MACD: {macd['macd']} | Signal: {macd['signal_line']} | Hist: {macd['histogram']}")
-        print(f"   Trend: {macd['signal']} | Crossover: {macd['crossover']}")
-    else:
-        print(f"   ERROR: {macd}")
-
-    # Test 4: Full technicals package
-    print("\n5. Full technicals for SPY:")
-    tech = fetch_full_technicals("SPY")
-    print(format_technicals_for_prompt(tech))
-
-    print("\n✅ Massive Market Data module working!")
-
-
-==================================================================
-FILE: broker.py (     249 lines)
-==================================================================
-"""
-Broker Module — Alpaca Paper Trading Integration
-Executes tear sheet orders, manages positions, and tracks fills.
-
-All orders go through Alpaca's paper trading API.
-Real account size from Alpaca overrides config.py ACCOUNT_SIZE.
-
-Usage:
-  from broker import AlpacaBroker
-  broker = AlpacaBroker()
-  broker.execute_tear_sheet(trade_orders)
-  broker.get_positions()
-  broker.close_position("AAPL")
-"""
-import json
-import os
-from datetime import datetime
-from pathlib import Path
-
-from dotenv import load_dotenv
-
-load_dotenv(Path(__file__).parent / ".env")
-
-from alpaca.trading.client import TradingClient
-from alpaca.trading.requests import (
-    MarketOrderRequest,
-    LimitOrderRequest,
-    GetOrdersRequest,
-    StopLossRequest,
-)
-from alpaca.trading.enums import OrderSide, TimeInForce, OrderStatus, QueryOrderStatus
-
-
-class AlpacaBroker:
-    def __init__(self):
-        self.client = TradingClient(
-            api_key=os.environ.get("ALPACA_API_KEY", ""),
-            secret_key=os.environ.get("ALPACA_SECRET_KEY", ""),
-            paper=True,
-        )
-        self._verify_connection()
-
-    def _verify_connection(self):
-        account = self.client.get_account()
-        if account.status != "ACTIVE":
-            raise RuntimeError(f"Alpaca account not active: {account.status}")
-        print(f"[Broker] Connected to Alpaca paper account")
-        print(f"[Broker] Cash: ${float(account.cash):,.2f} | Equity: ${float(account.equity):,.2f}")
-
-    def get_account_summary(self) -> dict:
-        """Get current account state."""
-        account = self.client.get_account()
-        return {
-            "cash": float(account.cash),
-            "equity": float(account.equity),
-            "portfolio_value": float(account.portfolio_value),
-            "buying_power": float(account.buying_power),
-            "status": account.status,
-        }
-
-    def get_positions(self) -> list:
-        """Get all open positions."""
-        positions = self.client.get_all_positions()
-        result = []
-        for p in positions:
-            result.append({
-                "ticker": p.symbol,
-                "shares": int(p.qty),
-                "avg_entry_price": float(p.avg_entry_price),
-                "current_price": float(p.current_price),
-                "market_value": float(p.market_value),
-                "unrealized_pl": float(p.unrealized_pl),
-                "unrealized_plpc": float(p.unrealized_plpc),
-            })
-        return result
-
-    def get_existing_exposure(self) -> float:
-        """Get total dollar value of existing positions (for dry powder calc)."""
-        positions = self.get_positions()
-        return sum(p["market_value"] for p in positions)
-
-    def get_position_tickers(self) -> list:
-        """Get list of tickers with open positions (for correlation veto)."""
-        positions = self.get_positions()
-        return [p["ticker"] for p in positions]
-
-    def execute_tear_sheet(self, trade_orders: list) -> list:
-        """
-        Execute BUY orders from Agent 4B's tear sheet.
-        Uses market orders at 9:30 AM (market open).
-        Returns list of fill results.
-        """
-        fills = []
-        for order in trade_orders:
-            if order.get("action") != "BUY":
-                fills.append({
-                    "ticker": order.get("ticker", "?"),
-                    "status": "skipped",
-                    "reason": order.get("reason", order.get("action", "not a BUY")),
-                })
-                continue
-
-            ticker = order["ticker"]
-            shares = order["shares"]
-
-            try:
-                # Use OTC (One-Triggers-Cancel) with attached stop-loss if stop price available
-                stop_price = order.get("stop_loss")
-                if stop_price and stop_price > 0:
-                    req = MarketOrderRequest(
-                        symbol=ticker,
-                        qty=shares,
-                        side=OrderSide.BUY,
-                        time_in_force=TimeInForce.DAY,
-                        order_class="oto",
-                        stop_loss=StopLossRequest(stop_price=round(stop_price, 2)),
-                    )
-                else:
-                    req = MarketOrderRequest(
-                        symbol=ticker,
-                        qty=shares,
-                        side=OrderSide.BUY,
-                        time_in_force=TimeInForce.DAY,
-                    )
-                result = self.client.submit_order(req)
-                fills.append({
-                    "ticker": ticker,
-                    "status": "submitted",
-                    "order_id": str(result.id),
-                    "shares": shares,
-                    "order_type": "market",
-                    "submitted_at": result.submitted_at.isoformat() if result.submitted_at else "",
-                })
-                print(f"  [Broker] BUY {shares} {ticker} — order submitted ({result.id})")
-
-            except Exception as e:
-                fills.append({
-                    "ticker": ticker,
-                    "status": "error",
-                    "error": str(e),
-                })
-                print(f"  [Broker] ERROR on {ticker}: {e}")
-
-        # Save fills
-        os.makedirs("output", exist_ok=True)
-        with open("output/broker_fills.json", "w") as f:
-            json.dump({
-                "timestamp": datetime.now().isoformat(),
-                "fills": fills,
-            }, f, indent=2)
-
-        return fills
-
-    def close_position(self, ticker: str, qty: int = None) -> dict:
-        """
-        Close a position (full or partial).
-        Used by Agent 5 for CLOSE and TRIM decisions.
-        """
-        try:
-            if qty:
-                # Partial close (TRIM)
-                req = MarketOrderRequest(
-                    symbol=ticker,
-                    qty=qty,
-                    side=OrderSide.SELL,
-                    time_in_force=TimeInForce.DAY,
-                )
-                result = self.client.submit_order(req)
-                print(f"  [Broker] TRIM {qty} shares of {ticker} — submitted ({result.id})")
-            else:
-                # Full close
-                result = self.client.close_position(ticker)
-                print(f"  [Broker] CLOSE {ticker} — submitted")
-
-            return {
-                "ticker": ticker,
-                "status": "submitted",
-                "action": "trim" if qty else "close",
-                "qty": qty,
-            }
-        except Exception as e:
-            print(f"  [Broker] ERROR closing {ticker}: {e}")
-            return {"ticker": ticker, "status": "error", "error": str(e)}
-
-    def close_all_positions(self) -> dict:
-        """
-        CRISIS_LIQUIDATION — close everything at market.
-        Used by Agent 5 when CRISIS pre-check triggers.
-        """
-        try:
-            result = self.client.close_all_positions(cancel_orders=True)
-            print(f"  [Broker] CRISIS_LIQUIDATION — closing all positions")
-            return {"status": "submitted", "action": "close_all"}
-        except Exception as e:
-            print(f"  [Broker] ERROR on close_all: {e}")
-            return {"status": "error", "error": str(e)}
-
-    def execute_agent5_decisions(self, decisions: list, crisis: bool = False) -> list:
-        """
-        Execute Agent 5's HOLD/TRIM/CLOSE decisions.
-        """
-        if crisis:
-            self.close_all_positions()
-            return [{"action": "CRISIS_LIQUIDATION", "status": "submitted"}]
-
-        results = []
-        for d in decisions:
-            ticker = d.get("ticker")
-            action = d.get("action", "HOLD")
-
-            if action == "HOLD":
-                results.append({"ticker": ticker, "action": "HOLD", "status": "no_action"})
-
-            elif action == "CLOSE":
-                result = self.close_position(ticker)
-                results.append(result)
-
-            elif action == "TRIM":
-                trim_pct = d.get("trim_pct", 50) / 100
-                positions = self.get_positions()
-                pos = next((p for p in positions if p["ticker"] == ticker), None)
-                if pos:
-                    trim_qty = max(1, int(pos["shares"] * trim_pct))
-                    result = self.close_position(ticker, qty=trim_qty)
-                    results.append(result)
-                else:
-                    results.append({"ticker": ticker, "action": "TRIM", "status": "no_position"})
-
-        return results
-
-    def get_orders_today(self) -> list:
-        """Get all orders from today."""
-        try:
-            req = GetOrdersRequest(
-                status=QueryOrderStatus.ALL,
-                limit=50,
-            )
-            orders = self.client.get_orders(req)
-            return [{
-                "ticker": o.symbol,
-                "side": str(o.side),
-                "qty": str(o.qty),
-                "filled_qty": str(o.filled_qty),
-                "status": str(o.status),
-                "filled_avg_price": str(o.filled_avg_price) if o.filled_avg_price else None,
-                "submitted_at": o.submitted_at.isoformat() if o.submitted_at else "",
-            } for o in orders]
-        except Exception as e:
-            return [{"error": str(e)}]
-
-
-==================================================================
-FILE: agent1_macro_director.py (     247 lines)
-==================================================================
-"""
-Agent 1: Macro Director — v2 (Jamie's Golden Path tweaks)
-Model: Claude (Anthropic)
-Role: Classify the current market regime and issue a directive.
-
-Changes from v1:
-- Removed S&P 500, DXY, Gold from inputs
-- Added MOVE, DIX, Sector Breadth
-- Enforced kill-switch: missing DIX/MOVE/Credit → REGIME: Defer
-- Locked posture table from Page 8
-- Added VOL_REGIME output (Compressed/Normal/Elevated/Stressed)
-- Removed "max_positions" and "allocation_caps" — that's Agent 4's job
-"""
-import json
-import os
-from datetime import datetime
-
-from dotenv import load_dotenv
-
-load_dotenv()
-
-SYSTEM_PROMPT = """You are Agent 1: The Macro Director for a $100,000 speculative spot-only trading account.
-
-YOUR SOLE JOB: Read the macro data provided and classify the current market regime. You do NOT pick stocks. You do NOT make trade recommendations. You do NOT set position limits or allocation caps — that is Agent 4's job.
-
-REGIME CLASSIFICATIONS (pick exactly one):
-1. RISK-ON — Bull trend intact, volatility low/falling, spreads tight, dark pool buying strong
-2. CAUTIOUS RISK-ON — Generally positive but with yellow flags (elevated VIX, mixed signals)
-3. RISK-OFF — Defensive posture. Rising vol, widening spreads, flight to safety underway
-4. CRISIS — Extreme stress. VIX >35, MOVE >150, credit markets seizing
-5. DEFER — MANDATORY if DIX, MOVE, or Credit data is missing/unavailable. Do NOT hallucinate a regime without these inputs.
-
-KILL-SWITCH RULE (NON-NEGOTIABLE):
-If MOVE index data OR Credit spread data is listed as "DATA UNAVAILABLE" or missing, you MUST output REGIME: DEFER. Do not guess. Do not proceed without these critical inputs.
-If DIX data is unavailable, you MAY proceed but MUST note it in missing_data and reduce your confidence by 2 points. Do NOT attempt to guess DIX values.
-
-VOL REGIME (MANDATORY OUTPUT — Agent 4 needs this exact string):
-Based on VIX level and MOVE index:
-- COMPRESSED: VIX < 14 AND MOVE < 90
-- NORMAL: VIX 14-20 AND MOVE 90-120
-- ELEVATED: VIX 20-30 OR MOVE 120-150
-- STRESSED: VIX > 30 OR MOVE > 150
-
-POSTURE TABLE (USE EXACTLY — from Page 8 of spec):
-- RISK-ON → POSTURE: Aggressive, CONVICTION_FLOOR: 5
-- CAUTIOUS RISK-ON → POSTURE: Offensive, CONVICTION_FLOOR: 6
-- RISK-OFF → POSTURE: Defensive, CONVICTION_FLOOR: 7
-- CRISIS → POSTURE: Bunker, CONVICTION_FLOOR: 9
-- DEFER → POSTURE: Hold, CONVICTION_FLOOR: 10
-
-DECISION INPUTS (what you should analyze):
-- VIX: Fear gauge for equity volatility
-- MOVE: Bond market volatility — rising MOVE with falling VIX = divergence warning
-- DIX: Dark pool buying index — high DIX (>45) = institutional accumulation, low DIX (<40) = distribution
-- Yield curve (10Y-2Y spread): Inverted = recession risk
-- HY spread proxy (HYG/LQD ratio): Falling = credit stress
-- Sector breadth: % of sectors above 20DMA — broad participation vs narrow leadership
-
-ASSEMBLY PRIVATE DATA (if provided):
-You may also receive Assembly sentiment and macro data. Use these for additional signal confirmation:
-- Assembly Sentiment Composite (0-100): <25 = Extreme Fear, 25-45 = Fear, 45-55 = Neutral, 55-75 = Greed, >75 = Extreme Greed
-- Sub-components: VIX sentiment, momentum, price strength, breadth, put/call, junk bond demand, safe haven demand
-- Cross-asset rotation: equities vs bonds vs gold vs oil vs USD with 50d/200d trends
-- Risk & Credit Gauges: VIX, VXN, MOVE, HYG, LQD, JNK with trend context
-- Sector rotation with RS vs SPY: identifies sector leadership
-- Full yield curve (1M through 30Y)
-These are supplementary — your core regime classification still relies on VIX, MOVE, credit, and breadth.
-
-PREFERRED THEMES: Based on regime, suggest 1-3 macro themes Agent 2 should focus on.
-
-You MUST output valid JSON matching this EXACT schema — no extra fields:
-{
-  "agent": "macro_director",
-  "timestamp": "<ISO timestamp>",
-  "regime": "<RISK-ON | CAUTIOUS RISK-ON | RISK-OFF | CRISIS | DEFER>",
-  "vol_regime": "<COMPRESSED | NORMAL | ELEVATED | STRESSED>",
-  "posture": "<Aggressive | Offensive | Defensive | Bunker | Hold>",
-  "conviction_floor": <integer 5-10>,
-  "preferred_themes": ["<theme1>", "<theme2>"],
-  "summary": "<2-3 sentence plain English summary>",
-  "key_signals": {
-    "vix_read": "<description>",
-    "move_read": "<description>",
-    "dix_read": "<description>",
-    "yield_curve_read": "<description>",
-    "credit_read": "<description>",
-    "breadth_read": "<description>"
-  },
-  "missing_data": ["<list any unavailable data feeds>"]
-}
-
-Do NOT output "max_positions_today", "allocation_cap_pct", or any position sizing fields. That is Agent 4's domain.
-
-Be decisive. Pick a regime and commit."""
-
-
-def run_agent1(macro_data: dict = None) -> dict:
-    """Run Agent 1: Read macro data, send to Claude, return structured directive."""
-
-    # Load macro data from pre-flight if not passed
-    if macro_data is None:
-        macro_path = "output/preflight_macro.json"
-        if not os.path.exists(macro_path):
-            return {"success": False, "error": "No pre-flight macro data found. Run preflight.py first."}
-        with open(macro_path, "r") as f:
-            macro_data = json.load(f)
-
-    # Format for prompt
-    from preflight import format_macro_for_prompt, format_assembly_for_prompt
-    macro_text = format_macro_for_prompt(macro_data)
-
-    # Load Assembly data if available
-    assembly_text = ""
-    assembly_path = "output/assembly_data.json"
-    if os.path.exists(assembly_path):
-        try:
-            with open(assembly_path) as f:
-                assembly_data = json.load(f)
-            assembly_text = "\n\n" + format_assembly_for_prompt(assembly_data)
-            print("[Agent 1] Assembly Private data loaded")
-        except Exception as e:
-            print(f"[Agent 1] Assembly data load failed: {e}")
-
-    print(f"[Agent 1] Macro data loaded from {macro_data.get('timestamp', 'unknown')}")
-
-    # Send to Claude
-    print("[Agent 1] Sending to Claude for regime classification...")
-
-    try:
-        import anthropic
-        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-        if not api_key:
-            raise RuntimeError("No ANTHROPIC_API_KEY — run as subagent via OCPlatform instead.")
-        client = anthropic.Anthropic(api_key=api_key)
-
-        user_message = f"""Here is today's macro data. Classify the regime and produce your directive.
-
-CRITICAL: If DIX, MOVE, or Credit data is marked as unavailable, you MUST output REGIME: DEFER.
-
-{macro_text}{assembly_text}
-
-Current date/time: {datetime.now().isoformat()}
-
-Respond with ONLY the JSON directive, no other text."""
-
-        response = client.messages.create(
-            model="claude-opus-4-7",
-            max_tokens=16000,
-            thinking={
-                "type": "enabled",
-                "budget_tokens": 10000,
-            },
-            system=SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": user_message}],
-        )
-
-        # With extended thinking, content has thinking + text blocks
-        raw_text = next(b.text for b in response.content if b.type == "text").strip()
-    except RuntimeError:
-        # No API key — return the prompt for subagent execution
-        return {
-            "success": False,
-            "needs_subagent": True,
-            "prompt": SYSTEM_PROMPT,
-            "macro_text": macro_text,
-        }
-
-    # Parse response
-    if raw_text.startswith("```"):
-        raw_text = raw_text.split("\n", 1)[1]
-        raw_text = raw_text.rsplit("```", 1)[0]
-        raw_text = raw_text.strip()
-
-    try:
-        directive = json.loads(raw_text)
-
-        # Validate required fields
-        required = ["regime", "vol_regime", "posture", "conviction_floor"]
-        for field in required:
-            if field not in directive:
-                return {"success": False, "error": f"Missing required field: {field}", "raw": raw_text}
-
-        # Strip any hallucinated position-sizing fields
-        for bad_field in ["max_positions_today", "allocation_cap_pct", "max_positions", "allocation_cap"]:
-            directive.pop(bad_field, None)
-
-        print(f"[Agent 1] Regime: {directive.get('regime')} | Vol: {directive.get('vol_regime')} | Posture: {directive.get('posture')}")
-        return {"success": True, "directive": directive, "raw_macro_data": macro_data}
-    except json.JSONDecodeError as e:
-        print(f"[Agent 1] ERROR: Failed to parse response as JSON: {e}")
-        return {"success": False, "error": str(e), "raw_response": raw_text}
-
-
-def format_directive_for_telegram(result: dict) -> str:
-    """Format Agent 1 output as a readable Telegram message."""
-    if not result["success"]:
-        return f"⚠️ Agent 1 FAILED: {result.get('error', 'Unknown error')}"
-
-    d = result["directive"]
-    regime_emoji = {
-        "RISK-ON": "🟢",
-        "CAUTIOUS RISK-ON": "🟡",
-        "RISK-OFF": "🟠",
-        "CRISIS": "🔴",
-        "DEFER": "⚪",
-    }
-    emoji = regime_emoji.get(d.get("regime", ""), "⚪")
-
-    lines = [
-        f"{'='*30}",
-        f"📊 AGENT 1: MACRO DIRECTOR (v2)",
-        f"{'='*30}",
-        f"",
-        f"{emoji} Regime: {d.get('regime')}",
-        f"📈 Vol Regime: {d.get('vol_regime')}",
-        f"📋 Posture: {d.get('posture')}",
-        f"🎯 Conviction Floor: {d.get('conviction_floor')}",
-        f"",
-        f"🎪 Themes: {', '.join(d.get('preferred_themes', []))}",
-        f"",
-        f"💬 {d.get('summary', '')}",
-        f"",
-        f"📡 Key Signals:",
-    ]
-
-    signals = d.get("key_signals", {})
-    for key, val in signals.items():
-        label = key.replace("_read", "").replace("_", " ").upper()
-        lines.append(f"  • {label}: {val}")
-
-    missing = d.get("missing_data", [])
-    if missing:
-        lines.append(f"")
-        lines.append(f"⚠️ Missing data: {', '.join(missing)}")
-
-    return "\n".join(lines)
-
-
-if __name__ == "__main__":
-    result = run_agent1()
-    print("\n" + format_directive_for_telegram(result))
-
-    if result.get("success"):
-        os.makedirs("output", exist_ok=True)
-        with open("output/agent1_directive.json", "w") as f:
-            json.dump(result["directive"], f, indent=2)
-        print(f"\n[Agent 1] Directive saved to output/agent1_directive.json")
-
-
-==================================================================
-FILE: agent2_fundamental_screener.py (     485 lines)
-==================================================================
-"""
-Agent 2: Fundamental Screener — v3.0 (Opus 4.7 Adaptive Thinking)
-Model: Claude Opus 4.7 (Anthropic) with adaptive thinking
-Role: Given Agent 1's directive + SCREENER_UNIVERSE + FUNDAMENTAL_DATA
-      (all pre-fetched by Python), select 1-3 tickers with rigorous analysis.
-
-Changes from v2.1:
-- Switched from Gemini 3.1 Pro to Claude Opus 4.7 with adaptive thinking
-- Deep research protocol: forced chain-of-thought via <research_scratchpad>
-- Strict JSON schema enforcement for data types
-- Python pre-fetches ALL fundamental data — model does NOT fetch or browse
-- Verbatim THEME_MATCH, SOURCE enum
-"""
-import json
-import os
-import time
-from datetime import datetime
-
-import yfinance as yf
-from dotenv import load_dotenv
-import anthropic
-
-load_dotenv()
-
-# Claude Opus 4.7 with adaptive thinking
-MODEL = "claude-opus-4-7"
-MAX_RETRIES = 3
-RETRY_DELAY = 5
-TEMPERATURE = 0.1
-
-SYSTEM_PROMPT = """You are Agent 2: The Fundamental Screener for a $100,000 speculative spot-only trading account.
-
-YOUR JOB: Given Agent 1's regime directive, a pre-filtered SCREENER_UNIVERSE, and pre-fetched FUNDAMENTAL_DATA (all provided by Python — you do NOT fetch any data yourself), select 1-3 candidates through rigorous quantitative analysis.
-
-CRITICAL RULES:
-1. You may ONLY select tickers from the provided SCREENER_UNIVERSE list. Do NOT suggest any ticker not on the list. Do NOT fetch, browse, or look up any data — use ONLY what Python injected into this prompt.
-2. CONVICTION_TIER must be exactly one of: PASS, STRONG, or EXCEPTIONAL (string enum). Numeric scores are FORBIDDEN and will crash the pipeline.
-   - PASS: Meets all screens, thesis is coherent, no red flags. Default state for any candidate that survives Step 3.
-   - STRONG: PASS + at least two of: (a) clear near-term catalyst, (b) valuation in bottom tercile, (c) momentum confirmed by price > MA50 > MA200.
-   - EXCEPTIONAL: STRONG + thesis is asymmetric AND theme is the single strongest in Agent 1's preferred themes.
-   - Do NOT output STRONG or EXCEPTIONAL for more than one candidate per run unless explicitly justified in screening_notes.
-3. You must COPY the PREFERRED_THEME string from Agent 1 EXACTLY character-for-character into your THEME_MATCH field. Do not summarize, paraphrase, or reword it even slightly.
-4. SOURCE must be exactly one of: "Newsletter" or "Screener Stage 2" (enum). For screener-sourced picks, use "Screener Stage 2".
-5. Each candidate needs a rigorous quantitative thesis grounded in the FUNDAMENTAL_DATA provided, plus a specific near-term catalyst.
-6. If the regime is DEFER, CRISIS with Bunker posture, output an empty candidates array.
-7. All surviving candidates must be at least PASS tier.
-
-<deep_research_protocol>
-CRITICAL: You must conduct your analysis inside a <research_scratchpad> block before generating your final structured output.
-Step 1: Inventory the exact numerical data and fundamentals injected by Python.
-Step 2: Verify the asset passes the >$5 price and >$100M market cap constraints.
-Step 3: Argue the downside. Why might this setup fail? (Play Devil's Advocate).
-Step 4: Brutally interrogate the fundamentals to assign a CONVICTION_TIER (PASS, STRONG, or EXCEPTIONAL).
-Step 5: Ensure the THEME_MATCH is a verbatim, character-for-character echo of Agent 1's theme.
-Only after completing this <research_scratchpad> block may you output the final JSON.
-</deep_research_protocol>
-
-OUTPUT FORMAT:
-First, output your <research_scratchpad>...</research_scratchpad> analysis.
-Then, output ONLY this JSON structure (no markdown, no code blocks):
-{
-  "agent": "fundamental_screener",
-  "timestamp": "<ISO timestamp>",
-  "regime_received": "<regime from Agent 1>",
-  "candidates": [
-    {
-      "ticker": "<SYMBOL from SCREENER_UNIVERSE>",
-      "name": "<company name>",
-      "type": "<equity | sector ETF | commodity ETF | crypto>",
-      "theme_match": "<EXACT string from Agent 1 preferred_themes>",
-      "conviction_tier": "<PASS | STRONG | EXCEPTIONAL>",
-      "thesis": "<2-3 sentences grounded in the numerical fundamentals>",
-      "catalyst": "<specific near-term catalyst>",
-      "source": "Screener Stage 2"
-    }
-  ],
-  "screening_notes": "<brief note on selection process and rejected names>"
-}"""
-
-# Strict JSON schema for structured outputs (Jamie fix #3)
-# This prevents Gemini from outputting "HIGH" instead of an integer
-OUTPUT_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "agent": {"type": "string"},
-        "timestamp": {"type": "string"},
-        "regime_received": {"type": "string"},
-        "candidates": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "ticker": {"type": "string"},
-                    "name": {"type": "string"},
-                    "type": {"type": "string", "enum": ["equity", "sector ETF", "commodity ETF", "crypto"]},
-                    "theme_match": {"type": "string"},
-                    "conviction_tier": {"type": "string", "enum": ["PASS", "STRONG", "EXCEPTIONAL"]},
-                    "thesis": {"type": "string"},
-                    "catalyst": {"type": "string"},
-                    "source": {"type": "string", "enum": ["Newsletter", "Screener Stage 2"]},
-                },
-                "required": ["ticker", "name", "type", "theme_match", "conviction_score", "thesis", "catalyst", "source"],
-            },
-        },
-        "screening_notes": {"type": "string"},
-    },
-    "required": ["agent", "timestamp", "regime_received", "candidates", "screening_notes"],
-}
-
-
-def prefetch_fundamental_data(screener_universe: list) -> dict:
-    """
-    Pre-fetch ALL fundamental data for the screener universe.
-    Uses bulk yf.download() for price history (much faster than per-ticker),
-    then per-ticker yf.Ticker().info for fundamentals.
-    """
-    fundamentals = {}
-    tickers_list = [t["ticker"] for t in screener_universe]
-    print(f"  [Agent 2] Pre-fetching fundamentals for {len(tickers_list)} tickers (bulk download)...")
-
-    # Bulk download price history — much faster than individual calls
-    try:
-        bulk_hist = yf.download(tickers_list, period="1mo", group_by="ticker", threads=True, progress=False)
-    except Exception as e:
-        print(f"  [Agent 2] Bulk download failed: {e}, falling back to per-ticker")
-        bulk_hist = None
-
-    for entry in screener_universe:
-        ticker = entry["ticker"]
-        try:
-            # Get price data from bulk download
-            if bulk_hist is not None and len(tickers_list) > 1:
-                try:
-                    hist = bulk_hist[ticker]
-                    closes = [float(c) for c in hist["Close"].dropna().values.flatten()]
-                    volumes = [int(v) for v in hist["Volume"].dropna().values.flatten()]
-                except (KeyError, TypeError):
-                    closes = []
-                    volumes = []
-            else:
-                hist = yf.Ticker(ticker).history(period="1mo")
-                closes = [float(c) for c in hist["Close"].values.flatten()] if not hist.empty else []
-                volumes = [int(v) for v in hist["Volume"].values.flatten()] if not hist.empty else []
-
-            if not closes:
-                fundamentals[ticker] = {"error": "No price history"}
-                continue
-
-            # Get fundamentals from .info (still per-ticker, but these are fast)
-            stock = yf.Ticker(ticker)
-            info = stock.info
-
-            prior_close = closes[-1]
-            price_5d = closes[-5] if len(closes) >= 5 else prior_close
-            price_20d = closes[0]
-            avg_vol = int(sum(volumes) / len(volumes)) if volumes else 0
-
-            fundamentals[ticker] = {
-                "prior_close": round(prior_close, 2),
-                "change_5d_pct": round((prior_close - price_5d) / price_5d * 100, 2),
-                "change_20d_pct": round((prior_close - price_20d) / price_20d * 100, 2),
-                "market_cap": info.get("marketCap"),
-                "pe_ratio": info.get("trailingPE"),
-                "forward_pe": info.get("forwardPE"),
-                "peg_ratio": info.get("pegRatio"),
-                "price_to_book": info.get("priceToBook"),
-                "revenue_growth": info.get("revenueGrowth"),
-                "earnings_growth": info.get("earningsGrowth"),
-                "profit_margin": info.get("profitMargins"),
-                "debt_to_equity": info.get("debtToEquity"),
-                "free_cash_flow": info.get("freeCashflow"),
-                "beta": info.get("beta"),
-                "sector": info.get("sector", "N/A"),
-                "avg_volume_20d": avg_vol,
-                "52w_high": info.get("fiftyTwoWeekHigh"),
-                "52w_low": info.get("fiftyTwoWeekLow"),
-            }
-        except Exception as e:
-            fundamentals[ticker] = {"error": str(e)}
-
-    fetched = len([v for v in fundamentals.values() if "error" not in v])
-    print(f"  [Agent 2] Fetched fundamentals for {fetched}/{len(screener_universe)} tickers")
-    return fundamentals
-
-
-def call_opus(directive: dict, screener_universe: list, fundamental_data: dict, held_tickers: list = None) -> dict:
-    """
-    Send directive + screener + fundamentals to Claude Opus 4.7.
-    Uses adaptive thinking (extended thinking with budget_tokens).
-    Falls back to needs_subagent if no ANTHROPIC_API_KEY.
-    """
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if not api_key:
-        raise RuntimeError("No ANTHROPIC_API_KEY — run as subagent via OCPlatform instead.")
-
-    client = anthropic.Anthropic(api_key=api_key)
-
-    # Build enriched screener summary with full fundamentals
-    screener_lines = []
-    for s in screener_universe:
-        ticker = s["ticker"]
-        fund = fundamental_data.get(ticker, {})
-
-        if "error" in fund:
-            continue
-
-        mkt_cap = fund.get("market_cap", 0)
-        cap_str = f"${mkt_cap/1e9:.1f}B" if mkt_cap and mkt_cap > 1e9 else f"${mkt_cap/1e6:.0f}M" if mkt_cap else "N/A"
-
-        line = (
-            f"  {ticker} | {s.get('name', '')} | {s.get('sector', 'N/A')}\n"
-            f"    Prior Close: ${fund.get('prior_close', '?')} | Mkt Cap: {cap_str}\n"
-            f"    5d Change: {fund.get('change_5d_pct', '?')}% | 20d Change: {fund.get('change_20d_pct', '?')}%\n"
-            f"    P/E: {fund.get('pe_ratio', 'N/A')} | Fwd P/E: {fund.get('forward_pe', 'N/A')} | PEG: {fund.get('peg_ratio', 'N/A')}\n"
-            f"    P/B: {fund.get('price_to_book', 'N/A')} | Beta: {fund.get('beta', 'N/A')}\n"
-            f"    Rev Growth: {fund.get('revenue_growth', 'N/A')} | Earnings Growth: {fund.get('earnings_growth', 'N/A')}\n"
-            f"    Profit Margin: {fund.get('profit_margin', 'N/A')} | D/E: {fund.get('debt_to_equity', 'N/A')}\n"
-            f"    FCF: {fund.get('free_cash_flow', 'N/A')} | 52w: ${fund.get('52w_low', '?')} — ${fund.get('52w_high', '?')}"
-        )
-        screener_lines.append(line)
-
-    screener_text = "\n".join(screener_lines)
-
-    user_message = f"""Here is Agent 1's directive and the pre-filtered SCREENER_UNIVERSE with FUNDAMENTAL_DATA.
-ALL data has been pre-fetched by Python. Do NOT look up, browse, or fetch any additional data.
-You may ONLY select from the tickers listed below.
-
-AGENT 1 DIRECTIVE:
-{json.dumps(directive, indent=2)}
-
-SCREENER_UNIVERSE WITH FUNDAMENTALS ({len(screener_lines)} tickers with data):
-{screener_text}
-
-RULES REMINDER:
-- CONVICTION_TIER must be exactly one of: PASS, STRONG, or EXCEPTIONAL
-- THEME_MATCH must be copied EXACTLY character-for-character from preferred_themes
-- SOURCE must be "Screener Stage 2"
-- Use the <research_scratchpad> to show your work before outputting JSON
-
-CURRENT PORTFOLIO:
-You currently hold: {held_tickers if held_tickers else '(empty — full freedom)'}
-Do NOT select candidates highly correlated with existing holdings. Diversify across sectors and themes.
-If portfolio is empty, you have full freedom.
-
-Current date/time: {datetime.now().isoformat()}
-
-First show your <research_scratchpad> analysis, then output the final JSON."""
-
-    last_error = None
-    for attempt in range(MAX_RETRIES):
-        try:
-            print(f"  [Agent 2] Calling {MODEL} (attempt {attempt + 1}/{MAX_RETRIES})...")
-            response = client.messages.create(
-                model=MODEL,
-                max_tokens=16000,
-                temperature=1,  # Required when using extended thinking
-                thinking={
-                    "type": "enabled",
-                    "budget_tokens": 10000,  # Adaptive thinking budget
-                },
-                system=SYSTEM_PROMPT,
-                messages=[{"role": "user", "content": user_message}],
-            )
-
-            # Extract text content (skip thinking blocks)
-            raw_text = ""
-            for block in response.content:
-                if block.type == "text":
-                    raw_text += block.text
-            raw_text = raw_text.strip()
-
-            # Extract JSON after the scratchpad
-            if "</research_scratchpad>" in raw_text:
-                after_scratchpad = raw_text.split("</research_scratchpad>", 1)[1].strip()
-            else:
-                after_scratchpad = raw_text
-
-            # Strip markdown code blocks
-            if after_scratchpad.startswith("```"):
-                after_scratchpad = after_scratchpad.split("\n", 1)[1]
-                after_scratchpad = after_scratchpad.rsplit("```", 1)[0]
-                after_scratchpad = after_scratchpad.strip()
-
-            # Find the JSON object
-            brace_start = after_scratchpad.find("{")
-            if brace_start >= 0:
-                json_str = after_scratchpad[brace_start:]
-            else:
-                raise json.JSONDecodeError("No JSON object found", after_scratchpad, 0)
-
-            result = json.loads(json_str)
-
-            # Validate: conviction_tier must be valid enum
-            for c in result.get("candidates", []):
-                tier = c.get("conviction_tier")
-                if tier not in ("PASS", "STRONG", "EXCEPTIONAL"):
-                    score = c.get("conviction_score")
-                    if isinstance(score, int):
-                        if score >= 9:
-                            c["conviction_tier"] = "EXCEPTIONAL"
-                        elif score >= 7:
-                            c["conviction_tier"] = "STRONG"
-                        else:
-                            c["conviction_tier"] = "PASS"
-                    else:
-                        raise ValueError(f"conviction_tier must be PASS/STRONG/EXCEPTIONAL, got: {tier}")
-                source = c.get("source")
-                if source not in ("Newsletter", "Screener Stage 2"):
-                    raise ValueError(f"source must be enum, got: {source}")
-
-            print(f"  [Agent 2] Success with {MODEL}")
-            return result
-
-        except json.JSONDecodeError as je:
-            last_error = je
-            print(f"  [Agent 2] {MODEL} returned invalid JSON (attempt {attempt + 1}), retrying...")
-            time.sleep(RETRY_DELAY)
-        except ValueError as ve:
-            last_error = ve
-            print(f"  [Agent 2] {MODEL} validation error: {ve}, retrying...")
-            time.sleep(RETRY_DELAY)
-        except Exception as e:
-            last_error = e
-            error_str = str(e)
-            if "529" in error_str or "overloaded" in error_str.lower():
-                print(f"  [Agent 2] {MODEL} overloaded, retrying in {RETRY_DELAY}s...")
-                time.sleep(RETRY_DELAY)
-            else:
-                raise
-
-    raise Exception(f"{MODEL} failed after {MAX_RETRIES} attempts. Last error: {last_error}")
-
-
-def run_agent2(directive: dict = None, screener_universe: list = None) -> dict:
-    """Run Agent 2: Pre-fetch fundamentals, call Opus 4.7 with full context."""
-
-    # Load directive
-    if directive is None:
-        path = "output/agent1_directive.json"
-        if not os.path.exists(path):
-            return {"success": False, "error": "No Agent 1 directive found."}
-        with open(path) as f:
-            directive = json.load(f)
-
-    # Load screener universe
-    if screener_universe is None:
-        path = "output/screener_universe.json"
-        if not os.path.exists(path):
-            return {"success": False, "error": "No screener universe found. Run preflight.py first."}
-        with open(path) as f:
-            screener_universe = json.load(f)
-
-    regime = directive.get("regime", "UNKNOWN")
-    conviction_floor = directive.get("conviction_floor", 5)
-    print(f"[Agent 2] Regime: {regime} | Conviction floor: {conviction_floor}")
-
-    # DEFER or CRISIS = no trades
-    if regime in ("DEFER", "CRISIS"):
-        return {
-            "success": True,
-            "candidates": [],
-            "screening_notes": f"Regime is {regime}. No candidates.",
-            "directive_used": directive,
-        }
-
-    # Pre-fetch ALL fundamental data BEFORE calling the model
-    print("[Agent 2] Pre-fetching fundamental data for entire screener universe...")
-    fundamental_data = prefetch_fundamental_data(screener_universe)
-
-    # Fetch current Alpaca positions to avoid portfolio blindness
-    try:
-        from broker import AlpacaBroker
-        broker = AlpacaBroker()
-        current_positions = broker.get_positions()
-        held_tickers = [p["ticker"] for p in current_positions]
-    except Exception:
-        held_tickers = []
-
-    if held_tickers:
-        print(f"[Agent 2] Current portfolio: {held_tickers}")
-    else:
-        print(f"[Agent 2] No current positions (or broker unavailable)")
-
-    # Call Opus 4.7 with full context
-    print(f"[Agent 2] Calling {MODEL} with {len(screener_universe)} tickers + fundamentals...")
-    try:
-        model_result = call_opus(directive, screener_universe, fundamental_data, held_tickers=held_tickers)
-    except RuntimeError as re:
-        # No API key — signal that OCPlatform should run this as subagent
-        return {"success": False, "needs_subagent": True, "error": str(re)}
-    except Exception as e:
-        return {"success": False, "error": f"Opus error: {e}"}
-
-    candidates = model_result.get("candidates", [])
-
-    # Filter by conviction tier
-    pre_filter = len(candidates)
-    tier_order = {"PASS": 1, "STRONG": 2, "EXCEPTIONAL": 3}
-    candidates = [c for c in candidates if c.get("conviction_tier") in tier_order]
-    if len(candidates) < pre_filter:
-        print(f"  [Agent 2] Filtered {pre_filter - len(candidates)} candidates below conviction floor {conviction_floor}")
-
-    # Validate tickers are in screener universe
-    valid_tickers = {s["ticker"] for s in screener_universe}
-    invalid = [c for c in candidates if c.get("ticker") not in valid_tickers]
-    if invalid:
-        print(f"  [Agent 2] WARNING: Removing {len(invalid)} tickers not in screener: {[c['ticker'] for c in invalid]}")
-        candidates = [c for c in candidates if c.get("ticker") in valid_tickers]
-
-    print(f"[Agent 2] {len(candidates)} candidates: {[c.get('ticker') for c in candidates]}")
-
-    # Attach the pre-fetched fundamentals to each candidate
-    for c in candidates:
-        ticker = c.get("ticker")
-        c["fundamentals"] = fundamental_data.get(ticker, {"error": "not found"})
-
-    return {
-        "success": True,
-        "agent": "fundamental_screener",
-        "timestamp": datetime.now().isoformat(),
-        "regime_received": regime,
-        "candidates": candidates,
-        "screening_notes": model_result.get("screening_notes", ""),
-        "directive_used": directive,
-    }
-
-
-def format_agent2_for_telegram(result: dict) -> str:
-    """Format Agent 2 output for Telegram."""
-    if not result.get("success"):
-        return f"⚠️ Agent 2 FAILED: {result.get('error')}"
-
-    candidates = result.get("candidates", [])
-    if not candidates:
-        return (
-            f"{'='*30}\n"
-            f"🔍 AGENT 2: FUNDAMENTAL SCREENER (v3.0 — Opus 4.7)\n"
-            f"{'='*30}\n\n"
-            f"📋 Regime: {result.get('regime_received')}\n"
-            f"💵 No candidates met criteria.\n"
-            f"📝 {result.get('screening_notes', '')}"
-        )
-
-    lines = [
-        f"{'='*30}",
-        f"🔍 AGENT 2: FUNDAMENTAL SCREENER (v3.0 — Opus 4.7 Adaptive)",
-        f"{'='*30}",
-        f"",
-        f"📋 Regime: {result.get('regime_received')}",
-        f"🎯 Candidates: {len(candidates)}",
-        f"🔬 Model: {MODEL} | Adaptive Thinking",
-        f"",
-    ]
-
-    for i, c in enumerate(candidates, 1):
-        fund = c.get("fundamentals", {})
-        lines.append(f"{'─'*25}")
-        lines.append(f"#{i}  {c.get('ticker')} — {c.get('name')}")
-        lines.append(f"    Theme: {c.get('theme_match')}")
-        lines.append(f"    Conviction: {c.get('conviction_tier', 'N/A')} | Source: {c.get('source', 'N/A')}")
-        lines.append(f"    💡 Thesis: {c.get('thesis')}")
-        lines.append(f"    ⚡ Catalyst: {c.get('catalyst')}")
-
-        if fund and "error" not in fund:
-            mkt_cap = fund.get("market_cap")
-            mkt_cap_str = f"${mkt_cap/1e9:.1f}B" if mkt_cap and mkt_cap > 1e9 else "N/A"
-            lines.append(f"    📊 Close: ${fund.get('prior_close')} | P/E: {fund.get('pe_ratio', 'N/A')} | Fwd P/E: {fund.get('forward_pe', 'N/A')}")
-            lines.append(f"    📊 Cap: {mkt_cap_str} | Beta: {fund.get('beta', 'N/A')} | PEG: {fund.get('peg_ratio', 'N/A')}")
-            lines.append(f"    📊 5d: {fund.get('change_5d_pct')}% | 20d: {fund.get('change_20d_pct')}%")
-
-        lines.append(f"")
-
-    lines.append(f"📝 {result.get('screening_notes', '')}")
-    return "\n".join(lines)
-
-
-if __name__ == "__main__":
-    result = run_agent2()
-    print("\n" + format_agent2_for_telegram(result))
-
-    if result.get("success"):
-        os.makedirs("output", exist_ok=True)
-        with open("output/agent2_candidates.json", "w") as f:
-            json.dump(result, f, indent=2, default=str)
-        print(f"\n[Agent 2] Candidates saved to output/agent2_candidates.json")
-
-
-==================================================================
-FILE: agent3_synthesizer.py (     522 lines)
-==================================================================
-"""
-Agent 3: Qualitative Synthesizer — v3.0
-Model: Claude Opus 4.7 (Anthropic) with adaptive thinking
-Role: Merges the former Agent 2.5 (deep research / red team) and Agent 3
-      (smart money verifier) into a single qualitative synthesis pass.
-
-Gathers ALL qualitative data in Python:
-  - News headlines (yfinance)
-  - Options flow / Put-Call ratio (yfinance)
-  - Short interest (yfinance)
-  - X/Twitter smart money mentions (from output/smart_money_mentions.json)
-
-Then sends the complete "mosaic" to Claude for a unified verdict per ticker.
-
-Verdicts:
-  PASS_THROUGH      — Qualitative data is neutral/silent; trade proceeds as-is.
-  CONFIRM_ENHANCED  — Multiple bullish qualitative signals reinforce the thesis.
-  VETO_DIVERGENT    — Smart money diverges from the bullish thesis.
-  VETO_CROWDED      — Too many accounts are bullish (contrarian crowding signal).
-  VETO_QUALITATIVE  — Fatal qualitative flaw (e.g., 30% SI + bearish smart money).
-"""
-import json
-import os
-from datetime import datetime
-
-import yfinance as yf
-from dotenv import load_dotenv
-
-load_dotenv()
-
-# Claude Opus 4.7 with adaptive thinking
-MODEL = "claude-opus-4-7"
-MAX_RETRIES = 3
-RETRY_DELAY = 5
-
-# Curated smart money accounts (carried from former Agent 3)
-CURATED_ACCOUNTS = [
-    "unusual_whales",
-    "DeItaone",
-    "Fxhedgers",
-    "zaborsky",
-    "jimcramer",
-    "GurufocusData",
-    "OptionsHawk",
-    "PeterSchiff",
-    "TruthGundlach",
-    "elerianm",
-    "SqueezeMetrics",
-    "sentimentrader",
-    "DarkPoolChart",
-    "WallStJesus",
-    "VolSignals",
-]
-
-SYSTEM_PROMPT = """You are Agent 3: The Qualitative Synthesizer for a $100,000 speculative spot-only trading account.
-
-YOUR JOB: Agent 2 has passed you 1-3 surviving candidates based on a rigid quantitative screen. You receive a complete QUALITATIVE MOSAIC assembled by Python — recent news headlines, options flow (put/call ratio), short interest, AND curated smart money X/Twitter mentions (7-day lookback, institutional-grade accounts). You must weigh this entire mosaic and produce a unified verdict per ticker.
-
-CRITICAL RULES:
-1. You may NOT look up or fetch external data. Rely ONLY on the QUALITATIVE_MOSAIC injected into this prompt.
-2. For each candidate, assign exactly ONE verdict:
-
-   - PASS_THROUGH: Default. Qualitative data is neutral, silent, or mildly mixed. Trade proceeds using Agent 2's conviction tier unchanged. No numeric score.
-
-   - CONFIRM_ENHANCED: 2+ sector specialists or hedge fund principals are publicly aligned with the thesis on X/Twitter, AND zero curated accounts are bearish, AND options flow / news reinforce the bullish setup. Effect: conviction_adjustment = UNCHANGED, Agent 4B applies a CONFIRM_BONUS in sizing.
-
-   - VETO_DIVERGENT: 3+ curated accounts are bearish on the ticker, OR at least 1 hedge fund principal (boazweinstein, CliffordAsness, DylanLeClair_, cngarabedian, RayDalio) is bearish, OR news headlines reveal a fatal narrative break (regulatory action, terrible earnings reaction). Effect: REJECT the trade.
-
-   - VETO_CROWDED: 8+ curated accounts are bullish on the same ticker within the last 48 hours, OR options flow shows extreme call skew (P/C ratio < 0.3) suggesting the trade is too consensus. Effect: REJECT the trade (contrarian signal).
-
-   - VETO_QUALITATIVE: The qualitative mosaic reveals a fatal combined flaw — for example, short interest > 25% of float WITH bearish smart money AND negative news sentiment. This is the "everything is wrong" veto. Effect: REJECT the trade.
-
-3. conviction_adjustment: For non-veto verdicts, output either UNCHANGED or DOWNGRADE. You may NEVER upgrade a conviction tier. DOWNGRADE moves EXCEPTIONAL → STRONG or STRONG → PASS.
-
-4. SHORT SQUEEZE RULE (CRITICAL): High short interest COMBINED with bullish smart money flow is a potential short squeeze setup — do NOT veto solely on high short interest if institutional flow confirms the bullish thesis. Only apply VETO_QUALITATIVE when high short interest is COMBINED with bearish smart money AND negative news.
-
-5. Generate a "red_flag_warnings" array for every candidate — even clean setups have risks. Identify the biggest risk factor.
-
-6. Cite specific X/Twitter accounts and/or news headlines that drove your verdict.
-
-7. Synthesize a "qualitative_thesis" per ticker: 2-3 sentences merging Agent 2's quantitative thesis with the qualitative mosaic realities.
-
-<synthesis_protocol>
-MANDATORY — execute before generating JSON:
-Step 1: Inventory the full mosaic (news, options flow, short interest, smart money tweets).
-Step 2: Cross-reference: Does smart money sentiment align with the quantitative thesis?
-Step 3: Check for crowding: Are too many accounts piling in? Is options flow too one-sided?
-Step 4: Check for divergence: Are bearish voices credible? Is the news narrative breaking?
-Step 5: Evaluate short squeeze potential: High SI + bullish flow = squeeze setup, not veto.
-Step 6: Assign verdict and conviction_adjustment.
-Step 7: Write the qualitative_thesis and red_flag_warnings.
-</synthesis_protocol>
-
-OUTPUT FORMAT — respond with ONLY this JSON:
-{
-  "agent": "qualitative_synthesizer",
-  "timestamp": "<ISO timestamp>",
-  "evaluations": [
-    {
-      "ticker": "<SYMBOL>",
-      "verdict": "<PASS_THROUGH | CONFIRM_ENHANCED | VETO_DIVERGENT | VETO_CROWDED | VETO_QUALITATIVE>",
-      "conviction_adjustment": "<UNCHANGED | DOWNGRADE>",
-      "updated_conviction_tier": "<PASS | STRONG | EXCEPTIONAL>",
-      "red_flag_warnings": ["<specific risk 1>", "<specific risk 2>"],
-      "qualitative_thesis": "<2-3 sentences merging quant thesis with qualitative mosaic>",
-      "cited_accounts": ["<accounts that drove verdict>"],
-      "short_interest_pct": "<X%>",
-      "put_call_ratio": <float>
-    }
-  ],
-  "synthesis_notes": "<overall summary of qualitative synthesis>"
-}"""
-
-
-def prefetch_qualitative_context(candidates: list) -> dict:
-    """
-    Pre-fetch ALL qualitative data for candidates in Python:
-      - News headlines (yfinance)
-      - Options flow / Put-Call ratio (yfinance)
-      - Short interest (yfinance)
-    Returns a dict keyed by ticker.
-    """
-    context = {}
-    print(f"  [Agent 3] Pre-fetching qualitative context for {len(candidates)} candidates...")
-
-    for c in candidates:
-        ticker = c["ticker"]
-        try:
-            stock = yf.Ticker(ticker)
-
-            # 1. News Headlines
-            news_items = stock.news
-            headlines = []
-            if news_items:
-                for n in news_items[:5]:
-                    pub_time = n.get("providerPublishTime", "")
-                    title = n.get("title", "")
-                    publisher = n.get("publisher", "")
-                    headlines.append(f"- {pub_time}: {title} [{publisher}]")
-            if not headlines:
-                headlines = ["- No recent news available"]
-
-            # 2. Options Flow (Put/Call OI Ratio for nearest expiration)
-            options_context = "No options data available"
-            pc_ratio = None
-            puts_oi = 0
-            calls_oi = 0
-            try:
-                expirations = stock.options
-                if expirations:
-                    nearest_exp = expirations[0]
-                    chain = stock.option_chain(nearest_exp)
-                    puts_oi = int(chain.puts["openInterest"].fillna(0).sum()) if not chain.puts.empty else 0
-                    calls_oi = int(chain.calls["openInterest"].fillna(0).sum()) if not chain.calls.empty else 0
-                    pc_ratio = round(puts_oi / calls_oi, 2) if calls_oi > 0 else 0
-                    options_context = (
-                        f"Nearest Expiration ({nearest_exp}): "
-                        f"Put OI = {puts_oi}, Call OI = {calls_oi}, P/C Ratio = {pc_ratio}"
-                    )
-            except Exception:
-                pass
-
-            # 3. Short Interest
-            info = stock.info
-            short_pct_raw = info.get("shortPercentOfFloat")
-            short_pct = f"{round(short_pct_raw * 100, 2)}%" if short_pct_raw else "N/A"
-
-            context[ticker] = {
-                "recent_headlines": headlines,
-                "options_flow": options_context,
-                "put_call_ratio": pc_ratio,
-                "puts_oi": puts_oi,
-                "calls_oi": calls_oi,
-                "short_interest_pct_of_float": short_pct,
-                "short_interest_raw": short_pct_raw,
-            }
-        except Exception as e:
-            context[ticker] = {"error": str(e)}
-
-    return context
-
-
-def _load_x_mentions(tickers: list) -> dict:
-    """
-    Load X/Twitter smart money mentions from the pre-fetched file.
-    Returns a dict keyed by ticker with mention lists.
-    """
-    mentions_path = "output/smart_money_mentions.json"
-    if os.path.exists(mentions_path):
-        with open(mentions_path) as f:
-            data = json.load(f)
-        raw = data.get("mentions", data)  # x_fetch.py nests under "mentions"
-        # Filter to our tickers
-        result = {}
-        for ticker in tickers:
-            result[ticker] = raw.get(ticker, raw.get(ticker.lower(), []))
-        return result
-
-    # X research is mandatory — raise if missing
-    raise RuntimeError(
-        "No smart money X/Twitter data found at output/smart_money_mentions.json. "
-        "X research is MANDATORY — run x_fetch.py first. "
-        "The pipeline cannot proceed without smart money sentiment data."
-    )
-
-
-def call_synthesis(candidates: list, qual_context: dict, x_mentions: dict) -> dict:
-    """
-    Send the complete qualitative mosaic to Claude Opus 4.7 for unified synthesis.
-    Uses adaptive thinking (extended thinking with budget_tokens).
-    """
-    import anthropic
-    import time
-
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if not api_key:
-        raise RuntimeError("No ANTHROPIC_API_KEY — run as subagent via OCPlatform.")
-
-    client = anthropic.Anthropic(api_key=api_key)
-
-    # Build the mosaic payload for each candidate
-    mosaic_lines = []
-    for c in candidates:
-        ticker = c["ticker"]
-        qc = qual_context.get(ticker, {})
-        mentions = x_mentions.get(ticker, [])
-
-        mention_count = len(mentions) if isinstance(mentions, list) else 0
-        mention_text = json.dumps(mentions, indent=2) if mentions else "No mentions from curated accounts"
-
-        line = (
-            f"TICKER: {ticker}\n"
-            f"  Quantitative Thesis: {c.get('thesis', 'N/A')}\n"
-            f"  Current Conviction Tier: {c.get('conviction_tier', 'PASS')}\n"
-            f"  Theme: {c.get('theme_match', 'N/A')}\n"
-            f"  --- QUALITATIVE MOSAIC ---\n"
-            f"  Short Interest: {qc.get('short_interest_pct_of_float', 'N/A')}\n"
-            f"  Options Flow: {qc.get('options_flow', 'N/A')}\n"
-            f"  Recent Headlines:\n" + "\n".join([f"    {h}" for h in qc.get("recent_headlines", [])]) + "\n"
-            f"  Smart Money X/Twitter ({mention_count} mentions from curated accounts):\n"
-            f"    {mention_text}\n"
-        )
-        mosaic_lines.append(line)
-
-    user_message = f"""Synthesize the qualitative mosaic for these candidates from Agent 2.
-
-ALL data has been pre-fetched by Python. Do NOT look up external data.
-
-CANDIDATES & QUALITATIVE MOSAIC:
-{"=" * 60}
-{"".join(mosaic_lines)}
-{"=" * 60}
-
-CURATED SMART MONEY ACCOUNTS MONITORED:
-{json.dumps(CURATED_ACCOUNTS)}
-
-Current date/time: {datetime.now().isoformat()}
-
-Perform your synthesis and respond with ONLY the JSON output."""
-
-    last_error = None
-    for attempt in range(MAX_RETRIES):
-        try:
-            print(f"  [Agent 3] Calling {MODEL} (attempt {attempt + 1}/{MAX_RETRIES})...")
-
-            response = client.messages.create(
-                model=MODEL,
-                max_tokens=16000,
-                temperature=1,  # Required when using extended thinking
-                thinking={
-                    "type": "enabled",
-                    "budget_tokens": 10000,
-                },
-                system=SYSTEM_PROMPT,
-                messages=[{"role": "user", "content": user_message}],
-            )
-
-            # With extended thinking, content has thinking + text blocks
-            raw_text = next(b.text for b in response.content if b.type == "text").strip()
-
-            # Strip markdown code fences if present
-            if raw_text.startswith("```"):
-                raw_text = raw_text.split("\n", 1)[1]
-                raw_text = raw_text.rsplit("```", 1)[0]
-                raw_text = raw_text.strip()
-
-            brace_start = raw_text.find("{")
-            if brace_start >= 0:
-                result = json.loads(raw_text[brace_start:])
-                return result
-            else:
-                raise json.JSONDecodeError("No JSON object found", raw_text, 0)
-
-        except RuntimeError:
-            raise  # Re-raise missing API key
-        except Exception as e:
-            last_error = e
-            print(f"  [Agent 3] Claude error: {e}. Retrying in {RETRY_DELAY}s...")
-            import time
-            time.sleep(RETRY_DELAY)
-
-    raise Exception(f"{MODEL} failed after {MAX_RETRIES} attempts. Last error: {last_error}")
-
-
-def run_agent3(agent2_result: dict = None, x_mentions: dict = None) -> dict:
-    """
-    Run Agent 3: Qualitative Synthesizer.
-    Merges news, options flow, short interest, and smart money X/Twitter into
-    a single qualitative pass with Claude.
-
-    Args:
-        agent2_result: Output from Agent 2 (or Agent 2 → 2.5 filtered).
-        x_mentions: Pre-fetched X/Twitter mentions dict keyed by ticker.
-                    If None, loads from output/smart_money_mentions.json.
-
-    Returns:
-        Dict with evaluations per ticker (verdicts, conviction adjustments, etc.).
-    """
-    # Load Agent 2 candidates
-    if agent2_result is None:
-        path = "output/agent2_candidates.json"
-        if not os.path.exists(path):
-            return {"success": False, "error": "No Agent 2 candidates found."}
-        with open(path) as f:
-            agent2_result = json.load(f)
-
-    candidates = agent2_result.get("candidates", [])
-    if not candidates:
-        return {
-            "success": True,
-            "evaluations": [],
-            "verifications": [],
-            "note": "No candidates to synthesize.",
-        }
-
-    tickers = [c.get("ticker") for c in candidates]
-    print(f"[Agent 3] Qualitative synthesis for {len(tickers)} tickers: {tickers}")
-
-    # 1. Pre-fetch qualitative context (news, options, short interest)
-    qual_context = prefetch_qualitative_context(candidates)
-
-    # 2. Load X/Twitter mentions
-    if x_mentions is None:
-        try:
-            x_mentions = _load_x_mentions(tickers)
-        except RuntimeError as e:
-            return {"success": False, "error": str(e)}
-    else:
-        # Filter to our tickers if a raw dict was passed
-        filtered = {}
-        for ticker in tickers:
-            filtered[ticker] = x_mentions.get(ticker, x_mentions.get(ticker.lower(), []))
-        x_mentions = filtered
-
-    for t in tickers:
-        mentions = x_mentions.get(t, [])
-        count = len(mentions) if isinstance(mentions, list) else 0
-        qc = qual_context.get(t, {})
-        si = qc.get("short_interest_pct_of_float", "N/A")
-        pcr = qc.get("put_call_ratio", "N/A")
-        print(f"  [Agent 3] {t}: {count} X mentions | SI: {si} | P/C: {pcr}")
-
-    # 3. Call Claude for synthesis
-    try:
-        synthesis_result = call_synthesis(candidates, qual_context, x_mentions)
-    except RuntimeError:
-        # No API key — return data for subagent execution
-        return {
-            "success": False,
-            "needs_subagent": True,
-            "prompt": SYSTEM_PROMPT,
-            "candidates": candidates,
-            "qual_context": qual_context,
-            "x_mentions": x_mentions,
-        }
-    except Exception as e:
-        return {"success": False, "error": f"Claude API error: {e}"}
-
-    # 4. Process evaluations — filter vetoes, update conviction tiers
-    evaluations = synthesis_result.get("evaluations", [])
-    eval_lookup = {ev["ticker"]: ev for ev in evaluations}
-
-    surviving_candidates = []
-    verifications = []  # Backward-compatible with Agent 4's expected input
-
-    for c in candidates:
-        ticker = c["ticker"]
-        ev = eval_lookup.get(ticker)
-
-        if not ev:
-            # No evaluation — pass through unchanged
-            surviving_candidates.append(c)
-            verifications.append({
-                "ticker": ticker,
-                "verdict": "PASS_THROUGH",
-                "sentiment_read": "Not evaluated",
-                "cited_accounts": [],
-            })
-            continue
-
-        verdict = ev.get("verdict", "PASS_THROUGH")
-
-        # Build backward-compatible verification record for Agent 4
-        verification = {
-            "ticker": ticker,
-            "verdict": verdict,
-            "sentiment_read": ev.get("qualitative_thesis", ""),
-            "cited_accounts": ev.get("cited_accounts", []),
-        }
-        verifications.append(verification)
-
-        # Handle vetoes
-        if verdict in ("VETO_DIVERGENT", "VETO_CROWDED", "VETO_QUALITATIVE"):
-            print(f"  [Agent 3] 🚫 {verdict}: {ticker}")
-            continue
-
-        # Apply conviction adjustment
-        adjustment = ev.get("conviction_adjustment", "UNCHANGED")
-        if adjustment == "DOWNGRADE":
-            tier = c.get("conviction_tier", "PASS")
-            downgrade_map = {"EXCEPTIONAL": "STRONG", "STRONG": "PASS", "PASS": "PASS"}
-            c["conviction_tier"] = downgrade_map.get(tier, tier)
-            print(f"  [Agent 3] ⬇️ DOWNGRADE: {ticker} {tier} → {c['conviction_tier']}")
-        elif verdict == "CONFIRM_ENHANCED":
-            c["confirm_enhanced"] = True
-            print(f"  [Agent 3] ✅ CONFIRM_ENHANCED: {ticker}")
-
-        # Merge qualitative data into candidate
-        c["thesis"] = ev.get("qualitative_thesis", c.get("thesis", ""))
-        c["red_flag_warnings"] = ev.get("red_flag_warnings", [])
-        c["qualitative_verdict"] = verdict
-
-        surviving_candidates.append(c)
-
-    # Update agent2_result with filtered candidates
-    updated_agent2_result = agent2_result.copy()
-    updated_agent2_result["candidates"] = surviving_candidates
-
-    return {
-        "success": True,
-        "evaluations": evaluations,
-        "verifications": verifications,  # Agent 4 reads this
-        "synthesis_notes": synthesis_result.get("synthesis_notes", ""),
-        "candidates_passthrough": surviving_candidates,
-        "updated_agent2_result": updated_agent2_result,
-    }
-
-
-def format_agent3_for_slack(result: dict) -> str:
-    """Format Agent 3 output using Slack-friendly mrkdwn."""
-    if not result.get("success"):
-        return f"⚠️ *Agent 3 FAILED:* {result.get('error')}"
-
-    evaluations = result.get("evaluations", [])
-    surviving = result.get("candidates_passthrough", [])
-
-    lines = [
-        f"🧪 *AGENT 3: QUALITATIVE SYNTHESIZER*",
-        f"> *Survived Synthesis:* {len(surviving)}/{len(evaluations)}",
-        f"> *Model:* Claude Opus 4.7 (Adaptive Thinking)",
-        f"",
-    ]
-
-    if not evaluations:
-        lines.append("📋 No evaluations performed.")
-        return "\n".join(lines)
-
-    for i, ev in enumerate(evaluations, 1):
-        verdict = ev.get("verdict", "PASS_THROUGH")
-        emoji_map = {
-            "PASS_THROUGH": "➡️",
-            "CONFIRM_ENHANCED": "✅",
-            "VETO_DIVERGENT": "🚫",
-            "VETO_CROWDED": "🔴",
-            "VETO_QUALITATIVE": "💀",
-        }
-        emoji = emoji_map.get(verdict, "❓")
-
-        lines.append(f"*{i}. {ev.get('ticker')}* — {emoji} *{verdict}*")
-
-        adj = ev.get("conviction_adjustment", "UNCHANGED")
-        tier = ev.get("updated_conviction_tier", "N/A")
-        lines.append(f"• *Tier:* {tier} ({adj})")
-
-        si = ev.get("short_interest_pct", "N/A")
-        pcr = ev.get("put_call_ratio", "N/A")
-        lines.append(f"• *Short Interest:* {si} | *P/C Ratio:* {pcr}")
-
-        flags = ev.get("red_flag_warnings", [])
-        if flags:
-            lines.append("• *Red Flags:*")
-            for flag in flags:
-                lines.append(f"  - {flag}")
-
-        if verdict not in ("VETO_DIVERGENT", "VETO_CROWDED", "VETO_QUALITATIVE"):
-            lines.append(f"• *Thesis:* {ev.get('qualitative_thesis', '')}")
-
-        cited = ev.get("cited_accounts", [])
-        if cited:
-            lines.append(f"• *Cited:* {', '.join(cited)}")
-
-        lines.append(f"")
-
-    if result.get("synthesis_notes"):
-        lines.append(f"📝 *Notes:* _{result.get('synthesis_notes')}_")
-
-    return "\n".join(lines)
-
-
-if __name__ == "__main__":
-    result = run_agent3()
-    print("\n" + format_agent3_for_slack(result))
-
-    if result.get("success"):
-        os.makedirs("output", exist_ok=True)
-        with open("output/agent3_verified.json", "w") as f:
-            json.dump(result, f, indent=2, default=str)
-        # Also save the updated candidates with qualitative data merged in
-        if result.get("updated_agent2_result"):
-            with open("output/agent2_candidates.json", "w") as f:
-                json.dump(result["updated_agent2_result"], f, indent=2, default=str)
-        print(f"\n[Agent 3] Results saved to output/agent3_verified.json")
-
-
-==================================================================
-FILE: agent4_risk_manager.py (     738 lines)
-==================================================================
-"""
-Agent 4: Risk Manager — v3 (ATR-based stops, no LLM dependency)
-All-Python pipeline: ATR stop calculation → position sizing → tear sheet.
-
-Changes from v2:
-- Killed Agent 4A (Claude LLM call for stop anchors)
-- ATR-based stop calculation: 14-day ATR with conviction-scaled multipliers
-- Correlation veto fix: min_periods=20, no double-dropna
-- Formula: Target = Allocation_Cap * Conviction_Mod * Vol_Mod * Posture_Mod * Contrarian_Penalty
-- Theme cap enforced: 1 position per theme, keep higher conviction if duplicates
-- Uses prior close price from 7:55 AM pre-flight (not live)
-- Generates Markdown tear sheet for manual execution at 9:30 AM
-"""
-import json
-import math
-import os
-from datetime import datetime
-
-import pandas as pd
-import yfinance as yf
-from dotenv import load_dotenv
-
-from config import (
-    ACCOUNT_SIZE,
-    BASE_RISK,
-    MAX_RISK_PER_TRADE,
-    MIN_RISK_PER_TRADE,
-    MAX_ALLOCATION_PCT,
-    TIER_RISK_MULT,
-    CONFIRM_RISK_MULT,
-    VOL_RISK_MULT,
-    POSTURE_RISK_MULT,
-    DRY_POWDER_FLOOR,
-    POSTURE_TABLE,
-    SESSION_RISK_BUDGET,
-    THEME_CAP,
-    MAX_PORTFOLIO_HEAT_PCT,
-    HEAT_WARNING_PCT,
-)
-from broker import AlpacaBroker
-
-load_dotenv()
-
-
-# ATR multipliers by conviction tier — higher conviction = wider stop (more room)
-ATR_MULTIPLIERS = {
-    "PASS": 1.2,
-    "STRONG": 1.5,
-    "EXCEPTIONAL": 2.0,
-}
-
-
-def get_moving_averages(ticker: str) -> dict:
-    """Fetch prior close + moving averages for a ticker."""
-    try:
-        stock = yf.Ticker(ticker)
-        hist = stock.history(period="6mo")
-        if hist.empty or len(hist) < 50:
-            return {"error": f"Insufficient data for {ticker}"}
-
-        closes = [float(c) for c in hist["Close"]]
-        prior_close = closes[-1]
-        ma_10 = sum(closes[-10:]) / 10
-        ma_20 = sum(closes[-20:]) / 20
-        ma_50 = sum(closes[-50:]) / 50
-
-        return {
-            "prior_close": round(prior_close, 2),
-            "ma_10": round(ma_10, 2),
-            "ma_20": round(ma_20, 2),
-            "ma_50": round(ma_50, 2),
-            "recent_low_20d": round(min(closes[-20:]), 2),
-        }
-    except Exception as e:
-        return {"error": str(e)}
-
-
-def calculate_atr_stop(ticker: str, entry_price: float, conviction_tier: str) -> dict:
-    """
-    Calculate ATR-based stop loss for a ticker.
-    Downloads 20 trading days of daily OHLC, computes 14-day ATR,
-    and sets stop at entry_price - (multiplier * ATR).
-    Multiplier scales with conviction tier (wider stop = more room for winners).
-    """
-    try:
-        stock = yf.Ticker(ticker)
-        hist = stock.history(period="1mo")  # ~20 trading days
-        if hist.empty or len(hist) < 14:
-            return {"error": f"Insufficient data for {ticker} ({len(hist) if not hist.empty else 0} bars)"}
-
-        # Calculate True Range for each bar
-        high = hist["High"]
-        low = hist["Low"]
-        prev_close = hist["Close"].shift(1)
-
-        tr1 = high - low
-        tr2 = (high - prev_close).abs()
-        tr3 = (low - prev_close).abs()
-        true_range = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-
-        # 14-day ATR (simple moving average of true range)
-        atr = true_range.tail(14).mean()
-
-        multiplier = ATR_MULTIPLIERS.get(conviction_tier, ATR_MULTIPLIERS["PASS"])
-        stop_distance = multiplier * atr
-        stop_price = entry_price - stop_distance
-        stop_distance_pct = (stop_distance / entry_price) * 100
-
-        return {
-            "stop_price": round(stop_price, 2),
-            "atr": round(atr, 4),
-            "atr_multiplier": multiplier,
-            "stop_distance_pct": round(stop_distance_pct, 2),
-            "stop_label": f"{multiplier}x ATR({round(atr, 2)})",
-        }
-    except Exception as e:
-        return {"error": str(e)}
-
-
-def correlation_veto(new_ticker: str, current_positions: list, threshold: float = 0.70) -> bool:
-    """
-    Check if new_ticker is >threshold correlated with any current position.
-    Uses 60-day daily returns. Returns True if correlated (should veto).
-    """
-    if not current_positions:
-        return False
-
-    try:
-        all_tickers = [new_ticker] + current_positions
-        data = yf.download(all_tickers, period="3mo", progress=False)
-        if data.empty:
-            return False
-
-        closes = data["Close"] if "Close" in data.columns else data
-        returns = closes.pct_change().tail(60)
-
-        if new_ticker not in returns.columns:
-            return False
-
-        for pos in current_positions:
-            if pos in returns.columns:
-                corr = returns[new_ticker].corr(returns[pos], min_periods=20)
-                if corr is not None and corr > threshold:
-                    print(f"  [Agent 4B] CORRELATION VETO: {new_ticker} vs {pos} = {corr:.2f} (>{threshold})")
-                    return True
-    except Exception as e:
-        print(f"  [Agent 4B] Correlation check failed (non-fatal): {e}")
-
-    return False
-
-
-def calculate_portfolio_heat() -> dict:
-    """
-    Calculate total open risk ("heat") across all positions.
-
-    For each position:
-      - open_risk = shares * (current_price - stop_price)
-      - If stop_price unknown, estimate as entry_price - (1.5 * ATR)
-
-    Returns:
-      {
-        "total_heat_dollars": float,
-        "heat_pct_of_equity": float,
-        "positions_detail": [...]
-      }
-    """
-    try:
-        broker = AlpacaBroker()
-        positions = broker.get_positions()
-        account = broker.get_account_summary()
-    except Exception as e:
-        print(f"[Heat] ERROR connecting to Alpaca: {e}")
-        return {
-            "total_heat_dollars": 0.0,
-            "heat_pct_of_equity": 0.0,
-            "positions_detail": [],
-            "error": str(e),
-        }
-
-    equity = account.get("equity", ACCOUNT_SIZE)
-
-    # Try to load agent4 orders for known stop prices
-    stop_lookup = {}
-    orders_path = os.path.join("output", "agent4_orders.json")
-    if os.path.exists(orders_path):
-        try:
-            with open(orders_path) as f:
-                orders_data = json.load(f)
-            for order in orders_data.get("trade_orders", []):
-                if order.get("action") == "BUY" and order.get("stop_loss"):
-                    stop_lookup[order["ticker"]] = order["stop_loss"]
-        except (json.JSONDecodeError, Exception):
-            pass
-
-    total_heat = 0.0
-    details = []
-
-    for pos in positions:
-        ticker = pos["ticker"]
-        shares = pos["shares"]
-        entry_price = pos["avg_entry_price"]
-        current_price = pos["current_price"]
-
-        stop_price = stop_lookup.get(ticker)
-        stop_source = "agent4_orders"
-
-        if stop_price is None:
-            # Estimate stop using ATR
-            atr_result = calculate_atr_stop(ticker, entry_price, "PASS")
-            if "error" not in atr_result:
-                stop_price = atr_result["stop_price"]
-                stop_source = "estimated_atr"
-            else:
-                # Fallback: 3% below entry
-                stop_price = entry_price * 0.97
-                stop_source = "fallback_3pct"
-
-        # Open risk = what we'd lose if price hits stop from current level
-        open_risk = shares * (current_price - stop_price)
-        # If stop is above current price, risk is effectively the unrealized loss already
-        if open_risk < 0:
-            open_risk = abs(shares * (current_price - entry_price))
-
-        total_heat += open_risk
-
-        details.append({
-            "ticker": ticker,
-            "shares": shares,
-            "entry_price": entry_price,
-            "current_price": current_price,
-            "stop_price": round(stop_price, 2),
-            "stop_source": stop_source,
-            "open_risk": round(open_risk, 2),
-        })
-
-    heat_pct = total_heat / equity if equity > 0 else 0.0
-
-    return {
-        "total_heat_dollars": round(total_heat, 2),
-        "heat_pct_of_equity": round(heat_pct, 4),
-        "equity": round(equity, 2),
-        "positions_detail": details,
-    }
-
-
-def _reject_trade(ticker: str, reason: str) -> dict:
-    """Build a rejection record."""
-    return {"ticker": ticker, "action": "SKIP", "shares": 0, "reason": reason}
-
-
-def size_position(
-    entry: float,
-    stop: float,
-    tier: str,
-    confirm_enhanced: bool,
-    vol_regime: str,
-    posture: str,
-    account_value: float,
-    session_risk_used: float,
-) -> dict:
-    """
-    Risk-first position sizer.
-    Starts from risk dollars, derives shares from stop distance,
-    then floors with allocation cap. Logs the binding constraint.
-    """
-    if posture == "Bunker":
-        return {"shares": 0, "reason": "BUNKER_POSTURE"}
-
-    # 1. Conviction-scaled risk budget
-    risk_mult = (
-        TIER_RISK_MULT.get(tier, TIER_RISK_MULT["PASS"])
-        * CONFIRM_RISK_MULT.get(confirm_enhanced, 1.0)
-        * VOL_RISK_MULT.get(vol_regime, 1.0)
-        * POSTURE_RISK_MULT.get(posture, 1.0)
-    )
-    risk_dollars = BASE_RISK * risk_mult
-    risk_dollars = min(risk_dollars, MAX_RISK_PER_TRADE)
-
-    if risk_dollars < MIN_RISK_PER_TRADE:
-        return {"shares": 0, "reason": f"RISK_TOO_SMALL ({risk_dollars:.0f} < {MIN_RISK_PER_TRADE})"}
-
-    # 2. Session budget check
-    remaining_session_budget = SESSION_RISK_BUDGET - session_risk_used
-    if risk_dollars > remaining_session_budget:
-        risk_dollars = remaining_session_budget
-        if risk_dollars < MIN_RISK_PER_TRADE:
-            return {"shares": 0, "reason": "SESSION_BUDGET_EXHAUSTED"}
-
-    # 3. Derive shares from risk and stop distance
-    stop_distance = entry - stop
-    if stop_distance <= 0:
-        return {"shares": 0, "reason": "INVALID_STOP"}
-
-    shares_by_risk = int(risk_dollars // stop_distance)
-
-    # 4. Allocation cap (max position value as % of account)
-    max_position_value = account_value * MAX_ALLOCATION_PCT
-    shares_by_alloc = int(max_position_value // entry)
-
-    shares = min(shares_by_risk, shares_by_alloc)
-    if shares == 0:
-        return {"shares": 0, "reason": "ZERO_SHARES_AFTER_CONSTRAINTS"}
-
-    binding = "risk" if shares == shares_by_risk else "allocation"
-    actual_risk = shares * stop_distance
-
-    return {
-        "shares": shares,
-        "position_value": round(shares * entry, 2),
-        "risk_budgeted": round(risk_dollars, 2),
-        "risk_actual": round(actual_risk, 2),
-        "risk_multiplier": round(risk_mult, 3),
-        "binding_constraint": binding,
-        "stop_distance_pct": round(stop_distance / entry * 100, 2),
-    }
-
-
-def run_agent4b(
-    stop_anchors: list,
-    directive: dict,
-    candidates: list,
-    verifications: list = None,
-    existing_exposure: float = 0.0,
-    remaining_heat_budget: float = None,
-) -> dict:
-    """
-    Agent 4B (Python): Risk-first position sizing + tear sheet generation.
-    
-    Starts from risk dollars (BASE_RISK * multiplier stack), derives shares
-    from stop distance, then floors with allocation cap and dry powder check.
-    Binding constraint is logged per trade.
-    
-    Args:
-        existing_exposure: dollar value of already-open positions carried from prior sessions.
-        remaining_heat_budget: max additional risk dollars allowed before portfolio heat cap is hit.
-                               None means no heat constraint (backward compat).
-    """
-    regime = directive.get("regime", "UNKNOWN")
-    vol_regime = directive.get("vol_regime", "Normal")
-    posture_info = POSTURE_TABLE.get(regime, POSTURE_TABLE.get("Cautious Risk-On"))
-    posture = posture_info["posture"]
-
-    print(f"[Agent 4B] Regime: {regime} | Vol: {vol_regime} | Posture: {posture}")
-    print(f"[Agent 4B] Risk stack: BASE_RISK=${BASE_RISK} | MAX=${MAX_RISK_PER_TRADE} | MIN=${MIN_RISK_PER_TRADE}")
-
-    trade_orders = []
-    theme_tracker = {}
-    accepted_tickers = []
-    session_risk_used = 0.0
-    total_allocated = 0.0
-
-    # Build lookups
-    anchor_lookup = {a["ticker"]: a for a in stop_anchors}
-    candidate_lookup = {c["ticker"]: c for c in candidates}
-
-    # Sort: EXCEPTIONAL first, then STRONG, then PASS
-    tier_priority = {"EXCEPTIONAL": 0, "STRONG": 1, "PASS": 2}
-    sorted_tickers = sorted(
-        anchor_lookup.keys(),
-        key=lambda t: tier_priority.get(anchor_lookup[t].get("conviction_tier", "PASS"), 2),
-    )
-
-    for ticker in sorted_tickers:
-        anchor = anchor_lookup[ticker]
-        candidate = candidate_lookup.get(ticker, {})
-
-        # Check if Agent 4A rejected (veto from Agent 3)
-        if anchor.get("action") == "REJECTED":
-            trade_orders.append({
-                "ticker": ticker,
-                "action": "REJECTED",
-                "reason": f"Agent 3 veto: {anchor.get('veto_reason', 'unknown')}",
-            })
-            continue
-
-        entry = anchor.get("prior_close", 0)
-        stop = anchor.get("stop_anchor_price", 0)
-        conviction_tier = anchor.get("conviction_tier", "PASS")
-        confirm_enhanced = anchor.get("confirm_bonus", False)
-        theme = candidate.get("theme_match", "Unknown")
-
-        if entry <= 0 or stop <= 0:
-            trade_orders.append(_reject_trade(ticker, "Invalid price data"))
-            continue
-
-        # Theme cap check
-        if theme in theme_tracker:
-            existing = theme_tracker[theme]
-            print(f"  [Agent 4B] {ticker}: Theme '{theme}' already taken by {existing}. Dropping.")
-            trade_orders.append(_reject_trade(ticker, f"Theme cap: '{theme}' used by {existing}"))
-            continue
-
-        # Correlation veto
-        if correlation_veto(ticker, accepted_tickers, threshold=0.70):
-            trade_orders.append(_reject_trade(ticker, "Correlation veto: >0.70 with existing position"))
-            continue
-
-        # RISK-FIRST SIZING
-        sizing = size_position(
-            entry=entry,
-            stop=stop,
-            tier=conviction_tier,
-            confirm_enhanced=confirm_enhanced,
-            vol_regime=vol_regime,
-            posture=posture,
-            account_value=ACCOUNT_SIZE,
-            session_risk_used=session_risk_used,
-        )
-
-        if sizing["shares"] == 0:
-            trade_orders.append(_reject_trade(ticker, sizing.get("reason", "sizing returned 0")))
-            continue
-
-        shares = sizing["shares"]
-        position_value = sizing["position_value"]
-        risk_actual = sizing["risk_actual"]
-
-        # Heat budget check: would this trade blow through the remaining heat cap?
-        if remaining_heat_budget is not None:
-            if risk_actual > remaining_heat_budget:
-                trade_orders.append(_reject_trade(ticker, f"HEAT_BUDGET_EXCEEDED (trade risk ${risk_actual:.0f} > remaining ${remaining_heat_budget:.0f})"))
-                continue
-
-        # Dry powder floor: new + existing exposure cannot exceed 80%
-        max_deployable = ACCOUNT_SIZE * (1 - DRY_POWDER_FLOOR) - total_allocated - existing_exposure
-        if max_deployable <= 0:
-            trade_orders.append(_reject_trade(ticker, "Dry powder floor: existing exposure at 80%"))
-            continue
-        if position_value > max_deployable:
-            shares = int(max_deployable // entry)
-            if shares <= 0:
-                trade_orders.append(_reject_trade(ticker, "Dry powder floor (existing + new > 80%)"))
-                continue
-            position_value = round(shares * entry, 2)
-            risk_actual = round(shares * (entry - stop), 2)
-            sizing["binding_constraint"] = "dry_powder"
-
-        # Build order
-        stop_distance = entry - stop
-        order = {
-            "ticker": ticker,
-            "action": "BUY",
-            "shares": shares,
-            "entry_price": entry,
-            "stop_loss": round(stop, 2),
-            "stop_anchor_label": anchor.get("stop_anchor_label", ""),
-            "position_value": position_value,
-            "pct_of_account": round(position_value / ACCOUNT_SIZE * 100, 2),
-            "risk_budgeted": sizing["risk_budgeted"],
-            "risk_actual": risk_actual,
-            "risk_multiplier": sizing["risk_multiplier"],
-            "stop_distance_pct": round(stop_distance / entry * 100, 2),
-            "binding_constraint": sizing["binding_constraint"],
-            "theme": theme,
-            "conviction_tier": conviction_tier,
-            "confirm_enhanced": confirm_enhanced,
-        }
-
-        trade_orders.append(order)
-        theme_tracker[theme] = ticker
-        accepted_tickers.append(ticker)
-        session_risk_used += risk_actual
-        total_allocated += position_value
-        if remaining_heat_budget is not None:
-            remaining_heat_budget -= risk_actual
-
-        print(f"  [Agent 4B] {ticker}: {shares} shares @ ${entry}, "
-              f"risk ${risk_actual:.2f} (budgeted ${sizing['risk_budgeted']:.2f}), "
-              f"alloc {round(position_value/ACCOUNT_SIZE*100, 1)}%, "
-              f"tier={conviction_tier}, bound={sizing['binding_constraint']}")
-
-    result = {
-        "success": True,
-        "agent": "risk_manager",
-        "timestamp": datetime.now().isoformat(),
-        "trade_orders": trade_orders,
-        "session_summary": {
-            "total_trades": len([o for o in trade_orders if o.get("action") == "BUY"]),
-            "session_risk_used": round(session_risk_used, 2),
-            "session_risk_budget": SESSION_RISK_BUDGET,
-            "total_allocated": round(total_allocated, 2),
-            "existing_exposure": round(existing_exposure, 2),
-            "pct_deployed": round((total_allocated + existing_exposure) / ACCOUNT_SIZE * 100, 2),
-            "dry_powder_pct": round((1 - (total_allocated + existing_exposure) / ACCOUNT_SIZE) * 100, 2),
-        },
-        "modifiers_used": {
-            "regime": regime,
-            "vol_regime": vol_regime,
-            "posture": posture,
-        },
-    }
-
-    return result
-
-
-def generate_tear_sheet(result: dict, directive: dict) -> str:
-    """
-    Generate Markdown tear sheet for manual execution at 9:30 AM.
-    This is what gets sent to Telegram/Slack.
-    """
-    orders = result.get("trade_orders", [])
-    summary = result.get("session_summary", {})
-    mods = result.get("modifiers_used", {})
-
-    lines = [
-        f"{'='*35}",
-        f"📋 OPEN CLAW TEAR SHEET",
-        f"📅 {datetime.now().strftime('%Y-%m-%d')} | Execute at 9:30 AM ET",
-        f"{'='*35}",
-        f"",
-        f"🌍 Regime: {mods.get('regime')} | Vol: {mods.get('vol_regime')}",
-        f"📋 Posture Mod: {mods.get('posture_mod')} | Vol Mod: {mods.get('vol_mod')}",
-        f"",
-    ]
-
-    buy_orders = [o for o in orders if o.get("action") == "BUY"]
-    skip_orders = [o for o in orders if o.get("action") == "SKIP"]
-
-    if not buy_orders:
-        lines.append("🚫 NO TRADES TODAY")
-        if skip_orders:
-            lines.append("")
-            for s in skip_orders:
-                lines.append(f"  ⏭️ {s.get('ticker')}: {s.get('reason')}")
-        return "\n".join(lines)
-
-    for i, order in enumerate(buy_orders, 1):
-        math_info = order.get("sizing_math", {})
-        lines.append(f"{'─'*30}")
-        lines.append(f"TRADE #{i}: {order.get('ticker')}")
-        lines.append(f"")
-        lines.append(f"  Action:     BUY")
-        lines.append(f"  Shares:     {order.get('shares')}")
-        lines.append(f"  Entry:      ${order.get('entry_price'):.2f} (prior close)")
-        lines.append(f"  Stop:       ${order.get('stop_loss'):.2f} ({order.get('stop_anchor_label')})")
-        lines.append(f"  Stop Dist:  {order.get('stop_distance_pct'):.1f}%")
-        lines.append(f"  Theme:      {order.get('theme')}")
-        lines.append(f"  Conviction: {order.get('final_conviction')}/10")
-        lines.append(f"")
-        lines.append(f"  💰 Cost:    ${order.get('total_cost'):,.2f} ({order.get('pct_of_account'):.1f}% of account)")
-        lines.append(f"  🎯 Risk:    ${order.get('dollar_risk'):.2f}")
-        lines.append(f"  📏 Sizing:  {order.get('sizing_note')}")
-        lines.append(f"")
-        lines.append(f"  Math: {math_info.get('base_alloc',0)*100:.0f}% base × "
-                      f"{math_info.get('conviction_mod',0)} conv × "
-                      f"{math_info.get('vol_mod',0)} vol × "
-                      f"{math_info.get('posture_mod',0)} posture × "
-                      f"{math_info.get('contrarian_penalty',0)} contrarian "
-                      f"= {math_info.get('target_alloc_pct',0):.2f}% → "
-                      f"${math_info.get('target_alloc_dollars',0):.2f}")
-        lines.append(f"")
-
-    if skip_orders:
-        lines.append(f"{'─'*30}")
-        lines.append(f"SKIPPED:")
-        for s in skip_orders:
-            lines.append(f"  ⏭️ {s.get('ticker')}: {s.get('reason')}")
-        lines.append(f"")
-
-    lines.append(f"{'─'*30}")
-    lines.append(f"SESSION TOTALS:")
-    lines.append(f"  Trades:      {summary.get('total_trades')}")
-    lines.append(f"  Total Risk:  ${summary.get('total_risk', 0):.2f} / ${summary.get('session_risk_budget', 0):.2f}")
-    lines.append(f"  Deployed:    {summary.get('pct_deployed', 0):.1f}%")
-    lines.append(f"  Dry Powder:  {summary.get('dry_powder_pct', 0):.1f}%")
-    lines.append(f"{'='*35}")
-
-    return "\n".join(lines)
-
-
-def run_agent4(agent2_result: dict = None, agent3_result: dict = None, directive: dict = None) -> dict:
-    """
-    Run the full Agent 4 pipeline: ATR stops (Python) → 4B sizing (Python).
-    No LLM calls — pure Python.
-    """
-    # Load data
-    if directive is None:
-        with open("output/agent1_directive.json") as f:
-            directive = json.load(f)
-
-    if agent2_result is None:
-        with open("output/agent2_candidates.json") as f:
-            agent2_result = json.load(f)
-
-    if agent3_result is None:
-        path = "output/agent3_verified.json"
-        if os.path.exists(path):
-            with open(path) as f:
-                agent3_result = json.load(f)
-
-    candidates = agent2_result.get("candidates", [])
-    verifications = agent3_result.get("verifications", []) if agent3_result else []
-
-    if not candidates:
-        return {
-            "success": True,
-            "trade_orders": [],
-            "session_summary": {"total_trades": 0, "total_risk": 0},
-        }
-
-    # Build verification lookup
-    verification_lookup = {v.get("ticker"): v for v in verifications}
-
-    # Portfolio Heat Check — reject new trades if total open risk exceeds 6%
-    heat = calculate_portfolio_heat()
-    heat_pct = heat["heat_pct_of_equity"]
-    remaining_heat_budget = None
-
-    if heat_pct > MAX_PORTFOLIO_HEAT_PCT:
-        print(f"[Agent 4] 🔥 PORTFOLIO HEAT EXCEEDED: {heat_pct*100:.1f}% > {MAX_PORTFOLIO_HEAT_PCT*100:.0f}% cap")
-        print(f"[Agent 4] Total heat: ${heat['total_heat_dollars']:,.2f} on ${heat.get('equity', 0):,.2f} equity")
-        return {
-            "success": True,
-            "trade_orders": [{"action": "SKIP", "ticker": c.get("ticker", "?"), "shares": 0,
-                              "reason": f"PORTFOLIO_HEAT_EXCEEDED ({heat_pct*100:.1f}% > {MAX_PORTFOLIO_HEAT_PCT*100:.0f}%)"}
-                             for c in candidates],
-            "session_summary": {
-                "total_trades": 0,
-                "session_risk_used": 0,
-                "session_risk_budget": SESSION_RISK_BUDGET,
-                "portfolio_heat": heat,
-            },
-        }
-    elif heat_pct > HEAT_WARNING_PCT:
-        print(f"[Agent 4] ⚠️ Portfolio heat warning: {heat_pct*100:.1f}% (threshold: {HEAT_WARNING_PCT*100:.0f}%)")
-        print(f"[Agent 4] Total heat: ${heat['total_heat_dollars']:,.2f} — trades allowed but budget constrained")
-
-    # Compute remaining heat budget in dollars
-    max_heat_dollars = heat.get("equity", ACCOUNT_SIZE) * MAX_PORTFOLIO_HEAT_PCT
-    remaining_heat_budget = max_heat_dollars - heat["total_heat_dollars"]
-    print(f"[Agent 4] Heat budget: ${remaining_heat_budget:,.2f} remaining of ${max_heat_dollars:,.2f}")
-
-    # Build stop anchors from ATR calculations (replaces Agent 4A Claude call)
-    stop_anchors = []
-    print("[Agent 4] Calculating ATR-based stops (no LLM)...")
-
-    for candidate in candidates:
-        ticker = candidate.get("ticker")
-        conviction_tier = candidate.get("conviction_tier", "PASS")
-
-        # Apply Agent 3 verdict
-        v = verification_lookup.get(ticker, {})
-        verdict = v.get("verdict", "PASS_THROUGH")
-        confirm_bonus = False
-
-        if verdict in ("VETO_DIVERGENT", "VETO_CROWDED"):
-            stop_anchors.append({
-                "ticker": ticker,
-                "action": "REJECTED",
-                "veto_reason": verdict,
-                "prior_close": 0,
-                "stop_anchor_price": None,
-                "stop_anchor_label": None,
-                "stop_distance_pct": 0,
-                "conviction_tier": conviction_tier,
-                "confirm_bonus": False,
-            })
-            print(f"  [Agent 4] {ticker}: REJECTED by Agent 3 ({verdict})")
-            continue
-
-        if verdict == "CONFIRM_ENHANCED":
-            confirm_bonus = True
-
-        # Get prior close from moving averages
-        ma_data = get_moving_averages(ticker)
-        if "error" in ma_data:
-            print(f"  [Agent 4] {ticker}: Skipping — {ma_data['error']}")
-            stop_anchors.append({
-                "ticker": ticker,
-                "action": "REJECTED",
-                "veto_reason": f"Data error: {ma_data['error']}",
-                "prior_close": 0,
-                "stop_anchor_price": None,
-                "stop_anchor_label": None,
-                "stop_distance_pct": 0,
-                "conviction_tier": conviction_tier,
-                "confirm_bonus": False,
-            })
-            continue
-
-        entry_price = ma_data["prior_close"]
-
-        # Calculate ATR-based stop
-        atr_result = calculate_atr_stop(ticker, entry_price, conviction_tier)
-        if "error" in atr_result:
-            print(f"  [Agent 4] {ticker}: ATR failed — {atr_result['error']}")
-            stop_anchors.append({
-                "ticker": ticker,
-                "action": "REJECTED",
-                "veto_reason": f"ATR error: {atr_result['error']}",
-                "prior_close": entry_price,
-                "stop_anchor_price": None,
-                "stop_anchor_label": None,
-                "stop_distance_pct": 0,
-                "conviction_tier": conviction_tier,
-                "confirm_bonus": confirm_bonus,
-            })
-            continue
-
-        stop_anchors.append({
-            "ticker": ticker,
-            "action": "PROCEED",
-            "veto_reason": None,
-            "prior_close": entry_price,
-            "stop_anchor_price": atr_result["stop_price"],
-            "stop_anchor_label": atr_result["stop_label"],
-            "stop_distance_pct": atr_result["stop_distance_pct"],
-            "conviction_tier": conviction_tier,
-            "confirm_bonus": confirm_bonus,
-        })
-        print(f"  [Agent 4] {ticker}: Stop ${atr_result['stop_price']} "
-              f"({atr_result['stop_label']}, -{atr_result['stop_distance_pct']:.1f}%)")
-
-    # Step 4B: Python multiplicative sizing
-    print("[Agent 4B] Running position sizing math...")
-    result_4b = run_agent4b(stop_anchors, directive, candidates, verifications,
-                            remaining_heat_budget=remaining_heat_budget)
-
-    # Generate tear sheet
-    tear_sheet = generate_tear_sheet(result_4b, directive)
-    result_4b["tear_sheet"] = tear_sheet
-
-    return result_4b
-
-
-if __name__ == "__main__":
-    result = run_agent4()
-
-    if result.get("tear_sheet"):
-        print("\n" + result["tear_sheet"])
-    else:
-        print(json.dumps(result, indent=2))
-
-    if result.get("success"):
-        os.makedirs("output", exist_ok=True)
-        with open("output/agent4_orders.json", "w") as f:
-            json.dump(result, f, indent=2, default=str)
-        print(f"\n[Agent 4] Orders saved to output/agent4_orders.json")
-
-
-==================================================================
-FILE: agent5_position_monitor.py (     644 lines)
-==================================================================
-"""
-Agent 5: Position Monitor — v3 (Python trailing stops + Claude thesis monitor)
-Model: Claude Opus 4.7 (Anthropic) with adaptive thinking
-Role: Runs at 3:30 PM ET to review open positions and decide hold/trim/close.
-
-Architecture:
-  1. Python calculates ALL mechanical trailing stops (no LLM needed for math)
-  2. Claude reviews ONLY thesis drift: has the fundamental narrative broken?
-  3. Merge: mechanical close if stop hit, thesis close if narrative broken, else HOLD
-
-Timing:
-  3:25 PM — Python snapshots current market prices + fetches breaking news
-  3:30 PM — Python trailing stops → Claude thesis review → merge decisions
-"""
-import json
-import os
-from datetime import datetime
-
-import yfinance as yf
-from dotenv import load_dotenv
-
-load_dotenv()
-
-# Claude Opus 4.7 with adaptive thinking — thesis drift ONLY
-MODEL = "claude-opus-4-7"
-MAX_RETRIES = 3
-RETRY_DELAY = 5
-
-SYSTEM_PROMPT = """You are Agent 5: The Thesis Monitor for a $100,000 speculative spot-only trading account.
-
-YOUR JOB: You are the qualitative half of the position monitoring system. Python has ALREADY calculated all trailing stops and mechanical close signals. Your ONLY job is to evaluate whether the FUNDAMENTAL THESIS for each position is still intact.
-
-YOU DO NOT:
-- Calculate trailing stops (Python already did this)
-- Compute P&L percentages (Python already did this)
-- Decide mechanical closes (Python already did this)
-- Do any math whatsoever
-
-YOU DO:
-- Read the ORIGINAL THESIS from Agent 2 for each position
-- Read today's BREAKING NEWS for each ticker (pre-fetched by Python from yfinance)
-- Read Agent 1's MORNING REGIME classification
-- Decide: Has the fundamental narrative broken? Did the macro regime shift?
-- If the thesis is broken, you OVERRIDE the mechanical trailing stop with a CLOSE
-
-PRE-CHECK (MANDATORY):
-If Agent 1's morning regime was CRISIS, OR if VIX at 3:25 PM > 35:
--> ALL theses are considered BROKEN. Output thesis_status = "BROKEN" for every position
-   with override_action = "CLOSE" and reasoning = "CRISIS_LIQUIDATION".
--> Skip per-position thesis evaluation entirely.
-
-THESIS STATUS OPTIONS (per position):
-- INTACT: The original thesis still holds. News is neutral or supportive. Macro regime has not shifted against the trade. No override.
-- DEGRADED: The thesis is weakened but not fatally broken. News introduces uncertainty. No override, but flag for closer monitoring tomorrow.
-- BROKEN: The thesis is fatally compromised. A material event has invalidated the trade rationale (e.g., regulatory action, earnings miss, key partnership dissolved, sector-wide selloff changing the narrative). Override: CLOSE the position regardless of what the trailing stop says.
-
-RULES:
-- Be conservative with BROKEN — only use it for genuine narrative breaks, not normal volatility.
-- A stock being down is NOT thesis broken. The thesis is about WHY you entered, not the price.
-- If no breaking news exists for a ticker, default to INTACT.
-- Cite the specific news headline or regime shift that drove your decision.
-
-OUTPUT FORMAT — respond with ONLY this JSON:
-{
-  "agent": "thesis_monitor",
-  "timestamp": "<ISO timestamp>",
-  "crisis_liquidation": <true | false>,
-  "thesis_reviews": [
-    {
-      "ticker": "<SYMBOL>",
-      "thesis_status": "<INTACT | DEGRADED | BROKEN>",
-      "override_action": <null | "CLOSE">,
-      "original_thesis_summary": "<1 sentence recap of the entry thesis>",
-      "thesis_assessment": "<2-3 sentences explaining why the thesis is intact/degraded/broken>",
-      "key_news_cited": ["<headline or event that influenced assessment>"]
-    }
-  ],
-  "macro_assessment": "<1-2 sentences on whether the macro regime has shifted since morning>"
-}"""
-
-
-def snapshot_prices(tickers: list) -> dict:
-    """
-    Snapshot current market prices at 3:25 PM ET.
-    Captures the intraday tape for trailing stop evaluation.
-    """
-    snapshot = {}
-    for ticker in tickers:
-        try:
-            stock = yf.Ticker(ticker)
-            hist = stock.history(period="1d", interval="1m")
-            if not hist.empty:
-                current = float(hist["Close"].iloc[-1])
-                day_open = float(hist["Open"].iloc[0])
-                day_high = float(hist["High"].max())
-                day_low = float(hist["Low"].min())
-                volume = int(hist["Volume"].sum())
-
-                snapshot[ticker] = {
-                    "current_price": round(current, 2),
-                    "day_open": round(day_open, 2),
-                    "day_high": round(day_high, 2),
-                    "day_low": round(day_low, 2),
-                    "day_volume": volume,
-                    "intraday_change_pct": round((current - day_open) / day_open * 100, 2),
-                }
-            else:
-                # Fallback to daily
-                hist_d = stock.history(period="1d")
-                if not hist_d.empty:
-                    snapshot[ticker] = {
-                        "current_price": round(float(hist_d["Close"].iloc[-1]), 2),
-                        "note": "Using daily close (intraday unavailable)",
-                    }
-                else:
-                    snapshot[ticker] = {"error": "No data available"}
-        except Exception as e:
-            snapshot[ticker] = {"error": str(e)}
-
-    snapshot["snapshot_time"] = datetime.now().isoformat()
-    return snapshot
-
-
-def fetch_breaking_news(tickers: list) -> dict:
-    """
-    Fetch latest news headlines from yfinance for each ticker.
-    Used to feed Claude's thesis drift assessment.
-    """
-    news_data = {}
-    print(f"  [Agent 5] Fetching breaking news for {len(tickers)} tickers...")
-
-    for ticker in tickers:
-        try:
-            stock = yf.Ticker(ticker)
-            news_items = stock.news
-            headlines = []
-            if news_items:
-                for n in news_items[:5]:
-                    pub_time = n.get("providerPublishTime", "")
-                    title = n.get("title", "")
-                    publisher = n.get("publisher", "")
-                    headlines.append(f"{pub_time}: {title} [{publisher}]")
-            news_data[ticker] = headlines if headlines else ["No recent news"]
-        except Exception as e:
-            news_data[ticker] = [f"Error fetching news: {e}"]
-
-    return news_data
-
-
-def load_open_positions() -> list:
-    """
-    Load open positions from Alpaca (source of truth).
-    Falls back to agent4_orders.json if Alpaca is unreachable.
-    Enriches with stop_loss from agent4_orders.json when available.
-    """
-    # Primary: Read from Alpaca
-    try:
-        from broker import AlpacaBroker
-        broker = AlpacaBroker()
-        alpaca_positions = broker.get_positions()
-        if alpaca_positions:
-            # Enrich with stop/theme data from agent4 orders if available
-            stop_map = {}
-            orders_path = "output/agent4_orders.json"
-            if os.path.exists(orders_path):
-                with open(orders_path) as f:
-                    orders_data = json.load(f)
-                for order in orders_data.get("trade_orders", []):
-                    if order.get("action") == "BUY":
-                        stop_map[order["ticker"]] = {
-                            "stop_loss": order.get("stop_loss", 0),
-                            "stop_anchor_label": order.get("stop_anchor_label", ""),
-                            "theme": order.get("theme", ""),
-                            "thesis": order.get("thesis", ""),
-                            "dollar_risk": order.get("dollar_risk", 0),
-                        }
-
-            positions = []
-            for p in alpaca_positions:
-                enrichment = stop_map.get(p["ticker"], {})
-                positions.append({
-                    "ticker": p["ticker"],
-                    "shares": p["shares"],
-                    "entry_price": p["avg_entry_price"],
-                    "stop_loss": enrichment.get("stop_loss", 0),
-                    "stop_anchor_label": enrichment.get("stop_anchor_label", ""),
-                    "theme": enrichment.get("theme", ""),
-                    "thesis": enrichment.get("thesis", ""),
-                    "dollar_risk": enrichment.get("dollar_risk", 0),
-                    "unrealized_pl": p.get("unrealized_pl", 0),
-                    "unrealized_plpc": p.get("unrealized_plpc", 0),
-                    "market_value": p.get("market_value", 0),
-                })
-            print(f"[Agent 5] Loaded {len(positions)} positions from Alpaca")
-            return positions
-    except Exception as e:
-        print(f"[Agent 5] Alpaca read failed, falling back to orders file: {e}")
-
-    # Fallback: Read from agent4_orders.json
-    orders_path = "output/agent4_orders.json"
-    if not os.path.exists(orders_path):
-        return []
-
-    with open(orders_path) as f:
-        orders_data = json.load(f)
-
-    positions = []
-    for order in orders_data.get("trade_orders", []):
-        if order.get("action") == "BUY":
-            positions.append({
-                "ticker": order["ticker"],
-                "shares": order["shares"],
-                "entry_price": order["entry_price"],
-                "stop_loss": order["stop_loss"],
-                "stop_anchor_label": order.get("stop_anchor_label", ""),
-                "theme": order.get("theme", ""),
-                "thesis": order.get("thesis", ""),
-                "dollar_risk": order.get("dollar_risk", 0),
-            })
-
-    print(f"[Agent 5] Loaded {len(positions)} positions from orders file (fallback)")
-    return positions
-
-
-def calculate_trailing_stops(positions: list, snapshot: dict) -> list:
-    """
-    Pure Python trailing stop calculator. No LLM needed.
-
-    Rules:
-      - Up > 2% from entry  → tighten stop to breakeven (entry price)
-      - Up > 5% from entry  → trail stop to entry + 50% of gains
-      - Up > 10% from entry → trail stop to entry + 75% of gains
-      - Current price <= stop → MECHANICAL_CLOSE
-      - Never widen a stop (new_stop >= original_stop always)
-
-    Returns each position enriched with:
-      new_stop, mechanical_action (HOLD/CLOSE), pnl_pct, pnl_dollars
-    """
-    results = []
-
-    for pos in positions:
-        ticker = pos["ticker"]
-        entry_price = pos["entry_price"]
-        original_stop = pos.get("stop_loss", 0)
-        shares = pos.get("shares", 0)
-
-        price_data = snapshot.get(ticker, {})
-        current_price = price_data.get("current_price")
-
-        if current_price is None or entry_price <= 0:
-            results.append({
-                **pos,
-                "current_price": current_price,
-                "pnl_pct": 0,
-                "pnl_dollars": 0,
-                "new_stop": original_stop,
-                "mechanical_action": "HOLD",
-                "trailing_stop_note": "No price data available",
-                "intraday": price_data,
-            })
-            continue
-
-        # Calculate P&L
-        pnl_pct = round((current_price - entry_price) / entry_price * 100, 2)
-        pnl_dollars = round((current_price - entry_price) * shares, 2)
-
-        # Calculate trailing stop
-        gain_dollars = current_price - entry_price
-        new_stop = original_stop  # Start with original
-
-        trailing_note = "Below 2% gain — original stop unchanged"
-
-        if pnl_pct > 10:
-            # Trail to entry + 75% of gains
-            candidate_stop = round(entry_price + 0.75 * gain_dollars, 2)
-            new_stop = max(new_stop, candidate_stop)
-            trailing_note = f"Up {pnl_pct:.1f}% — stop trailed to entry + 75% of gains"
-        elif pnl_pct > 5:
-            # Trail to entry + 50% of gains
-            candidate_stop = round(entry_price + 0.50 * gain_dollars, 2)
-            new_stop = max(new_stop, candidate_stop)
-            trailing_note = f"Up {pnl_pct:.1f}% — stop trailed to entry + 50% of gains"
-        elif pnl_pct > 2:
-            # Tighten to breakeven
-            candidate_stop = entry_price
-            new_stop = max(new_stop, candidate_stop)
-            trailing_note = f"Up {pnl_pct:.1f}% — stop tightened to breakeven"
-
-        # Never widen a stop
-        new_stop = max(new_stop, original_stop)
-        new_stop = round(new_stop, 2)
-
-        # Check if stop is hit
-        mechanical_action = "HOLD"
-        if current_price <= new_stop:
-            mechanical_action = "CLOSE"
-            trailing_note = f"STOP HIT — current ${current_price} <= stop ${new_stop}"
-
-        results.append({
-            **pos,
-            "current_price": current_price,
-            "pnl_pct": pnl_pct,
-            "pnl_dollars": pnl_dollars,
-            "original_stop": original_stop,
-            "new_stop": new_stop,
-            "mechanical_action": mechanical_action,
-            "trailing_stop_note": trailing_note,
-            "intraday": price_data,
-        })
-
-    return results
-
-
-def call_thesis_monitor(positions_with_stops: list, breaking_news: dict, vix_data: dict) -> dict:
-    """
-    Call Claude to evaluate thesis drift ONLY.
-    Claude does NOT calculate stops or P&L — those are pre-computed by Python.
-    """
-    import anthropic
-    import time
-
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if not api_key:
-        raise RuntimeError("No ANTHROPIC_API_KEY — run as subagent via OCPlatform.")
-
-    client = anthropic.Anthropic(api_key=api_key)
-
-    # Load Agent 1 morning regime if available
-    morning_regime = "UNKNOWN"
-    try:
-        directive_path = "output/agent1_directive.json"
-        if os.path.exists(directive_path):
-            with open(directive_path) as f:
-                directive = json.load(f)
-            morning_regime = directive.get("regime", "UNKNOWN")
-    except Exception:
-        pass
-
-    # Build position summaries for Claude (thesis focus, not math)
-    position_summaries = []
-    for pos in positions_with_stops:
-        ticker = pos["ticker"]
-        news = breaking_news.get(ticker, ["No news"])
-        position_summaries.append({
-            "ticker": ticker,
-            "original_thesis": pos.get("thesis", "N/A"),
-            "theme": pos.get("theme", "N/A"),
-            "pnl_pct": pos.get("pnl_pct", 0),
-            "mechanical_action": pos.get("mechanical_action", "HOLD"),
-            "breaking_news": news,
-        })
-
-    user_message = f"""Review the fundamental thesis for each open position.
-
-AGENT 1 MORNING REGIME: {morning_regime}
-
-VIX STATUS:
-{json.dumps(vix_data, indent=2)}
-
-POSITIONS (with Python-computed trailing stops already applied):
-{json.dumps(position_summaries, indent=2)}
-
-Your job is ONLY to assess thesis drift. Python has already computed all trailing stops.
-- Do NOT calculate P&L or stops.
-- Focus on: Has the narrative broken? Has the macro regime shifted?
-- If morning regime is CRISIS or VIX > 35, all theses are BROKEN.
-
-Current date/time: {datetime.now().isoformat()}
-
-Respond with ONLY the JSON output."""
-
-    last_error = None
-    for attempt in range(MAX_RETRIES):
-        try:
-            print(f"  [Agent 5] Calling {MODEL} for thesis review (attempt {attempt + 1}/{MAX_RETRIES})...")
-
-            response = client.messages.create(
-                model=MODEL,
-                max_tokens=16000,
-                temperature=1,  # Required when using extended thinking
-                thinking={
-                    "type": "enabled",
-                    "budget_tokens": 10000,
-                },
-                system=SYSTEM_PROMPT,
-                messages=[{"role": "user", "content": user_message}],
-            )
-
-            # With extended thinking, content has thinking + text blocks
-            raw_text = next(b.text for b in response.content if b.type == "text").strip()
-            if raw_text.startswith("```"):
-                raw_text = raw_text.split("\n", 1)[1]
-                raw_text = raw_text.rsplit("```", 1)[0]
-                raw_text = raw_text.strip()
-
-            brace_start = raw_text.find("{")
-            if brace_start >= 0:
-                return json.loads(raw_text[brace_start:])
-            else:
-                raise json.JSONDecodeError("No JSON object found", raw_text, 0)
-
-        except RuntimeError:
-            raise  # Re-raise missing API key
-        except Exception as e:
-            last_error = e
-            print(f"  [Agent 5] Claude error: {e}. Retrying in {RETRY_DELAY}s...")
-            time.sleep(RETRY_DELAY)
-
-    raise Exception(f"{MODEL} failed after {MAX_RETRIES} attempts. Last error: {last_error}")
-
-
-def run_agent5_preflight() -> dict:
-    """3:25 PM pre-flight: Snapshot current prices for open positions."""
-    print("[Agent 5 Pre-Flight] Snapshotting prices at 3:25 PM...")
-
-    positions = load_open_positions()
-    if not positions:
-        print("[Agent 5 Pre-Flight] No open positions to monitor.")
-        return {"positions": [], "snapshot": {}}
-
-    tickers = [p["ticker"] for p in positions]
-    snapshot = snapshot_prices(tickers)
-
-    # Also grab VIX for end-of-day risk assessment
-    vix_snapshot = snapshot_prices(["^VIX"])
-    snapshot["VIX"] = vix_snapshot.get("^VIX", {"error": "unavailable"})
-
-    # Save snapshot
-    os.makedirs("output", exist_ok=True)
-    with open("output/agent5_snapshot.json", "w") as f:
-        json.dump({"positions": positions, "snapshot": snapshot}, f, indent=2)
-
-    print(f"[Agent 5 Pre-Flight] Snapshot saved for {len(positions)} positions")
-    return {"positions": positions, "snapshot": snapshot}
-
-
-def run_agent5(positions: list = None, snapshot: dict = None) -> dict:
-    """
-    Run Agent 5 at 3:30 PM: Python trailing stops FIRST, then Claude thesis review, then merge.
-
-    Merge logic:
-      - If Python says CLOSE (stop hit) → CLOSE
-      - If Claude says CLOSE (thesis broken) → CLOSE
-      - Otherwise → HOLD
-    """
-    # Load pre-flight data if not passed
-    if positions is None or snapshot is None:
-        preflight_path = "output/agent5_snapshot.json"
-        if not os.path.exists(preflight_path):
-            preflight = run_agent5_preflight()
-            positions = preflight["positions"]
-            snapshot = preflight["snapshot"]
-        else:
-            with open(preflight_path) as f:
-                data = json.load(f)
-            positions = data["positions"]
-            snapshot = data["snapshot"]
-
-    if not positions:
-        return {
-            "success": True,
-            "decisions": [],
-            "note": "No open positions to monitor.",
-        }
-
-    vix_data = snapshot.get("VIX", {})
-
-    # ━━━ STEP 1: Python trailing stops (pure math, no LLM) ━━━
-    print(f"[Agent 5] Step 1: Calculating trailing stops for {len(positions)} positions...")
-    positions_with_stops = calculate_trailing_stops(positions, snapshot)
-
-    for pos in positions_with_stops:
-        action_emoji = "🔴" if pos["mechanical_action"] == "CLOSE" else "🟢"
-        print(
-            f"  {action_emoji} {pos['ticker']}: "
-            f"P&L {pos['pnl_pct']:+.2f}% | "
-            f"Stop ${pos.get('original_stop', 0)} → ${pos['new_stop']} | "
-            f"{pos['mechanical_action']}"
-        )
-
-    # ━━━ STEP 2: Fetch breaking news for thesis review ━━━
-    tickers = [p["ticker"] for p in positions]
-    breaking_news = fetch_breaking_news(tickers)
-
-    # ━━━ STEP 3: Claude thesis review (qualitative only) ━━━
-    print(f"[Agent 5] Step 2: Claude thesis review...")
-
-    thesis_result = None
-    try:
-        thesis_result = call_thesis_monitor(positions_with_stops, breaking_news, vix_data)
-    except RuntimeError:
-        # No API key — return data for subagent execution
-        return {
-            "success": False,
-            "needs_subagent": True,
-            "positions": positions_with_stops,
-            "vix": vix_data,
-            "breaking_news": breaking_news,
-        }
-    except Exception as e:
-        print(f"  [Agent 5] ⚠️ Claude thesis review failed: {e}")
-        print(f"  [Agent 5] Proceeding with mechanical stops only.")
-
-    # ━━━ STEP 4: Merge mechanical stops + thesis review ━━━
-    print(f"[Agent 5] Step 3: Merging mechanical stops + thesis review...")
-
-    # Build thesis lookup
-    thesis_lookup = {}
-    crisis_liquidation = False
-    if thesis_result:
-        crisis_liquidation = thesis_result.get("crisis_liquidation", False)
-        for review in thesis_result.get("thesis_reviews", []):
-            thesis_lookup[review["ticker"]] = review
-
-    decisions = []
-    for pos in positions_with_stops:
-        ticker = pos["ticker"]
-        mechanical = pos["mechanical_action"]
-        thesis_review = thesis_lookup.get(ticker, {})
-        thesis_status = thesis_review.get("thesis_status", "INTACT")
-        thesis_override = thesis_review.get("override_action")
-
-        # Merge logic
-        if crisis_liquidation:
-            action = "CLOSE"
-            reasoning = "CRISIS_LIQUIDATION — all positions closed."
-        elif mechanical == "CLOSE":
-            action = "CLOSE"
-            reasoning = f"MECHANICAL STOP HIT: {pos['trailing_stop_note']}"
-            if thesis_status == "BROKEN":
-                reasoning += f" + THESIS BROKEN: {thesis_review.get('thesis_assessment', '')}"
-        elif thesis_override == "CLOSE":
-            action = "CLOSE"
-            reasoning = f"THESIS OVERRIDE: {thesis_review.get('thesis_assessment', 'Thesis broken per Claude review.')}"
-        else:
-            action = "HOLD"
-            parts = [pos["trailing_stop_note"]]
-            if thesis_status == "DEGRADED":
-                parts.append(f"⚠️ Thesis DEGRADED: {thesis_review.get('thesis_assessment', '')}")
-            elif thesis_status == "INTACT":
-                parts.append("Thesis intact.")
-            reasoning = " | ".join(parts)
-
-        decisions.append({
-            "ticker": ticker,
-            "action": action,
-            "current_price": pos.get("current_price"),
-            "entry_price": pos.get("entry_price"),
-            "original_stop": pos.get("original_stop", pos.get("stop_loss", 0)),
-            "new_stop": pos.get("new_stop"),
-            "pnl_pct": pos.get("pnl_pct", 0),
-            "pnl_dollars": pos.get("pnl_dollars", 0),
-            "mechanical_action": mechanical,
-            "thesis_status": thesis_status,
-            "thesis_override": thesis_override,
-            "trim_pct": None,
-            "reasoning": reasoning,
-        })
-
-        action_emoji = {"HOLD": "✅", "CLOSE": "🚪"}.get(action, "❓")
-        print(f"  {action_emoji} {ticker}: {action} — {reasoning[:80]}")
-
-    portfolio_summary = ""
-    if thesis_result:
-        portfolio_summary = thesis_result.get("macro_assessment", "")
-
-    return {
-        "success": True,
-        "agent": "position_monitor",
-        "timestamp": datetime.now().isoformat(),
-        "crisis_liquidation": crisis_liquidation,
-        "decisions": decisions,
-        "portfolio_summary": portfolio_summary,
-    }
-
-
-def format_agent5_for_telegram(result: dict) -> str:
-    """Format Agent 5 output for Telegram."""
-    if not result.get("success"):
-        return f"⚠️ Agent 5 FAILED: {result.get('error', 'Unknown')}"
-
-    decisions = result.get("decisions", [])
-    if not decisions:
-        return (
-            f"{'='*30}\n"
-            f"🕒 AGENT 5: POSITION MONITOR (3:30 PM)\n"
-            f"{'='*30}\n\n"
-            f"No open positions to review."
-        )
-
-    lines = [
-        f"{'='*30}",
-        f"🕒 AGENT 5: POSITION MONITOR (3:30 PM)",
-        f"{'='*30}",
-        f"",
-    ]
-
-    if result.get("crisis_liquidation"):
-        lines.append("🚨 CRISIS LIQUIDATION — ALL POSITIONS CLOSED")
-        lines.append("")
-
-    for d in decisions:
-        action = d.get("action", "UNKNOWN")
-        emoji = {"HOLD": "✅", "TRIM": "✂️", "CLOSE": "🚪"}.get(action, "❓")
-
-        pnl = d.get("pnl_pct", 0)
-        pnl_emoji = "📈" if pnl >= 0 else "📉"
-
-        thesis = d.get("thesis_status", "N/A")
-        thesis_emoji = {"INTACT": "🟢", "DEGRADED": "🟡", "BROKEN": "🔴"}.get(thesis, "⚪")
-
-        lines.append(f"{'─'*25}")
-        lines.append(f"{emoji} {d.get('ticker')} — {action}")
-        lines.append(f"")
-        lines.append(f"  {pnl_emoji} P&L: {pnl:+.2f}% (${d.get('pnl_dollars', 0):+.2f})")
-        lines.append(f"  💲 Current: ${d.get('current_price')} | Entry: ${d.get('entry_price')}")
-        lines.append(f"  🛑 Stop: ${d.get('original_stop')} → ${d.get('new_stop')}")
-        lines.append(f"  {thesis_emoji} Thesis: {thesis}")
-
-        if d.get("trim_pct"):
-            lines.append(f"  ✂️ Trim: {d.get('trim_pct')}%")
-
-        lines.append(f"  💬 {d.get('reasoning', '')}")
-        lines.append(f"")
-
-    if result.get("portfolio_summary"):
-        lines.append(f"📋 {result.get('portfolio_summary')}")
-
-    return "\n".join(lines)
-
-
-if __name__ == "__main__":
-    # Run pre-flight first
-    preflight = run_agent5_preflight()
-
-    # Then run agent
-    result = run_agent5(preflight["positions"], preflight["snapshot"])
-    print("\n" + format_agent5_for_telegram(result))
-
-    if result.get("success"):
-        os.makedirs("output", exist_ok=True)
-        with open("output/agent5_decisions.json", "w") as f:
-            json.dump(result, f, indent=2, default=str)
-        print(f"\n[Agent 5] Decisions saved to output/agent5_decisions.json")
-
-
-==================================================================
-FILE: trade_journal.py (     137 lines)
-==================================================================
+============================================================
+FILE: ./trade_journal.py (     137 lines)
+============================================================
 """
 Trade Journal — Feedback CSV for the Open Claw pipeline.
 One row per closed trade. Appended on every Agent 5 close and manual exit.
@@ -6174,9 +8454,120 @@ def build_trade_record(
     }
 
 
-==================================================================
-FILE: watchlist.py (     225 lines)
-==================================================================
+============================================================
+FILE: ./vwap_gate.py (     106 lines)
+============================================================
+"""
+Open Claw — VWAP Execution Gate
+Filters BUY orders at 10:15 AM by checking if price is above the session VWAP.
+Orders below VWAP are rejected — sellers are in control.
+"""
+import yfinance as yf
+import numpy as np
+from datetime import datetime
+from typing import Optional
+
+
+def check_vwap(ticker: str) -> Optional[dict]:
+    """
+    Download today's intraday 1-minute data and compute VWAP.
+
+    VWAP = Σ(typical_price × volume) / Σ(volume)
+    where typical_price = (high + low + close) / 3
+
+    Returns dict with ticker, current_price, vwap, above_vwap, pct_vs_vwap
+    or None if data is unavailable (e.g., pre-market, weekend).
+    """
+    try:
+        tk = yf.Ticker(ticker)
+        # "1d" period with "1m" interval gives today's intraday bars
+        hist = tk.history(period="1d", interval="1m")
+
+        if hist.empty:
+            return None
+
+        high = hist["High"].values
+        low = hist["Low"].values
+        close = hist["Close"].values
+        volume = hist["Volume"].values
+
+        # Typical price
+        typical = (high + low + close) / 3.0
+
+        cum_tp_vol = np.cumsum(typical * volume)
+        cum_vol = np.cumsum(volume)
+
+        # Avoid division by zero
+        if cum_vol[-1] == 0:
+            return None
+
+        vwap = float(cum_tp_vol[-1] / cum_vol[-1])
+        current_price = float(close[-1])
+        pct_vs_vwap = ((current_price - vwap) / vwap) * 100.0
+
+        return {
+            "ticker": ticker.upper(),
+            "current_price": round(current_price, 4),
+            "vwap": round(vwap, 4),
+            "above_vwap": current_price >= vwap,
+            "pct_vs_vwap": round(pct_vs_vwap, 2),
+        }
+    except Exception as e:
+        return {"ticker": ticker.upper(), "error": str(e)}
+
+
+def vwap_gate(trade_orders: list[dict]) -> tuple[list[dict], list[dict]]:
+    """
+    Filter BUY orders through the VWAP gate.
+
+    - BUY orders above VWAP → approved (pass through)
+    - BUY orders below VWAP → rejected with reason
+    - Non-BUY orders (SELL, HOLD, etc.) → always pass through
+
+    Returns (approved_orders, rejected_orders).
+    """
+    approved = []
+    rejected = []
+
+    for order in trade_orders:
+        action = order.get("action", "").upper()
+
+        # Only gate BUY orders
+        if action != "BUY":
+            approved.append(order)
+            continue
+
+        ticker = order.get("ticker", "")
+        vwap_data = check_vwap(ticker)
+
+        if vwap_data is None:
+            # No intraday data — can't check VWAP (pre-market, weekend, etc.)
+            # Let it through with a warning
+            order["vwap_note"] = "No intraday data — VWAP check skipped"
+            approved.append(order)
+            continue
+
+        if vwap_data.get("error"):
+            order["vwap_note"] = f"VWAP error: {vwap_data['error']}"
+            approved.append(order)
+            continue
+
+        if vwap_data["above_vwap"]:
+            order["vwap"] = vwap_data["vwap"]
+            order["vwap_pct"] = vwap_data["pct_vs_vwap"]
+            approved.append(order)
+        else:
+            order["vwap"] = vwap_data["vwap"]
+            order["vwap_pct"] = vwap_data["pct_vs_vwap"]
+            order["reject_reason"] = "Below VWAP — sellers in control"
+            rejected.append(order)
+
+    return approved, rejected
+
+
+============================================================
+FILE: ./watchlist.py (     231 lines)
+============================================================
 """
 Open Claw — Watchlist Bench
 Manages a persistent watchlist of Agent 2 candidates waiting for entry zones.
@@ -6354,7 +8745,7 @@ class Watchlist:
             # A pullback to EMA support means price is near/at EMA from above.
             pct_above_ema = ((current - ema_20) / ema_20) * 100
 
-            if pct_above_ema <= 1.0:
+            if -1.0 <= pct_above_ema <= 1.0:
                 entry["status"] = "READY"
                 entry["current_price"] = current
                 entry["pct_above_ema"] = round(pct_above_ema, 2)
@@ -6401,123 +8792,148 @@ def promote_ready_candidates() -> list[dict]:
         base["watchlist_pct_above_ema"] = entry.get("pct_above_ema")
         candidates.append(base)
 
+    # Remove promoted entries from watchlist to prevent re-buying
+    if candidates:
+        promoted_tickers = [c["ticker"] for c in candidates]
+        wl._entries = [e for e in wl._entries if e["ticker"] not in promoted_tickers]
+        wl._save()
+
     return candidates
 
 
-==================================================================
-FILE: vwap_gate.py (     106 lines)
-==================================================================
+============================================================
+FILE: ./weekly_review.py (     125 lines)
+============================================================
+#!/usr/bin/env python3
 """
-Open Claw — VWAP Execution Gate
-Filters BUY orders at 10:15 AM by checking if price is above the session VWAP.
-Orders below VWAP are rejected — sellers are in control.
+Weekly Review — Trade Journal Analysis
+Run weekly after ~20+ trades to validate the conviction system.
+
+Usage:
+  python3 weekly_review.py
+  python3 weekly_review.py --since 2026-05-01
 """
-import yfinance as yf
-import numpy as np
-from datetime import datetime
-from typing import Optional
+import sys
+from pathlib import Path
+
+import pandas as pd
+
+JOURNAL_PATH = Path("journal/trades.csv")
 
 
-def check_vwap(ticker: str) -> Optional[dict]:
-    """
-    Download today's intraday 1-minute data and compute VWAP.
+def load_journal(since: str = None) -> pd.DataFrame:
+    if not JOURNAL_PATH.exists():
+        print("No journal found. Run some trades first.")
+        sys.exit(0)
 
-    VWAP = Σ(typical_price × volume) / Σ(volume)
-    where typical_price = (high + low + close) / 3
-
-    Returns dict with ticker, current_price, vwap, above_vwap, pct_vs_vwap
-    or None if data is unavailable (e.g., pre-market, weekend).
-    """
-    try:
-        tk = yf.Ticker(ticker)
-        # "1d" period with "1m" interval gives today's intraday bars
-        hist = tk.history(period="1d", interval="1m")
-
-        if hist.empty:
-            return None
-
-        high = hist["High"].values
-        low = hist["Low"].values
-        close = hist["Close"].values
-        volume = hist["Volume"].values
-
-        # Typical price
-        typical = (high + low + close) / 3.0
-
-        cum_tp_vol = np.cumsum(typical * volume)
-        cum_vol = np.cumsum(volume)
-
-        # Avoid division by zero
-        if cum_vol[-1] == 0:
-            return None
-
-        vwap = float(cum_tp_vol[-1] / cum_vol[-1])
-        current_price = float(close[-1])
-        pct_vs_vwap = ((current_price - vwap) / vwap) * 100.0
-
-        return {
-            "ticker": ticker.upper(),
-            "current_price": round(current_price, 4),
-            "vwap": round(vwap, 4),
-            "above_vwap": current_price >= vwap,
-            "pct_vs_vwap": round(pct_vs_vwap, 2),
-        }
-    except Exception as e:
-        return {"ticker": ticker.upper(), "error": str(e)}
+    df = pd.read_csv(JOURNAL_PATH, parse_dates=["entry_dt", "exit_dt"])
+    if since:
+        df = df[df["entry_dt"] >= since]
+    print(f"Loaded {len(df)} trades")
+    return df
 
 
-def vwap_gate(trade_orders: list[dict]) -> tuple[list[dict], list[dict]]:
-    """
-    Filter BUY orders through the VWAP gate.
+def run_review(since: str = None):
+    df = load_journal(since)
 
-    - BUY orders above VWAP → approved (pass through)
-    - BUY orders below VWAP → rejected with reason
-    - Non-BUY orders (SELL, HOLD, etc.) → always pass through
+    if len(df) == 0:
+        print("No trades in journal.")
+        return
 
-    Returns (approved_orders, rejected_orders).
-    """
-    approved = []
-    rejected = []
+    print("\n" + "=" * 60)
+    print("OPEN CLAW — WEEKLY REVIEW")
+    print("=" * 60)
 
-    for order in trade_orders:
-        action = order.get("action", "").upper()
+    # 1. Is EXCEPTIONAL actually outperforming STRONG?
+    print("\n--- R-MULTIPLE BY TIER ---")
+    tier_stats = df.groupby("tier")["r_multiple"].agg(["count", "mean", "std"])
+    print(tier_stats.to_string())
 
-        # Only gate BUY orders
-        if action != "BUY":
-            approved.append(order)
-            continue
+    # 2. Does CONFIRM_ENHANCED add alpha?
+    print("\n--- R-MULTIPLE BY CONFIRM_ENHANCED ---")
+    confirm_stats = df.groupby("confirm_enhanced")["r_multiple"].agg(["count", "mean", "std"])
+    print(confirm_stats.to_string())
 
-        ticker = order.get("ticker", "")
-        vwap_data = check_vwap(ticker)
+    # 3. Which Agent 3 verdicts correlate with R?
+    print("\n--- R-MULTIPLE BY AGENT 3 VERDICT ---")
+    verdict_stats = df.groupby("agent3_verdict")["r_multiple"].agg(["count", "mean"])
+    print(verdict_stats.to_string())
 
-        if vwap_data is None:
-            # No intraday data — can't check VWAP (pre-market, weekend, etc.)
-            # Let it through with a warning
-            order["vwap_note"] = "No intraday data — VWAP check skipped"
-            approved.append(order)
-            continue
+    # 4. Sharpe-equivalent by tier (mean R / stdev R)
+    print("\n--- SHARPE-EQUIVALENT BY TIER ---")
+    sharpe = df.groupby("tier")["r_multiple"].apply(
+        lambda x: round(x.mean() / x.std(), 2) if x.std() > 0 else 0
+    )
+    print(sharpe.to_string())
 
-        if vwap_data.get("error"):
-            order["vwap_note"] = f"VWAP error: {vwap_data['error']}"
-            approved.append(order)
-            continue
+    # 5. MAE/MFE analysis — are stops too tight?
+    print("\n--- MAE/MFE ANALYSIS ---")
+    if "max_adverse_excursion_pct" in df.columns:
+        winners = df[df["r_multiple"] > 0]
+        losers = df[df["r_multiple"] <= 0]
 
-        if vwap_data["above_vwap"]:
-            order["vwap"] = vwap_data["vwap"]
-            order["vwap_pct"] = vwap_data["pct_vs_vwap"]
-            approved.append(order)
-        else:
-            order["vwap"] = vwap_data["vwap"]
-            order["vwap_pct"] = vwap_data["pct_vs_vwap"]
-            order["reject_reason"] = "Below VWAP — sellers in control"
-            rejected.append(order)
+        if len(winners) > 0:
+            print(f"\nWinners ({len(winners)}) — Max Adverse Excursion:")
+            mae = pd.to_numeric(winners["max_adverse_excursion_pct"], errors="coerce")
+            print(f"  Mean: {mae.mean():.2f}%  Median: {mae.median():.2f}%  Max: {mae.max():.2f}%")
 
-    return approved, rejected
+        if len(losers) > 0:
+            print(f"\nLosers ({len(losers)}) — Max Favorable Excursion:")
+            mfe = pd.to_numeric(losers["max_favorable_excursion_pct"], errors="coerce")
+            print(f"  Mean: {mfe.mean():.2f}%  Median: {mfe.median():.2f}%  Max: {mfe.max():.2f}%")
+    else:
+        print("  (No MAE/MFE data yet)")
+
+    # 6. Beta check — are we just long SPX?
+    print("\n--- BETA CHECK ---")
+    spx_col = pd.to_numeric(df.get("spx_change_over_hold_pct", pd.Series()), errors="coerce")
+    r_col = pd.to_numeric(df["r_multiple"], errors="coerce")
+    if spx_col.notna().sum() >= 5:
+        corr = r_col.corr(spx_col)
+        print(f"  R-multiple vs SPX correlation: {corr:.3f}")
+        if abs(corr) > 0.7:
+            print("  WARNING: High correlation with SPX — may just be beta")
+    else:
+        print("  (Not enough SPX data yet)")
+
+    # 7. Binding constraint distribution
+    print("\n--- BINDING CONSTRAINT DISTRIBUTION ---")
+    if "binding_constraint" in df.columns:
+        bc = df["binding_constraint"].value_counts()
+        print(bc.to_string())
+        risk_pct = bc.get("risk", 0) / len(df) * 100
+        alloc_pct = bc.get("allocation", 0) / len(df) * 100
+        print(f"\n  Risk-bound: {risk_pct:.0f}%  Allocation-bound: {alloc_pct:.0f}%")
+        if alloc_pct > 80:
+            print("  NOTE: Allocation cap may be too tight — consider raising MAX_ALLOCATION_PCT")
+
+    # 8. Summary stats
+    print("\n--- OVERALL ---")
+    total = len(df)
+    winners_n = len(df[df["r_multiple"] > 0])
+    print(f"  Trades: {total}")
+    print(f"  Win rate: {winners_n/total*100:.0f}%")
+    print(f"  Avg R: {df['r_multiple'].mean():.2f}")
+    print(f"  Total P&L: ${df['pnl_dollars'].sum():.2f}")
+    print(f"  Avg holding days: {df['holding_days'].mean():.1f}")
+
+    # Calibration warning
+    if total < 20:
+        print(f"\n  ⚠️ Only {total} trades — too few for statistically valid conclusions.")
+        print("  Need ~20+ per cohort before retuning multipliers.")
 
 
-==================================================================
-FILE: x_fetch.py (     313 lines)
-==================================================================
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--since", help="Only include trades after this date (YYYY-MM-DD)")
+    args = parser.parse_args()
+    run_review(args.since)
+
+
+============================================================
+FILE: ./x_fetch.py (     313 lines)
+============================================================
 """
 X/Twitter Smart Money Fetch — Official X Developer API
 Uses the search/recent endpoint with X_BEARER_TOKEN (pay-per-use tier).
@@ -6831,701 +9247,5 @@ if __name__ == "__main__":
         print("Usage:")
         print("  python3 x_fetch.py MSFT JPM        # Specific tickers")
         print("  python3 x_fetch.py --from-agent2    # Read from Agent 2 output")
-
-
-==================================================================
-FILE: assembly_scraper.py (     217 lines)
-==================================================================
-"""
-Assembly Private Scraper — Browser-based extraction.
-
-Assembly is a Next.js SPA that renders data client-side.
-This scraper uses the browser DOM snapshots (from OCPlatform BrowserControl)
-or falls back to a pre-saved JSON file.
-
-For automated pipeline runs, the orchestrator calls scrape via browser,
-saves to output/assembly_data.json, and agents read from that file.
-
-Usage:
-  python assembly_scraper.py parse-snapshot <snapshot_file>
-  python assembly_scraper.py load  (reads from output/assembly_data.json)
-"""
-
-import json
-import re
-import os
-from datetime import datetime
-
-
-def parse_sentiment_from_text(text: str) -> dict:
-    """Parse sentiment data from page text content."""
-    result = {"timestamp": datetime.utcnow().isoformat(), "source": "assembly_sentiment"}
-
-    # Composite score
-    composite_match = re.search(r"(\d+)\s+(Greed|Fear|Neutral|Extreme\s*Greed|Extreme\s*Fear|Ex\.\s*Greed|Ex\.\s*Fear)", text)
-    if composite_match:
-        result["composite_score"] = int(composite_match.group(1))
-        result["composite_label"] = composite_match.group(2)
-
-    # Historical values
-    for label, key in [
-        ("Prev Close", "prev_close"),
-        ("Previous Close", "prev_close"),
-        ("1 Week Ago", "one_week_ago"),
-        ("1W Ago", "one_week_ago"),
-        ("1 Month Ago", "one_month_ago"),
-        ("1M Ago", "one_month_ago"),
-        ("1 Year Ago", "one_year_ago"),
-        ("1Y Ago", "one_year_ago"),
-        ("30-Day Avg", "thirty_day_avg"),
-        ("52-Week High", "fifty_two_week_high"),
-        ("52-Week Low", "fifty_two_week_low"),
-    ]:
-        match = re.search(rf"{re.escape(label)}\s+(\d+)", text)
-        if match and key not in result:
-            result[key] = int(match.group(1))
-
-    # Sub-components
-    components = {}
-    patterns = [
-        (r"Market Volatility\s*\(VIX\)\s*(\d+)", "market_volatility_vix"),
-        (r"S&P 125-day Momentum\s*(\d+)", "sp500_momentum_125d"),
-        (r"S&P 500 Momentum\s*(\d+)", "sp500_momentum"),
-        (r"Stock Price Strength\s*(\d+)", "stock_price_strength"),
-        (r"Stock Price Breadth\s*(\d+)", "stock_price_breadth"),
-        (r"Put\s*/\s*Call Options\s*(\d+)", "put_call_options"),
-        (r"Junk Bond Demand\s*(\d+)", "junk_bond_demand"),
-        (r"Safe Haven Demand\s*(\d+)", "safe_haven_demand"),
-    ]
-    for pattern, key in patterns:
-        match = re.search(pattern, text)
-        if match:
-            components[key] = int(match.group(1))
-
-    # VIX actual value
-    vix_match = re.search(r"VIX\)\s*\d+\s+(\d+\.?\d*)", text)
-    if vix_match:
-        components["vix_value"] = float(vix_match.group(1))
-
-    result["components"] = components
-
-    # Sector breadth
-    sectors = {}
-    sector_pattern = re.findall(
-        r"(Energy|Healthcare|Utilities|Real Estate|Consumer Defensive|Technology|"
-        r"Communication Services|Consumer Cyclical|Industrials|Financial Services|"
-        r"Basic Materials)\s+([+\-]?\d+\.?\d*%)",
-        text
-    )
-    for sector, change in sector_pattern:
-        sectors[sector] = change
-    result["sector_breadth"] = sectors
-
-    return result
-
-
-def parse_macro_from_snapshot(snapshot_text: str) -> dict:
-    """Parse macro data from a browser snapshot."""
-    result = {"timestamp": datetime.utcnow().isoformat(), "source": "assembly_macro"}
-
-    # Yield curve
-    yield_curve = {}
-    for tenor in ["1M", "3M", "6M", "1Y", "2Y", "3Y", "5Y", "7Y", "10Y", "20Y", "30Y"]:
-        match = re.search(rf"\b{tenor}\s+(\d+\.?\d*)", snapshot_text)
-        if match:
-            yield_curve[tenor] = float(match.group(1))
-    result["yield_curve"] = yield_curve
-
-    # Key macro
-    for label, key in [
-        ("Fed Funds", "fed_funds"),
-        ("Unemployment", "unemployment"),
-    ]:
-        match = re.search(rf"{re.escape(label)}\s+([\d.]+%?)", snapshot_text)
-        if match:
-            result[key] = match.group(1)
-
-    # Cross-asset rotation — parse from structured snapshot
-    cross_asset = []
-    # Pattern: "SPY US Large Cap Equity $733.73 -0.67% +6.1% +8.4% 91%"
-    asset_pattern = re.findall(
-        r'([A-Z]{2,5})\s+([\w\s]+?)\s+(Equity|Bond|Commodity|FX|Crypto)\s+\$([\d,.]+)\s+'
-        r'([+\-]?\d+\.?\d*%)\s+([+\-]?\d+\.?\d*%)\s+([+\-]?\d+\.?\d*%)\s+(\d+%)',
-        snapshot_text
-    )
-    for ticker, name, asset_class, price, today, vs50, vs200, range52 in asset_pattern:
-        cross_asset.append({
-            "ticker": ticker.strip(),
-            "name": name.strip(),
-            "asset_class": asset_class,
-            "price": f"${price}",
-            "today": today,
-            "vs_50d": vs50,
-            "vs_200d": vs200,
-            "range_52w": range52,
-        })
-    result["cross_asset_rotation"] = cross_asset
-
-    return result
-
-
-def format_sentiment_for_prompt(sentiment: dict) -> str:
-    """Format sentiment data for Agent 1's system prompt."""
-    lines = [
-        "ASSEMBLY SENTIMENT DATA",
-        "=" * 40,
-        f"Composite Score: {sentiment.get('composite_score', '?')} ({sentiment.get('composite_label', '?')})",
-        f"Prev Close: {sentiment.get('prev_close', '?')} | 1W Ago: {sentiment.get('one_week_ago', '?')} | 1M Ago: {sentiment.get('one_month_ago', '?')}",
-        f"30D Avg: {sentiment.get('thirty_day_avg', '?')} | 52W High: {sentiment.get('fifty_two_week_high', '?')} | 52W Low: {sentiment.get('fifty_two_week_low', '?')}",
-        "",
-        "Sub-Components:",
-    ]
-    components = sentiment.get("components", {})
-    for key, label in [
-        ("market_volatility_vix", "Market Volatility (VIX)"),
-        ("vix_value", "VIX Actual"),
-        ("sp500_momentum_125d", "S&P 125d Momentum"),
-        ("sp500_momentum", "S&P 500 Momentum"),
-        ("stock_price_strength", "Stock Price Strength"),
-        ("stock_price_breadth", "Stock Price Breadth"),
-        ("put_call_options", "Put/Call Options"),
-        ("junk_bond_demand", "Junk Bond Demand"),
-        ("safe_haven_demand", "Safe Haven Demand"),
-    ]:
-        val = components.get(key)
-        if val is not None:
-            lines.append(f"  {label}: {val}")
-
-    sectors = sentiment.get("sector_breadth", {})
-    if sectors:
-        lines.append("")
-        lines.append("Sector Breadth:")
-        for sector, change in sectors.items():
-            lines.append(f"  {sector}: {change}")
-
-    return "\n".join(lines)
-
-
-def format_macro_for_prompt(macro: dict) -> str:
-    """Format macro data for Agent 1's system prompt."""
-    lines = [
-        "ASSEMBLY MACRO DATA",
-        "=" * 40,
-    ]
-
-    yc = macro.get("yield_curve", {})
-    if yc:
-        curve_str = " | ".join(f"{t}: {v}" for t, v in yc.items())
-        lines.append(f"Yield Curve: {curve_str}")
-
-    for key, label in [("fed_funds", "Fed Funds"), ("unemployment", "Unemployment")]:
-        if key in macro:
-            lines.append(f"{label}: {macro[key]}")
-
-    cross_asset = macro.get("cross_asset_rotation", [])
-    if cross_asset:
-        lines.append("")
-        lines.append("Cross-Asset Rotation:")
-        for a in cross_asset:
-            lines.append(f"  {a['ticker']} ({a['name']}): {a['price']} | Today: {a['today']} | vs50d: {a['vs_50d']} | vs200d: {a['vs_200d']} | 52wk: {a['range_52w']}")
-
-    return "\n".join(lines)
-
-
-def load_assembly_data() -> dict:
-    """Load pre-scraped Assembly data from output file."""
-    path = "output/assembly_data.json"
-    if os.path.exists(path):
-        with open(path) as f:
-            return json.load(f)
-    return {}
-
-
-if __name__ == "__main__":
-    import sys
-    if len(sys.argv) > 1 and sys.argv[1] == "load":
-        data = load_assembly_data()
-        if "sentiment" in data:
-            print(format_sentiment_for_prompt(data["sentiment"]))
-            print()
-        if "macro" in data:
-            print(format_macro_for_prompt(data["macro"]))
-    else:
-        print("Usage: python assembly_scraper.py load")
-        print("  (Assembly data must be scraped via browser and saved to output/assembly_data.json)")
-
-
-==================================================================
-FILE: flash_crash_daemon.py (     339 lines)
-==================================================================
-"""
-Flash-Crash Daemon — Lightweight intraday safety net (NO LLM)
-Runs every 5-10 minutes during market hours.
-
-Checks:
-  1. SPY intraday drop > 1.5% from today's open → defensive protocol
-  2. VIX intraday spike > 20% from today's open → defensive protocol
-  3. Individual position down > 5% intraday → tighten that stop to breakeven
-
-Defensive protocol:
-  - Profitable positions → tighten stop to breakeven (entry price)
-  - Losing positions → close immediately
-  - Log all actions to output/daemon_log.json
-  - Save alert to output/daemon_alert.json for Agent 5 visibility
-
-Usage:
-  python3 flash_crash_daemon.py
-"""
-import json
-import os
-import sys
-from datetime import datetime, time
-
-import pytz
-import yfinance as yf
-
-from broker import AlpacaBroker
-
-OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
-
-# Thresholds
-SPY_DROP_THRESHOLD = -0.015       # -1.5% from today's open
-VIX_SPIKE_THRESHOLD = 0.20        # +20% from today's open
-POSITION_DROP_THRESHOLD = -0.05   # -5% intraday for individual positions
-
-
-def is_market_hours() -> bool:
-    """Check if current time is within regular market hours (9:30-16:00 ET, Mon-Fri)."""
-    et = pytz.timezone("America/New_York")
-    now = datetime.now(et)
-
-    # Skip weekends (Monday=0, Sunday=6)
-    if now.weekday() >= 5:
-        return False
-
-    market_open = time(9, 30)
-    market_close = time(16, 0)
-
-    return market_open <= now.time() <= market_close
-
-
-def get_intraday_change(ticker: str) -> dict:
-    """
-    Fetch intraday data for a ticker and compute change from today's open.
-    Returns {"open": float, "current": float, "change_pct": float} or {"error": str}.
-    """
-    try:
-        data = yf.download(ticker, period="1d", interval="1m", progress=False)
-        if data.empty:
-            return {"error": f"No intraday data for {ticker}"}
-
-        # Handle multi-level columns from yfinance
-        if hasattr(data.columns, 'levels') and len(data.columns.levels) > 1:
-            open_price = float(data["Open"][ticker].iloc[0])
-            current_price = float(data["Close"][ticker].iloc[-1])
-        else:
-            open_price = float(data["Open"].iloc[0])
-            current_price = float(data["Close"].iloc[-1])
-
-        if open_price <= 0:
-            return {"error": f"Invalid open price for {ticker}"}
-
-        change_pct = (current_price - open_price) / open_price
-
-        return {
-            "open": round(open_price, 2),
-            "current": round(current_price, 2),
-            "change_pct": round(change_pct, 4),
-        }
-    except Exception as e:
-        return {"error": str(e)}
-
-
-def _save_json(filepath: str, data: dict):
-    """Write JSON to file, creating output dir if needed."""
-    os.makedirs(os.path.dirname(filepath), exist_ok=True)
-    with open(filepath, "w") as f:
-        json.dump(data, f, indent=2, default=str)
-
-
-def _append_daemon_log(entry: dict):
-    """Append an entry to the daemon log (keeps history)."""
-    log_path = os.path.join(OUTPUT_DIR, "daemon_log.json")
-    logs = []
-    if os.path.exists(log_path):
-        try:
-            with open(log_path) as f:
-                logs = json.load(f)
-                if not isinstance(logs, list):
-                    logs = [logs]
-        except (json.JSONDecodeError, Exception):
-            logs = []
-    logs.append(entry)
-    # Keep last 500 entries to avoid unbounded growth
-    logs = logs[-500:]
-    _save_json(log_path, logs)
-
-
-def execute_defensive_protocol(broker: AlpacaBroker, trigger_reason: str, positions: list) -> list:
-    """
-    Execute defensive protocol on all positions:
-    - Profitable positions: tighten stop to breakeven (entry price)
-    - Losing positions: close immediately
-    Returns list of actions taken.
-    """
-    actions = []
-
-    for pos in positions:
-        ticker = pos["ticker"]
-        entry_price = pos["avg_entry_price"]
-        unrealized_pl = pos["unrealized_pl"]
-
-        if unrealized_pl >= 0:
-            # Profitable — tighten stop to breakeven
-            # We can't directly modify an existing stop order via the broker module,
-            # so we cancel existing orders and resubmit with breakeven stop.
-            # For now, log the intent — the broker module doesn't expose stop modification.
-            action = {
-                "ticker": ticker,
-                "action": "TIGHTEN_STOP_BREAKEVEN",
-                "entry_price": entry_price,
-                "unrealized_pl": unrealized_pl,
-                "note": f"Stop tightened to breakeven (${entry_price:.2f})",
-            }
-            # Attempt to cancel existing orders and place a new stop at breakeven
-            try:
-                from alpaca.trading.requests import StopOrderRequest
-                from alpaca.trading.enums import OrderSide, TimeInForce
-                # Cancel existing orders for this ticker
-                orders = broker.client.get_orders()
-                for o in orders:
-                    if o.symbol == ticker:
-                        try:
-                            broker.client.cancel_order_by_id(o.id)
-                        except Exception:
-                            pass
-                # Place new stop at breakeven
-                from alpaca.trading.requests import StopOrderRequest
-                stop_req = StopOrderRequest(
-                    symbol=ticker,
-                    qty=pos["shares"],
-                    side=OrderSide.SELL,
-                    time_in_force=TimeInForce.GTC,
-                    stop_price=round(entry_price, 2),
-                )
-                broker.client.submit_order(stop_req)
-                action["status"] = "executed"
-            except Exception as e:
-                action["status"] = "logged_only"
-                action["error"] = str(e)
-
-            actions.append(action)
-            print(f"  [Daemon] {ticker}: Profitable (+${unrealized_pl:.2f}) → stop tightened to ${entry_price:.2f}")
-        else:
-            # Losing — close immediately
-            result = broker.close_position(ticker)
-            action = {
-                "ticker": ticker,
-                "action": "CLOSE_LOSING",
-                "entry_price": entry_price,
-                "unrealized_pl": unrealized_pl,
-                "close_result": result,
-            }
-            actions.append(action)
-            print(f"  [Daemon] {ticker}: Losing (${unrealized_pl:.2f}) → CLOSED")
-
-    return actions
-
-
-def tighten_individual_stop(broker: AlpacaBroker, pos: dict) -> dict:
-    """Tighten a single position's stop to breakeven when it's down >5% intraday."""
-    ticker = pos["ticker"]
-    entry_price = pos["avg_entry_price"]
-
-    action = {
-        "ticker": ticker,
-        "action": "INDIVIDUAL_STOP_TIGHTEN",
-        "entry_price": entry_price,
-        "note": f"Position down >5% intraday — stop moved to breakeven (${entry_price:.2f})",
-    }
-
-    try:
-        # Cancel existing orders for this ticker
-        orders = broker.client.get_orders()
-        for o in orders:
-            if o.symbol == ticker:
-                try:
-                    broker.client.cancel_order_by_id(o.id)
-                except Exception:
-                    pass
-
-        from alpaca.trading.requests import StopOrderRequest
-        from alpaca.trading.enums import OrderSide, TimeInForce
-        stop_req = StopOrderRequest(
-            symbol=ticker,
-            qty=pos["shares"],
-            side=OrderSide.SELL,
-            time_in_force=TimeInForce.GTC,
-            stop_price=round(entry_price, 2),
-        )
-        broker.client.submit_order(stop_req)
-        action["status"] = "executed"
-    except Exception as e:
-        action["status"] = "logged_only"
-        action["error"] = str(e)
-
-    print(f"  [Daemon] {ticker}: Down >5% intraday → stop tightened to ${entry_price:.2f}")
-    return action
-
-
-def run_daemon():
-    """
-    Main daemon entry point. Checks market conditions and positions.
-    If no triggers, exits silently. If triggers fire, executes defensive protocol.
-    """
-    # Check market hours
-    if not is_market_hours():
-        return  # Silent exit outside market hours
-
-    triggers = []
-    actions = []
-
-    # --- Check SPY ---
-    spy_data = get_intraday_change("SPY")
-    if "error" not in spy_data:
-        if spy_data["change_pct"] <= SPY_DROP_THRESHOLD:
-            trigger = {
-                "type": "SPY_DROP",
-                "detail": f"SPY down {spy_data['change_pct']*100:.2f}% (threshold: {SPY_DROP_THRESHOLD*100:.1f}%)",
-                "open": spy_data["open"],
-                "current": spy_data["current"],
-                "change_pct": spy_data["change_pct"],
-            }
-            triggers.append(trigger)
-            print(f"[Daemon] ⚠️ TRIGGER: {trigger['detail']}")
-    else:
-        print(f"[Daemon] Warning: Could not fetch SPY data — {spy_data['error']}")
-
-    # --- Check VIX ---
-    vix_data = get_intraday_change("^VIX")
-    if "error" not in vix_data:
-        if vix_data["change_pct"] >= VIX_SPIKE_THRESHOLD:
-            trigger = {
-                "type": "VIX_SPIKE",
-                "detail": f"VIX up {vix_data['change_pct']*100:.2f}% (threshold: +{VIX_SPIKE_THRESHOLD*100:.0f}%)",
-                "open": vix_data["open"],
-                "current": vix_data["current"],
-                "change_pct": vix_data["change_pct"],
-            }
-            triggers.append(trigger)
-            print(f"[Daemon] ⚠️ TRIGGER: {trigger['detail']}")
-    else:
-        print(f"[Daemon] Warning: Could not fetch VIX data — {vix_data['error']}")
-
-    # --- Load positions ---
-    try:
-        broker = AlpacaBroker()
-        positions = broker.get_positions()
-    except Exception as e:
-        print(f"[Daemon] ERROR: Could not connect to Alpaca — {e}")
-        return
-
-    if not positions:
-        if triggers:
-            # Triggers fired but no positions to defend — just log
-            alert = {
-                "timestamp": datetime.now().isoformat(),
-                "triggers": triggers,
-                "actions": [],
-                "note": "Triggers fired but no open positions",
-            }
-            _save_json(os.path.join(OUTPUT_DIR, "daemon_alert.json"), alert)
-            _append_daemon_log(alert)
-            print("[Daemon] Triggers fired but no positions to defend. Alert saved.")
-        return  # Silent exit if no positions and no triggers
-
-    # --- Check individual positions for >5% intraday drop ---
-    for pos in positions:
-        ticker = pos["ticker"]
-        pos_data = get_intraday_change(ticker)
-        if "error" not in pos_data:
-            if pos_data["change_pct"] <= POSITION_DROP_THRESHOLD:
-                trigger = {
-                    "type": "POSITION_DROP",
-                    "ticker": ticker,
-                    "detail": f"{ticker} down {pos_data['change_pct']*100:.2f}% intraday (threshold: {POSITION_DROP_THRESHOLD*100:.0f}%)",
-                    "change_pct": pos_data["change_pct"],
-                }
-                triggers.append(trigger)
-                print(f"[Daemon] ⚠️ TRIGGER: {trigger['detail']}")
-                # Tighten this specific position's stop to breakeven
-                action = tighten_individual_stop(broker, pos)
-                actions.append(action)
-
-    # --- If market-wide triggers fired, run full defensive protocol ---
-    market_wide_triggers = [t for t in triggers if t["type"] in ("SPY_DROP", "VIX_SPIKE")]
-    if market_wide_triggers:
-        trigger_reasons = "; ".join(t["detail"] for t in market_wide_triggers)
-        print(f"\n[Daemon] 🛡️ DEFENSIVE PROTOCOL ACTIVATED: {trigger_reasons}")
-        defensive_actions = execute_defensive_protocol(broker, trigger_reasons, positions)
-        actions.extend(defensive_actions)
-
-    # --- If any triggers fired, save outputs ---
-    if triggers:
-        timestamp = datetime.now().isoformat()
-
-        alert = {
-            "timestamp": timestamp,
-            "triggers": triggers,
-            "actions": actions,
-            "positions_at_trigger": positions,
-        }
-        _save_json(os.path.join(OUTPUT_DIR, "daemon_alert.json"), alert)
-        _append_daemon_log(alert)
-
-        # Print summary
-        print(f"\n{'='*40}")
-        print(f"[Daemon] SUMMARY")
-        print(f"  Triggers: {len(triggers)}")
-        for t in triggers:
-            print(f"    - {t['detail']}")
-        print(f"  Actions: {len(actions)}")
-        for a in actions:
-            print(f"    - {a['ticker']}: {a['action']} ({a.get('status', 'n/a')})")
-        print(f"{'='*40}")
-
-
-if __name__ == "__main__":
-    run_daemon()
-
-
-==================================================================
-FILE: weekly_review.py (     125 lines)
-==================================================================
-#!/usr/bin/env python3
-"""
-Weekly Review — Trade Journal Analysis
-Run weekly after ~20+ trades to validate the conviction system.
-
-Usage:
-  python3 weekly_review.py
-  python3 weekly_review.py --since 2026-05-01
-"""
-import sys
-from pathlib import Path
-
-import pandas as pd
-
-JOURNAL_PATH = Path("journal/trades.csv")
-
-
-def load_journal(since: str = None) -> pd.DataFrame:
-    if not JOURNAL_PATH.exists():
-        print("No journal found. Run some trades first.")
-        sys.exit(0)
-
-    df = pd.read_csv(JOURNAL_PATH, parse_dates=["entry_dt", "exit_dt"])
-    if since:
-        df = df[df["entry_dt"] >= since]
-    print(f"Loaded {len(df)} trades")
-    return df
-
-
-def run_review(since: str = None):
-    df = load_journal(since)
-
-    if len(df) == 0:
-        print("No trades in journal.")
-        return
-
-    print("\n" + "=" * 60)
-    print("OPEN CLAW — WEEKLY REVIEW")
-    print("=" * 60)
-
-    # 1. Is EXCEPTIONAL actually outperforming STRONG?
-    print("\n--- R-MULTIPLE BY TIER ---")
-    tier_stats = df.groupby("tier")["r_multiple"].agg(["count", "mean", "std"])
-    print(tier_stats.to_string())
-
-    # 2. Does CONFIRM_ENHANCED add alpha?
-    print("\n--- R-MULTIPLE BY CONFIRM_ENHANCED ---")
-    confirm_stats = df.groupby("confirm_enhanced")["r_multiple"].agg(["count", "mean", "std"])
-    print(confirm_stats.to_string())
-
-    # 3. Which Agent 3 verdicts correlate with R?
-    print("\n--- R-MULTIPLE BY AGENT 3 VERDICT ---")
-    verdict_stats = df.groupby("agent3_verdict")["r_multiple"].agg(["count", "mean"])
-    print(verdict_stats.to_string())
-
-    # 4. Sharpe-equivalent by tier (mean R / stdev R)
-    print("\n--- SHARPE-EQUIVALENT BY TIER ---")
-    sharpe = df.groupby("tier")["r_multiple"].apply(
-        lambda x: round(x.mean() / x.std(), 2) if x.std() > 0 else 0
-    )
-    print(sharpe.to_string())
-
-    # 5. MAE/MFE analysis — are stops too tight?
-    print("\n--- MAE/MFE ANALYSIS ---")
-    if "max_adverse_excursion_pct" in df.columns:
-        winners = df[df["r_multiple"] > 0]
-        losers = df[df["r_multiple"] <= 0]
-
-        if len(winners) > 0:
-            print(f"\nWinners ({len(winners)}) — Max Adverse Excursion:")
-            mae = pd.to_numeric(winners["max_adverse_excursion_pct"], errors="coerce")
-            print(f"  Mean: {mae.mean():.2f}%  Median: {mae.median():.2f}%  Max: {mae.max():.2f}%")
-
-        if len(losers) > 0:
-            print(f"\nLosers ({len(losers)}) — Max Favorable Excursion:")
-            mfe = pd.to_numeric(losers["max_favorable_excursion_pct"], errors="coerce")
-            print(f"  Mean: {mfe.mean():.2f}%  Median: {mfe.median():.2f}%  Max: {mfe.max():.2f}%")
-    else:
-        print("  (No MAE/MFE data yet)")
-
-    # 6. Beta check — are we just long SPX?
-    print("\n--- BETA CHECK ---")
-    spx_col = pd.to_numeric(df.get("spx_change_over_hold_pct", pd.Series()), errors="coerce")
-    r_col = pd.to_numeric(df["r_multiple"], errors="coerce")
-    if spx_col.notna().sum() >= 5:
-        corr = r_col.corr(spx_col)
-        print(f"  R-multiple vs SPX correlation: {corr:.3f}")
-        if abs(corr) > 0.7:
-            print("  WARNING: High correlation with SPX — may just be beta")
-    else:
-        print("  (Not enough SPX data yet)")
-
-    # 7. Binding constraint distribution
-    print("\n--- BINDING CONSTRAINT DISTRIBUTION ---")
-    if "binding_constraint" in df.columns:
-        bc = df["binding_constraint"].value_counts()
-        print(bc.to_string())
-        risk_pct = bc.get("risk", 0) / len(df) * 100
-        alloc_pct = bc.get("allocation", 0) / len(df) * 100
-        print(f"\n  Risk-bound: {risk_pct:.0f}%  Allocation-bound: {alloc_pct:.0f}%")
-        if alloc_pct > 80:
-            print("  NOTE: Allocation cap may be too tight — consider raising MAX_ALLOCATION_PCT")
-
-    # 8. Summary stats
-    print("\n--- OVERALL ---")
-    total = len(df)
-    winners_n = len(df[df["r_multiple"] > 0])
-    print(f"  Trades: {total}")
-    print(f"  Win rate: {winners_n/total*100:.0f}%")
-    print(f"  Avg R: {df['r_multiple'].mean():.2f}")
-    print(f"  Total P&L: ${df['pnl_dollars'].sum():.2f}")
-    print(f"  Avg holding days: {df['holding_days'].mean():.1f}")
-
-    # Calibration warning
-    if total < 20:
-        print(f"\n  ⚠️ Only {total} trades — too few for statistically valid conclusions.")
-        print("  Need ~20+ per cohort before retuning multipliers.")
-
-
-if __name__ == "__main__":
-    import argparse
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--since", help="Only include trades after this date (YYYY-MM-DD)")
-    args = parser.parse_args()
-    run_review(args.since)
 
 
