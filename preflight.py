@@ -254,12 +254,93 @@ def fetch_move_index() -> dict:
 
 def fetch_dix() -> dict:
     """
-    Fetch DIX (Dark Index) from squeezemetrics.
-    DIX measures dark pool buying — high DIX = institutional accumulation.
-    NOTE: Requires scraping squeezemetrics.com/monitor/dix — not a free API.
+    Fetch DIX (Dark Index) from squeezemetrics public CSV.
+    Endpoint: https://squeezemetrics.com/monitor/static/DIX.csv
+    Expected columns: date, price, dix, gex (ascending order by date).
+
+    Returns {"current", "5d_ago", "20d_ago", "5d_change_pct", "date",
+            "source", "interpretation"} on success,
+            {"error": ...} on failure (Agent 1 will treat as soft-missing).
     """
-    # Placeholder — needs web scrape or paid data source
-    return {"error": "DIX unavailable — needs squeezemetrics.com scraper setup"}
+    import csv
+    import io
+    import requests
+
+    URL = "https://squeezemetrics.com/monitor/static/DIX.csv"
+    try:
+        resp = requests.get(
+            URL,
+            timeout=10,
+            headers={"User-Agent": "open-claw/1.0 (research)"},
+        )
+        resp.raise_for_status()
+    except requests.HTTPError as e:
+        return {"error": f"DIX HTTP {e.response.status_code} from squeezemetrics"}
+    except requests.RequestException as e:
+        return {"error": f"DIX fetch failed: {e}"}
+
+    try:
+        reader = csv.DictReader(io.StringIO(resp.text))
+        # Normalize column keys to lowercase
+        rows = [{k.lower(): v for k, v in r.items()} for r in reader]
+    except Exception as e:
+        return {"error": f"DIX CSV parse failed: {e}"}
+
+    if len(rows) < 20:
+        return {"error": f"DIX CSV had only {len(rows)} rows (need >=20)"}
+
+    def _f(row, key):
+        try:
+            v = row.get(key)
+            return float(v) if v not in (None, "", ".") else None
+        except (TypeError, ValueError):
+            return None
+
+    latest = _f(rows[-1], "dix")
+    prev_5 = _f(rows[-6], "dix") if len(rows) >= 6 else None
+    prev_20 = _f(rows[-21], "dix") if len(rows) >= 21 else None
+    date_str = rows[-1].get("date", "unknown")
+
+    if latest is None:
+        return {"error": "DIX CSV: could not parse latest value"}
+
+    # squeezemetrics returns DIX as decimal (e.g., 0.4465 = 44.65%)
+    # Normalize to percentage if value is < 1.0
+    if latest < 1.0:
+        latest = latest * 100
+        if prev_5 is not None:
+            prev_5 = prev_5 * 100
+        if prev_20 is not None:
+            prev_20 = prev_20 * 100
+
+    # Sanity: DIX historically lives 35-50. Outside [20, 60] = format change or bad day.
+    if not (20.0 <= latest <= 60.0):
+        return {
+            "error": f"DIX value {latest} outside plausible range [20,60] — feed format may have changed",
+            "raw_value": latest,
+        }
+
+    interpretation = (
+        "HIGH (>45) — institutional accumulation"
+        if latest > 45
+        else "LOW (<40) — distribution"
+        if latest < 40
+        else "NEUTRAL (40-45)"
+    )
+
+    out = {
+        "current": round(latest, 2),
+        "date": date_str,
+        "source": "squeezemetrics.com/monitor/static/DIX.csv",
+        "interpretation": interpretation,
+    }
+    if prev_5 is not None:
+        out["5d_ago"] = round(prev_5, 2)
+        out["5d_change_pct"] = round((latest - prev_5) / prev_5 * 100, 2)
+    if prev_20 is not None:
+        out["20d_ago"] = round(prev_20, 2)
+        out["20d_change_pct"] = round((latest - prev_20) / prev_20 * 100, 2)
+    return out
 
 
 def fetch_sector_breadth() -> dict:

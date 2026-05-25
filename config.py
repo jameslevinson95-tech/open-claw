@@ -55,7 +55,56 @@ POSTURE_TABLE = {
     "Cautious Risk-On": {"posture": "Offensive",   "conviction_floor": 6},
     "Risk-Off":         {"posture": "Defensive",   "conviction_floor": 7},
     "Crisis":           {"posture": "Bunker",      "conviction_floor": 9},
+    "Defer":            {"posture": "Hold",        "conviction_floor": 10},
 }
+
+# Agent 1 emits regimes/vols in UPPERCASE; config keys are Title-Case.
+# These maps are the single source of truth for normalization.
+# Add a new alias here if you ever rename a regime.
+_REGIME_CANONICAL = {
+    "RISK-ON": "Risk-On",
+    "CAUTIOUS RISK-ON": "Cautious Risk-On",
+    "RISK-OFF": "Risk-Off",
+    "CRISIS": "Crisis",
+    "DEFER": "Defer",
+}
+
+_VOL_CANONICAL = {
+    "COMPRESSED": "Compressed",
+    "NORMAL": "Normal",
+    "ELEVATED": "Elevated",
+    "STRESSED": "Stressed",
+}
+
+
+def normalize_regime(s: str) -> str:
+    """Coerce any-casing regime string to canonical POSTURE_TABLE key.
+    Raises ValueError on unknown input — DO NOT swallow silently."""
+    if not s:
+        raise ValueError("normalize_regime: empty/None regime")
+    key = s.strip().upper()
+    if key in _REGIME_CANONICAL:
+        return _REGIME_CANONICAL[key]
+    if s in POSTURE_TABLE:  # already canonical
+        return s
+    raise ValueError(
+        f"Unknown regime: {s!r} (expected one of {list(_REGIME_CANONICAL)})"
+    )
+
+
+def normalize_vol_regime(s: str) -> str:
+    """Coerce any-casing vol_regime to canonical VOL_RISK_MULT key.
+    Raises ValueError on unknown input."""
+    if not s:
+        raise ValueError("normalize_vol_regime: empty/None vol_regime")
+    key = s.strip().upper()
+    if key in _VOL_CANONICAL:
+        return _VOL_CANONICAL[key]
+    if s in VOL_RISK_MULT:
+        return s
+    raise ValueError(
+        f"Unknown vol_regime: {s!r} (expected one of {list(_VOL_CANONICAL)})"
+    )
 
 # Risk-first sizing constants
 BASE_RISK = 1500               # Per-trade $ at neutral conviction

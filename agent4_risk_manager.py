@@ -36,6 +36,8 @@ from config import (
     THEME_CAP,
     MAX_PORTFOLIO_HEAT_PCT,
     HEAT_WARNING_PCT,
+    normalize_regime,
+    normalize_vol_regime,
 )
 from broker import AlpacaBroker
 
@@ -323,6 +325,7 @@ def run_agent4b(
     verifications: list = None,
     existing_exposure: float = 0.0,
     remaining_heat_budget: float = None,
+    account_value: float = None,
 ) -> dict:
     """
     Agent 4B (Python): Risk-first position sizing + tear sheet generation.
@@ -335,10 +338,54 @@ def run_agent4b(
         existing_exposure: dollar value of already-open positions carried from prior sessions.
         remaining_heat_budget: max additional risk dollars allowed before portfolio heat cap is hit.
                                None means no heat constraint (backward compat).
+        account_value: live account equity. If None, fetches from Alpaca (fallback to ACCOUNT_SIZE).
     """
-    regime = directive.get("regime", "UNKNOWN")
-    vol_regime = directive.get("vol_regime", "Normal")
-    posture_info = POSTURE_TABLE.get(regime, POSTURE_TABLE.get("Cautious Risk-On"))
+    regime_raw = directive.get("regime", "")
+    vol_raw = directive.get("vol_regime", "")
+
+    try:
+        regime = normalize_regime(regime_raw)
+        vol_regime = normalize_vol_regime(vol_raw)
+    except ValueError as e:
+        print(f"[Agent 4B] FATAL: {e}")
+        return {
+            "success": False,
+            "agent": "risk_manager",
+            "timestamp": datetime.now().isoformat(),
+            "error": str(e),
+            "trade_orders": [],
+        }
+
+    # DEFER short-circuit: no trades, no sizing, return clean halt
+    if regime == "Defer":
+        print("[Agent 4B] Regime=Defer — halting, no trades this session.")
+        return {
+            "success": True,
+            "agent": "risk_manager",
+            "timestamp": datetime.now().isoformat(),
+            "trade_orders": [],
+            "session_summary": {
+                "total_trades": 0,
+                "halted_reason": "DEFER",
+                "session_risk_used": 0.0,
+                "session_risk_budget": SESSION_RISK_BUDGET,
+            },
+            "modifiers_used": {"regime": regime, "vol_regime": vol_regime, "posture": "Hold"},
+        }
+
+    # Resolve account_value: caller override → live Alpaca equity → hardcoded fallback
+    if account_value is None:
+        try:
+            broker_acct = AlpacaBroker().get_account_summary()
+            account_value = float(broker_acct["equity"])
+            print(f"[Agent 4B] Live equity: ${account_value:,.2f}")
+        except Exception as e:
+            print(f"[Agent 4B] Could not fetch live equity ({e}) — falling back to ACCOUNT_SIZE=${ACCOUNT_SIZE}")
+            account_value = float(ACCOUNT_SIZE)
+    else:
+        print(f"[Agent 4B] Using caller-passed equity: ${account_value:,.2f}")
+
+    posture_info = POSTURE_TABLE[regime]  # Guaranteed to hit after normalize_regime
     posture = posture_info["posture"]
 
     print(f"[Agent 4B] Regime: {regime} | Vol: {vol_regime} | Posture: {posture}")
@@ -404,7 +451,7 @@ def run_agent4b(
             confirm_enhanced=confirm_enhanced,
             vol_regime=vol_regime,
             posture=posture,
-            account_value=ACCOUNT_SIZE,
+            account_value=account_value,
             session_risk_used=session_risk_used,
         )
 
@@ -423,7 +470,7 @@ def run_agent4b(
                 continue
 
         # Dry powder floor: new + existing exposure cannot exceed 80%
-        max_deployable = ACCOUNT_SIZE * (1 - DRY_POWDER_FLOOR) - total_allocated - existing_exposure
+        max_deployable = account_value * (1 - DRY_POWDER_FLOOR) - total_allocated - existing_exposure
         if max_deployable <= 0:
             trade_orders.append(_reject_trade(ticker, "Dry powder floor: existing exposure at 80%"))
             continue
@@ -446,7 +493,7 @@ def run_agent4b(
             "stop_loss": round(stop, 2),
             "stop_anchor_label": anchor.get("stop_anchor_label", ""),
             "position_value": position_value,
-            "pct_of_account": round(position_value / ACCOUNT_SIZE * 100, 2),
+            "pct_of_account": round(position_value / account_value * 100, 2),
             "risk_budgeted": sizing["risk_budgeted"],
             "risk_actual": risk_actual,
             "risk_multiplier": sizing["risk_multiplier"],
@@ -467,7 +514,7 @@ def run_agent4b(
 
         print(f"  [Agent 4B] {ticker}: {shares} shares @ ${entry}, "
               f"risk ${risk_actual:.2f} (budgeted ${sizing['risk_budgeted']:.2f}), "
-              f"alloc {round(position_value/ACCOUNT_SIZE*100, 1)}%, "
+              f"alloc {round(position_value/account_value*100, 1)}%, "
               f"tier={conviction_tier}, bound={sizing['binding_constraint']}")
 
     result = {
@@ -481,8 +528,9 @@ def run_agent4b(
             "session_risk_budget": SESSION_RISK_BUDGET,
             "total_allocated": round(total_allocated, 2),
             "existing_exposure": round(existing_exposure, 2),
-            "pct_deployed": round((total_allocated + existing_exposure) / ACCOUNT_SIZE * 100, 2),
-            "dry_powder_pct": round((1 - (total_allocated + existing_exposure) / ACCOUNT_SIZE) * 100, 2),
+            "pct_deployed": round((total_allocated + existing_exposure) / account_value * 100, 2),
+            "dry_powder_pct": round((1 - (total_allocated + existing_exposure) / account_value) * 100, 2),
+            "account_value": round(account_value, 2),
         },
         "modifiers_used": {
             "regime": regime,
