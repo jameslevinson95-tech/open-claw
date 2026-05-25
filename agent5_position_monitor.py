@@ -80,6 +80,27 @@ OUTPUT FORMAT — respond with ONLY this JSON:
 }"""
 
 
+PORTFOLIO_STATE_PATH = "output/portfolio_state.json"
+
+
+def _load_portfolio_state() -> dict:
+    """Load persistent portfolio state (high-water-mark stops) from disk."""
+    if os.path.exists(PORTFOLIO_STATE_PATH):
+        try:
+            with open(PORTFOLIO_STATE_PATH) as f:
+                return json.load(f)
+        except (json.JSONDecodeError, IOError) as e:
+            print(f"  [Agent 5] Warning: Could not load portfolio state: {e}")
+    return {}
+
+
+def _save_portfolio_state(state: dict) -> None:
+    """Save persistent portfolio state (high-water-mark stops) to disk."""
+    os.makedirs(os.path.dirname(PORTFOLIO_STATE_PATH) or ".", exist_ok=True)
+    with open(PORTFOLIO_STATE_PATH, "w") as f:
+        json.dump(state, f, indent=2)
+
+
 def snapshot_prices(tickers: list) -> dict:
     """
     Snapshot current market prices at 3:25 PM ET.
@@ -237,10 +258,15 @@ def calculate_trailing_stops(positions: list, snapshot: dict) -> list:
     Returns each position enriched with:
       new_stop, mechanical_action (HOLD/CLOSE), pnl_pct, pnl_dollars
     """
+    # Load persistent high-water-mark state
+    hwm_state = _load_portfolio_state()
+
     results = []
+    active_tickers = set()
 
     for pos in positions:
         ticker = pos["ticker"]
+        active_tickers.add(ticker)
         entry_price = pos["entry_price"]
         original_stop = pos.get("stop_loss", 0)
         shares = pos.get("shares", 0)
@@ -291,6 +317,27 @@ def calculate_trailing_stops(positions: list, snapshot: dict) -> list:
         new_stop = max(new_stop, original_stop)
         new_stop = round(new_stop, 2)
 
+        # ━━━ HIGH-WATER-MARK: Never let the stop decrease ━━━
+        stored = hwm_state.get(ticker, {})
+        stored_hwm_stop = stored.get("hwm_stop", 0)
+        stored_hwm_price = stored.get("hwm_price", 0)
+
+        # Enforce: stop can only ratchet up, never down
+        new_stop = max(new_stop, stored_hwm_stop)
+        new_stop = round(new_stop, 2)
+
+        if new_stop > stored_hwm_stop:
+            trailing_note += f" [HWM updated: ${stored_hwm_stop} → ${new_stop}]"
+        elif stored_hwm_stop > 0 and new_stop == stored_hwm_stop:
+            trailing_note += f" [HWM held at ${stored_hwm_stop}]"
+
+        # Update HWM state for this ticker
+        hwm_state[ticker] = {
+            "hwm_stop": new_stop,
+            "hwm_price": max(current_price, stored_hwm_price),
+            "last_updated": datetime.now().isoformat(),
+        }
+
         # Check if stop is hit
         mechanical_action = "HOLD"
         if current_price <= new_stop:
@@ -308,6 +355,15 @@ def calculate_trailing_stops(positions: list, snapshot: dict) -> list:
             "trailing_stop_note": trailing_note,
             "intraday": price_data,
         })
+
+    # Clean up state entries for tickers no longer in positions
+    stale_tickers = [t for t in hwm_state if t not in active_tickers]
+    for t in stale_tickers:
+        del hwm_state[t]
+        print(f"  [Agent 5] Cleaned up HWM state for closed position: {t}")
+
+    # Persist updated state
+    _save_portfolio_state(hwm_state)
 
     return results
 

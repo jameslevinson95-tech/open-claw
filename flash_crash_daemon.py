@@ -133,11 +133,12 @@ def execute_defensive_protocol(broker: AlpacaBroker, trigger_reason: str, positi
     for pos in positions:
         ticker = pos["ticker"]
         entry_price = pos["avg_entry_price"]
+        current_price = pos["current_price"]
         unrealized_pl = pos["unrealized_pl"]
 
         if unrealized_pl >= 0:
             # Profitable — tighten stop to breakeven, but NEVER widen an existing stop
-            # Check if there's already a stop above entry price
+            # Check if there's already a stop tighter than (i.e. above) entry price
             current_stop = _get_current_stop_price(broker, ticker)
             if current_stop and current_stop > entry_price:
                 # Stop already trailed above entry — do NOT widen it
@@ -147,7 +148,26 @@ def execute_defensive_protocol(broker: AlpacaBroker, trigger_reason: str, positi
                     "note": f"Stop already at ${current_stop:.2f} > entry ${entry_price:.2f} — not widening",
                 })
                 continue
-            # We cancel existing orders and resubmit with breakeven stop.
+
+            # GUARD: If current price is already below entry, a stop at entry_price
+            # would trigger immediately as a market sell with uncontrolled slippage.
+            # Close the position directly instead.
+            if current_price < entry_price:
+                result = broker.close_position(ticker)
+                action = {
+                    "ticker": ticker,
+                    "action": "CLOSE_BELOW_ENTRY",
+                    "entry_price": entry_price,
+                    "current_price": current_price,
+                    "unrealized_pl": unrealized_pl,
+                    "close_result": result,
+                    "note": f"Price ${current_price:.2f} < entry ${entry_price:.2f} — closed to avoid immediate stop trigger",
+                }
+                actions.append(action)
+                print(f"  [Daemon] {ticker}: Price ${current_price:.2f} < entry ${entry_price:.2f} → CLOSED (would trigger immediately)")
+                continue
+
+            # Place new stop FIRST, then cancel old orders (position never naked)
             action = {
                 "ticker": ticker,
                 "action": "TIGHTEN_STOP_BREAKEVEN",
@@ -155,20 +175,18 @@ def execute_defensive_protocol(broker: AlpacaBroker, trigger_reason: str, positi
                 "unrealized_pl": unrealized_pl,
                 "note": f"Stop tightened to breakeven (${entry_price:.2f})",
             }
-            # Attempt to cancel existing orders and place a new stop at breakeven
             try:
                 from alpaca.trading.requests import StopOrderRequest
                 from alpaca.trading.enums import OrderSide, TimeInForce
-                # Cancel existing orders for this ticker
+
+                # Collect existing order IDs for this ticker BEFORE submitting new one
+                existing_order_ids = []
                 orders = broker.client.get_orders()
                 for o in orders:
                     if o.symbol == ticker:
-                        try:
-                            broker.client.cancel_order_by_id(o.id)
-                        except Exception:
-                            pass
-                # Place new stop at breakeven
-                from alpaca.trading.requests import StopOrderRequest
+                        existing_order_ids.append(o.id)
+
+                # Submit new breakeven stop FIRST — position stays protected
                 stop_req = StopOrderRequest(
                     symbol=ticker,
                     qty=pos["shares"],
@@ -177,6 +195,14 @@ def execute_defensive_protocol(broker: AlpacaBroker, trigger_reason: str, positi
                     stop_price=round(entry_price, 2),
                 )
                 broker.client.submit_order(stop_req)
+
+                # NOW cancel old orders (position was never unprotected)
+                for oid in existing_order_ids:
+                    try:
+                        broker.client.cancel_order_by_id(oid)
+                    except Exception:
+                        pass
+
                 action["status"] = "executed"
             except Exception as e:
                 action["status"] = "logged_only"
@@ -204,7 +230,41 @@ def tighten_individual_stop(broker: AlpacaBroker, pos: dict) -> dict:
     """Tighten a single position's stop to breakeven when it's down >5% intraday."""
     ticker = pos["ticker"]
     entry_price = pos["avg_entry_price"]
+    current_price = pos["current_price"]
 
+    # Check if stop is already tighter than entry price — don't widen it
+    current_stop = _get_current_stop_price(broker, ticker)
+    if current_stop and current_stop > entry_price:
+        action = {
+            "ticker": ticker,
+            "action": "SKIP",
+            "note": f"Stop already at ${current_stop:.2f} > entry ${entry_price:.2f} — not widening",
+        }
+        print(f"  [Daemon] {ticker}: Stop already at ${current_stop:.2f} > entry — skipping")
+        return action
+
+    # GUARD: If current price is already below entry, a stop at entry_price
+    # would trigger immediately as a market sell with uncontrolled slippage.
+    # Close the position directly instead.
+    if current_price < entry_price:
+        action = {
+            "ticker": ticker,
+            "action": "CLOSE_BELOW_ENTRY",
+            "entry_price": entry_price,
+            "current_price": current_price,
+            "note": f"Price ${current_price:.2f} < entry ${entry_price:.2f} — closed to avoid immediate stop trigger",
+        }
+        try:
+            result = broker.close_position(ticker)
+            action["close_result"] = result
+            action["status"] = "executed"
+        except Exception as e:
+            action["status"] = "logged_only"
+            action["error"] = str(e)
+        print(f"  [Daemon] {ticker}: Price ${current_price:.2f} < entry ${entry_price:.2f} → CLOSED (would trigger immediately)")
+        return action
+
+    # Place new stop FIRST, then cancel old orders (position never naked)
     action = {
         "ticker": ticker,
         "action": "INDIVIDUAL_STOP_TIGHTEN",
@@ -213,17 +273,17 @@ def tighten_individual_stop(broker: AlpacaBroker, pos: dict) -> dict:
     }
 
     try:
-        # Cancel existing orders for this ticker
+        from alpaca.trading.requests import StopOrderRequest
+        from alpaca.trading.enums import OrderSide, TimeInForce
+
+        # Collect existing order IDs for this ticker BEFORE submitting new one
+        existing_order_ids = []
         orders = broker.client.get_orders()
         for o in orders:
             if o.symbol == ticker:
-                try:
-                    broker.client.cancel_order_by_id(o.id)
-                except Exception:
-                    pass
+                existing_order_ids.append(o.id)
 
-        from alpaca.trading.requests import StopOrderRequest
-        from alpaca.trading.enums import OrderSide, TimeInForce
+        # Submit new breakeven stop FIRST — position stays protected
         stop_req = StopOrderRequest(
             symbol=ticker,
             qty=pos["shares"],
@@ -232,6 +292,14 @@ def tighten_individual_stop(broker: AlpacaBroker, pos: dict) -> dict:
             stop_price=round(entry_price, 2),
         )
         broker.client.submit_order(stop_req)
+
+        # NOW cancel old orders (position was never unprotected)
+        for oid in existing_order_ids:
+            try:
+                broker.client.cancel_order_by_id(oid)
+            except Exception:
+                pass
+
         action["status"] = "executed"
     except Exception as e:
         action["status"] = "logged_only"

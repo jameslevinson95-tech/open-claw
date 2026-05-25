@@ -36,6 +36,25 @@ def _compute_ema_20(ticker: str) -> Optional[float]:
         return None
 
 
+def _is_bouncing(ticker: str) -> bool:
+    """
+    Momentum confirmation to avoid falling-knife entries.
+    Fetches 5 days of daily history and checks whether the latest close
+    is higher than the previous close (i.e., a green day / bounce).
+    Returns False if the stock closed lower today than yesterday,
+    meaning it may be crashing through the EMA rather than bouncing off it.
+    """
+    try:
+        tk = yf.Ticker(ticker)
+        hist = tk.history(period="5d")
+        if hist.empty or len(hist) < 2:
+            return False  # insufficient data → conservative, treat as falling
+        closes = hist["Close"].values
+        return bool(closes[-1] > closes[-2])
+    except Exception:
+        return False  # on error, be conservative
+
+
 def _get_current_price(ticker: str) -> Optional[float]:
     """Fetch the current/last price for a ticker."""
     try:
@@ -176,11 +195,21 @@ class Watchlist:
             pct_above_ema = ((current - ema_20) / ema_20) * 100
 
             if -1.0 <= pct_above_ema <= 1.0:
-                entry["status"] = "READY"
-                entry["current_price"] = current
-                entry["pct_above_ema"] = round(pct_above_ema, 2)
-                ready.append(entry)
-                changed = True
+                # Momentum confirmation: avoid buying falling knives.
+                # A stock crashing through the EMA from above will briefly
+                # satisfy the ±1% zone but is NOT a healthy pullback entry.
+                if _is_bouncing(ticker):
+                    entry["status"] = "READY"
+                    entry["current_price"] = current
+                    entry["pct_above_ema"] = round(pct_above_ema, 2)
+                    ready.append(entry)
+                    changed = True
+                else:
+                    # Near EMA but still falling — don't promote yet
+                    entry["status"] = "WATCHING_FALLING"
+                    entry["current_price"] = current
+                    entry["pct_above_ema"] = round(pct_above_ema, 2)
+                    changed = True
             else:
                 entry["current_price"] = current
                 entry["pct_above_ema"] = round(pct_above_ema, 2)

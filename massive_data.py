@@ -406,16 +406,178 @@ def fetch_technicals_with_sma(ticker: str) -> dict:
     return result
 
 
+# ─── Local Technical Calculations (no API calls) ────────────────────
+
+def calculate_technicals_local(ticker: str, period: str = "6mo") -> dict:
+    """
+    Calculate technical indicators locally using yfinance + pandas.
+    Zero API calls to Massive — no rate limit concerns.
+
+    Downloads historical bars from yfinance and computes:
+    - SMA 10, 20, 50
+    - EMA 20
+    - RSI 14
+    - MACD (12, 26, 9)
+
+    Args:
+        ticker: Stock symbol (e.g. "SPY")
+        period: yfinance period string ("1mo", "3mo", "6mo", "1y", "2y")
+
+    Returns:
+        dict with all indicators, or dict with "error" key on failure.
+    """
+    import yfinance as yf
+    import pandas as pd
+
+    try:
+        df = yf.download(ticker, period=period, progress=False, auto_adjust=True)
+    except Exception as e:
+        return {"ticker": ticker, "error": f"yfinance download failed: {e}", "source": "local_calculation"}
+
+    if df.empty or len(df) < 50:
+        return {"ticker": ticker, "error": f"Insufficient data ({len(df)} bars, need >=50)", "source": "local_calculation"}
+
+    # Flatten MultiIndex columns if yfinance returns them (e.g. ("Close", "SPY"))
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+
+    closes = df["Close"].astype(float)
+
+    # ── SMA ──
+    sma_10 = closes.rolling(window=10).mean()
+    sma_20 = closes.rolling(window=20).mean()
+    sma_50 = closes.rolling(window=50).mean()
+
+    # ── EMA ──
+    ema_20 = closes.ewm(span=20, adjust=False).mean()
+
+    # ── RSI 14 ──
+    delta = closes.diff()
+    gain = delta.where(delta > 0, 0.0).rolling(14).mean()
+    loss = (-delta.where(delta < 0, 0.0)).rolling(14).mean()
+    rs = gain / loss
+    rsi = 100 - (100 / (1 + rs))
+
+    # ── MACD (12, 26, 9) ──
+    ema12 = closes.ewm(span=12, adjust=False).mean()
+    ema26 = closes.ewm(span=26, adjust=False).mean()
+    macd_line = ema12 - ema26
+    signal_line = macd_line.ewm(span=9, adjust=False).mean()
+    histogram = macd_line - signal_line
+
+    # ── Extract latest values ──
+    last_close = round(float(closes.iloc[-1]), 2)
+    cur_sma_10 = round(float(sma_10.iloc[-1]), 4) if pd.notna(sma_10.iloc[-1]) else None
+    cur_sma_20 = round(float(sma_20.iloc[-1]), 4) if pd.notna(sma_20.iloc[-1]) else None
+    cur_sma_50 = round(float(sma_50.iloc[-1]), 4) if pd.notna(sma_50.iloc[-1]) else None
+    cur_ema_20 = round(float(ema_20.iloc[-1]), 4) if pd.notna(ema_20.iloc[-1]) else None
+    cur_rsi = round(float(rsi.iloc[-1]), 2) if pd.notna(rsi.iloc[-1]) else None
+    cur_macd = round(float(macd_line.iloc[-1]), 4) if pd.notna(macd_line.iloc[-1]) else None
+    cur_signal = round(float(signal_line.iloc[-1]), 4) if pd.notna(signal_line.iloc[-1]) else None
+    cur_hist = round(float(histogram.iloc[-1]), 4) if pd.notna(histogram.iloc[-1]) else None
+
+    # ── RSI classification ──
+    rsi_signal = "neutral"
+    if cur_rsi is not None:
+        if cur_rsi >= 70:
+            rsi_signal = "overbought"
+        elif cur_rsi >= 60:
+            rsi_signal = "bullish"
+        elif cur_rsi <= 30:
+            rsi_signal = "oversold"
+        elif cur_rsi <= 40:
+            rsi_signal = "bearish"
+
+    # ── MACD classification ──
+    macd_trend = "neutral"
+    if cur_hist is not None and cur_macd is not None and cur_signal is not None:
+        if cur_hist > 0 and cur_macd > cur_signal:
+            macd_trend = "bullish"
+        elif cur_hist < 0 and cur_macd < cur_signal:
+            macd_trend = "bearish"
+
+    # ── MACD crossover detection ──
+    macd_crossover = None
+    if len(histogram) >= 2 and pd.notna(histogram.iloc[-1]) and pd.notna(histogram.iloc[-2]):
+        prev_hist = float(histogram.iloc[-2])
+        curr_hist = float(histogram.iloc[-1])
+        if prev_hist <= 0 < curr_hist:
+            macd_crossover = "bullish_crossover"
+        elif prev_hist >= 0 > curr_hist:
+            macd_crossover = "bearish_crossover"
+
+    # ── Price vs MAs ──
+    price_vs_sma20 = None
+    price_vs_sma50 = None
+    if cur_sma_20 is not None:
+        price_vs_sma20 = "above" if last_close > cur_sma_20 else "below"
+    if cur_sma_50 is not None:
+        price_vs_sma50 = "above" if last_close > cur_sma_50 else "below"
+
+    return {
+        "ticker": ticker,
+        "sma_10": cur_sma_10,
+        "sma_20": cur_sma_20,
+        "sma_50": cur_sma_50,
+        "ema_20": cur_ema_20,
+        "rsi_14": cur_rsi,
+        "rsi_signal": rsi_signal,
+        "macd": {"macd_line": cur_macd, "signal_line": cur_signal, "histogram": cur_hist},
+        "macd_trend": macd_trend,
+        "macd_crossover": macd_crossover,
+        "last_close": last_close,
+        "price_vs_sma20": price_vs_sma20,
+        "price_vs_sma50": price_vs_sma50,
+        "source": "local_calculation",
+    }
+
+
+def calculate_technicals_batch(tickers: list, period: str = "6mo") -> dict:
+    """
+    Calculate technical indicators locally for multiple tickers.
+    No API calls — runs entirely off yfinance historical data + pandas.
+
+    Args:
+        tickers: List of stock symbols
+        period: yfinance period string
+
+    Returns:
+        Dict keyed by ticker symbol, each value is the output of calculate_technicals_local().
+    """
+    results = {}
+    for ticker in tickers:
+        results[ticker] = calculate_technicals_local(ticker, period=period)
+    return results
+
+
 def format_technicals_for_prompt(technicals: dict) -> str:
-    """Format technical analysis data for agent prompts."""
+    """Format technical analysis data for agent prompts.
+    Handles both API-based format and local calculation format."""
     t = technicals
+
+    # Resolve price — API uses 'price', local uses 'last_close'
+    price = t.get('price') or t.get('last_close', '?')
+
+    # Resolve MACD fields — local wraps them in a dict, API puts them at top level
+    macd_data = t.get('macd')
+    if isinstance(macd_data, dict):
+        macd_val = macd_data.get('macd_line', 'N/A')
+        signal_val = macd_data.get('signal_line', 'N/A')
+        hist_val = macd_data.get('histogram', 'N/A')
+    else:
+        macd_val = macd_data if macd_data is not None else 'N/A'
+        signal_val = t.get('macd_signal', 'N/A')
+        hist_val = t.get('macd_histogram', 'N/A')
+
     lines = [
         f"TECHNICAL ANALYSIS: {t['ticker']}",
-        f"  Price: ${t.get('price', '?')}",
+        f"  Price: ${price}",
+        f"  SMA(10): {t.get('sma_10', 'N/A')}",
         f"  SMA(20): {t.get('sma_20', 'N/A')} ({t.get('price_vs_sma20', '?')})",
         f"  SMA(50): {t.get('sma_50', 'N/A')} ({t.get('price_vs_sma50', '?')})",
+        f"  EMA(20): {t.get('ema_20', 'N/A')}",
         f"  RSI(14): {t.get('rsi_14', 'N/A')} ({t.get('rsi_signal', '?')})",
-        f"  MACD: {t.get('macd', 'N/A')} | Signal: {t.get('macd_signal', 'N/A')} | Hist: {t.get('macd_histogram', 'N/A')}",
+        f"  MACD: {macd_val} | Signal: {signal_val} | Hist: {hist_val}",
         f"  MACD Trend: {t.get('macd_trend', '?')} | Crossover: {t.get('macd_crossover', 'none')}",
     ]
     return "\n".join(lines)

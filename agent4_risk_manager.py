@@ -217,7 +217,8 @@ def calculate_portfolio_heat() -> dict:
 
         # Anchor risk to entry price, not current price (prevents heat shrinkage during drawdowns)
         if stop_price >= entry_price:
-            open_risk = max(0, shares * (current_price - stop_price))
+            # Stop is at or above entry — principal is fully protected, zero heat
+            open_risk = 0.0
         else:
             open_risk = shares * (entry_price - stop_price)
 

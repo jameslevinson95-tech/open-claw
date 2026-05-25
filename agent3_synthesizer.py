@@ -22,7 +22,7 @@ Verdicts:
 import json
 import os
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import yfinance as yf
 from dotenv import load_dotenv
@@ -149,7 +149,15 @@ def prefetch_qualitative_context(candidates: list) -> dict:
             try:
                 expirations = stock.options
                 if expirations:
-                    nearest_exp = expirations[0]
+                    # Filter out near-term expirations (< 7 DTE) to avoid
+                    # gamma noise from retail speculation and MM hedging.
+                    min_dte = 7
+                    target_date = (datetime.now() + timedelta(days=min_dte)).strftime("%Y-%m-%d")
+                    valid_exps = [e for e in expirations if e >= target_date]
+                    if valid_exps:
+                        nearest_exp = valid_exps[0]  # nearest that's >= 7 days out
+                    else:
+                        nearest_exp = expirations[-1]  # fallback to farthest available
                     chain = stock.option_chain(nearest_exp)
                     puts_oi = int(chain.puts["openInterest"].fillna(0).sum()) if not chain.puts.empty else 0
                     calls_oi = int(chain.calls["openInterest"].fillna(0).sum()) if not chain.calls.empty else 0
