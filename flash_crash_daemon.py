@@ -28,9 +28,10 @@ from broker import AlpacaBroker
 
 OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
 
-# Thresholds
-SPY_DROP_THRESHOLD = -0.015       # -1.5% from today's open
-VIX_SPIKE_THRESHOLD = 0.20        # +20% from today's open
+# Thresholds (tightened to avoid triggering on normal volatility)
+# Market-wide defensive protocol requires BOTH SPY drop AND VIX spike (AND logic)
+SPY_DROP_THRESHOLD = -0.025       # -2.5% from today's open
+VIX_SPIKE_THRESHOLD = 0.30        # +30% from today's open
 POSITION_DROP_THRESHOLD = -0.05   # -5% intraday for individual positions
 
 
@@ -394,12 +395,21 @@ def run_daemon():
                 actions.append(action)
 
     # --- If market-wide triggers fired, run full defensive protocol ---
-    market_wide_triggers = [t for t in triggers if t["type"] in ("SPY_DROP", "VIX_SPIKE")]
-    if market_wide_triggers:
+    # Require BOTH SPY drop AND VIX spike to avoid triggering on normal noise.
+    # A -2.5% SPY day with calm VIX is an orderly pullback, not a crash.
+    spy_triggered = any(t["type"] == "SPY_DROP" for t in triggers)
+    vix_triggered = any(t["type"] == "VIX_SPIKE" for t in triggers)
+
+    if spy_triggered and vix_triggered:
+        market_wide_triggers = [t for t in triggers if t["type"] in ("SPY_DROP", "VIX_SPIKE")]
         trigger_reasons = "; ".join(t["detail"] for t in market_wide_triggers)
         print(f"\n[Daemon] 🛡️ DEFENSIVE PROTOCOL ACTIVATED: {trigger_reasons}")
         defensive_actions = execute_defensive_protocol(broker, trigger_reasons, positions)
         actions.extend(defensive_actions)
+    elif spy_triggered or vix_triggered:
+        single_triggers = [t for t in triggers if t["type"] in ("SPY_DROP", "VIX_SPIKE")]
+        for t in single_triggers:
+            print(f"[Daemon] ⚠️ WARNING (no action): {t['detail']} — waiting for dual confirmation")
 
     # --- If any triggers fired, save outputs ---
     if triggers:
