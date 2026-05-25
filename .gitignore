@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+.env
+output/archive/
+output/reviews/
+output/*.json
+output/*.txt
+output/*.pdf
+output/*.md
+output/*.html
+journal/trades.csv
+*.egg-info/
+.DS_Store
