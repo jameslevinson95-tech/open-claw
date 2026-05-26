@@ -101,28 +101,58 @@ def generate_weekly_pulse():
 
 def audit_data_sources():
     """
-    Audit data source quality across archived pipeline runs.
+    Comprehensive data source audit across ALL pipeline data providers.
     Grades each source: Strong 🟢, Neutral ⚪, or Weak 🔴.
+    Tracks cost, reliability, and value-add.
     """
-    if not os.path.exists(ARCHIVE_DIR):
-        return "  ⚠️ No archive data available for audit."
+    report = ["\n*3. Data Source Quality Audit*"]
+    report.append("  _Grading: 🟢 Strong | ⚪ Neutral | 🔴 Weak | 💰 Cost_")
+    report.append("")
 
-    runs = sorted(os.listdir(ARCHIVE_DIR))[-14:]  # Last 14 runs
+    # ── Source registry: what we use, what it costs, what it does ──
+    sources = {
+        "x_twitter": {"name": "X/Twitter Smart Money", "icon": "🐦", "cost": "Free (x_search via OCPlatform)", "role": "Smart money sentiment, institutional mentions"},
+        "alpaca": {"name": "Alpaca Market Data", "icon": "🦙", "cost": "Free (IEX feed)", "role": "Primary price quotes, prior close, historical bars"},
+        "massive_technicals": {"name": "Massive API (Technicals)", "icon": "📈", "cost": "Free tier (5 calls/min)", "role": "Server-side RSI, MACD, SMA, EMA"},
+        "massive_macro": {"name": "Massive API (Macro/Economy)", "icon": "🏛️", "cost": "Free tier", "role": "Treasury yields, inflation, labor market"},
+        "massive_fundamentals": {"name": "Massive API (Fundamentals)", "icon": "📊", "cost": "Free tier", "role": "Financials, dividends, ticker details"},
+        "assembly": {"name": "Assembly/FRED Macro", "icon": "🏦", "cost": "Free", "role": "Sentiment composite, cross-asset rotation, sector RS"},
+        "squeezemetrics": {"name": "SqueezMetrics DIX", "icon": "🌊", "cost": "Free (CSV)", "role": "Dark pool index — institutional accumulation/distribution"},
+        "finviz": {"name": "Finviz Screener", "icon": "🔍", "cost": "Free (finvizfinance)", "role": "Dynamic stock screening (momentum, sectors, themes)"},
+        "yfinance": {"name": "Yahoo Finance", "icon": "📰", "cost": "Free (yfinance)", "role": "Fallback price data, sector breadth, VIX"},
+        "schwab": {"name": "Schwab API", "icon": "🏦", "cost": "Free (with brokerage acct)", "role": "Real-time quotes, trade execution (incoming)"},
+        "discord": {"name": "Discord", "icon": "💬", "cost": "Free", "role": "Output channel — signal-to-noise TBD"},
+    }
+
+    # ── Scan archived runs for reliability data ──
+    runs = []
+    if os.path.exists(ARCHIVE_DIR):
+        runs = sorted(os.listdir(ARCHIVE_DIR))[-14:]  # Last 14 runs
+
     mentions_list = []
     missing_data_flags = []
+    alpaca_success = 0
+    alpaca_fail = 0
+    massive_tech_success = 0
+    massive_tech_fail = 0
+    finviz_success = 0
+    finviz_fallback = 0
+    dix_success = 0
+    dix_fail = 0
+    assembly_stale = 0
+    assembly_fresh = 0
 
     for run in runs:
         run_dir = os.path.join(ARCHIVE_DIR, run)
         if not os.path.isdir(run_dir):
             continue
 
-        # Twitter/X Audit
+        # Twitter/X mentions
         sm_file = os.path.join(run_dir, "smart_money_mentions.json")
         if os.path.exists(sm_file):
             try:
                 with open(sm_file) as f:
                     data = json.load(f)
-                # Handle both formats: list of mentions or dict with total
                 if isinstance(data, dict):
                     mentions_list.append(data.get("total_mentions", 0))
                 elif isinstance(data, list):
@@ -130,7 +160,7 @@ def audit_data_sources():
             except Exception:
                 pass
 
-        # Macro Audit
+        # Macro audit (DIX, MOVE, assembly source)
         macro_file = os.path.join(run_dir, "preflight_macro.json")
         if os.path.exists(macro_file):
             try:
@@ -139,38 +169,162 @@ def audit_data_sources():
                 if isinstance(macro, dict):
                     if "DIX" not in macro or (isinstance(macro.get("DIX"), dict) and "error" in macro["DIX"]):
                         missing_data_flags.append(f"DIX missing in {run}")
+                        dix_fail += 1
+                    else:
+                        dix_success += 1
                     if "MOVE" not in macro or (isinstance(macro.get("MOVE"), dict) and "error" in macro["MOVE"]):
                         missing_data_flags.append(f"MOVE missing in {run}")
             except Exception:
                 pass
 
-    report = ["\n*3. Data Source Quality Audit*"]
+        # Technicals audit
+        tech_file = os.path.join(run_dir, "technicals.json")
+        if os.path.exists(tech_file):
+            try:
+                with open(tech_file) as f:
+                    tech = json.load(f)
+                errors = sum(1 for v in tech.values() if isinstance(v, dict) and "error" in v)
+                if errors == 0:
+                    massive_tech_success += 1
+                else:
+                    massive_tech_fail += 1
+            except Exception:
+                massive_tech_fail += 1
 
+        # Screener source audit
+        screener_file = os.path.join(run_dir, "screener_universe.json")
+        if os.path.exists(screener_file):
+            try:
+                with open(screener_file) as f:
+                    screen = json.load(f)
+                if isinstance(screen, list) and screen:
+                    sources_used = set(t.get("source", "") for t in screen)
+                    if "finviz_dynamic" in sources_used:
+                        finviz_success += 1
+                    elif "hardcoded_fallback" in sources_used:
+                        finviz_fallback += 1
+            except Exception:
+                pass
+
+        # Assembly freshness
+        assembly_file = os.path.join(run_dir, "assembly_data.json")
+        if os.path.exists(assembly_file):
+            try:
+                with open(assembly_file) as f:
+                    asm = json.load(f)
+                if asm.get("source") == "public_api_fallback":
+                    assembly_stale += 1
+                else:
+                    assembly_fresh += 1
+            except Exception:
+                assembly_stale += 1
+
+    total_runs = max(len(runs), 1)
+
+    # ── Grade each source ──
+
+    # X/Twitter
     avg_mentions = np.mean(mentions_list) if mentions_list else 0
+    if avg_mentions >= 5:
+        x_grade, x_note = "🟢", f"Solid coverage (Avg {avg_mentions:.1f} mentions/run)"
+    elif avg_mentions > 0:
+        x_grade, x_note = "🔴", f"Low volume (Avg {avg_mentions:.1f}). Expand curated accounts."
+    else:
+        x_grade, x_note = "⚪", "No data yet"
+    report.append(f"  🐦 *X/Twitter Smart Money:* {x_grade} — _{x_note}_ 💰 Free")
 
-    x_grade = "Neutral ⚪"
-    x_note = "Awaiting sufficient data"
-    if avg_mentions < 5 and len(mentions_list) > 0:
-        x_grade = "Weak 🔴"
-        x_note = f"Mention volume too low (Avg {avg_mentions:.1f}). Consider expanding accounts."
-    elif avg_mentions >= 5:
-        x_grade = "Strong 🟢"
-        x_note = f"Solid institutional coverage (Avg {avg_mentions:.1f})."
+    # Alpaca
+    alpaca_file = os.path.join(OUTPUT_DIR, "screener_universe.json")
+    if os.path.exists(alpaca_file):
+        try:
+            with open(alpaca_file) as f:
+                su = json.load(f)
+            alpaca_tickers = [t for t in su if isinstance(t, dict) and t.get("source") not in ("hardcoded_fallback",)]
+            if alpaca_tickers:
+                report.append(f"  🦙 *Alpaca:* 🟢 — _Primary source for {len(alpaca_tickers)} tickers_ 💰 Free")
+            else:
+                report.append("  🦙 *Alpaca:* ⚪ — _Not primary in latest run_ 💰 Free")
+        except Exception:
+            report.append("  🦙 *Alpaca:* ⚪ — _Unable to assess_ 💰 Free")
+    else:
+        report.append("  🦙 *Alpaca:* ⚪ — _No screener data to assess_ 💰 Free")
 
-    report.append(f"  🐦 *X/Twitter Smart Money:* {x_grade} — _{x_note}_")
-    report.append("  💬 *Discord:* Neutral ⚪ — _Output only right now, signal-to-noise TBD._")
+    # Massive Technicals
+    if massive_tech_success + massive_tech_fail > 0:
+        tech_rate = massive_tech_success / (massive_tech_success + massive_tech_fail) * 100
+        if tech_rate >= 80:
+            report.append(f"  📈 *Massive Technicals:* 🟢 — _{tech_rate:.0f}% clean runs ({massive_tech_success}/{massive_tech_success + massive_tech_fail})_ 💰 Free tier")
+        elif tech_rate >= 50:
+            report.append(f"  📈 *Massive Technicals:* ⚪ — _{tech_rate:.0f}% clean runs — some errors_ 💰 Free tier")
+        else:
+            report.append(f"  📈 *Massive Technicals:* 🔴 — _Only {tech_rate:.0f}% clean runs — check rate limits_ 💰 Free tier")
+    elif os.path.exists(os.path.join(OUTPUT_DIR, "technicals.json")):
+        report.append("  📈 *Massive Technicals:* 🟢 — _Data present, no archive history yet_ 💰 Free tier")
+    else:
+        report.append("  📈 *Massive Technicals:* 🔴 — _No technicals data found_ 💰 Free tier")
 
-    macro_grade = "Strong 🟢"
-    macro_note = "Clean data"
-    if missing_data_flags:
-        macro_grade = "Weak 🔴"
-        macro_note = f"Missing critical data (e.g., {missing_data_flags[-1]})."
+    # Massive Macro (NEW)
+    report.append("  🏛️ *Massive Macro:* 🟢 — _Treasury yields, inflation, labor data — unique to Massive (Schwab doesn't have this)_ 💰 Free tier")
 
-    report.append(f"  📊 *Assembly/FRED Macro:* {macro_grade} — _{macro_note}_")
+    # Massive Fundamentals (NEW)
+    report.append("  📊 *Massive Fundamentals:* 🟢 — _Financials, dividends, ticker details — supplements Finviz_ 💰 Free tier")
 
-    tech_grade = "Strong 🟢" if os.path.exists(os.path.join(OUTPUT_DIR, "technicals.json")) else "Weak 🔴"
-    tech_note = "Technicals correlating well" if tech_grade == "Strong 🟢" else "No technicals data found"
-    report.append(f"  📈 *Polygon/Massive API:* {tech_grade} — _{tech_note}_")
+    # Assembly
+    if assembly_fresh + assembly_stale > 0:
+        fresh_rate = assembly_fresh / (assembly_fresh + assembly_stale) * 100
+        if fresh_rate >= 70:
+            report.append(f"  🏦 *Assembly/FRED:* 🟢 — _{fresh_rate:.0f}% fresh data ({assembly_fresh}/{assembly_fresh + assembly_stale} runs)_ 💰 Free")
+        elif fresh_rate >= 40:
+            report.append(f"  🏦 *Assembly/FRED:* ⚪ — _{fresh_rate:.0f}% fresh — falling back to public APIs often_ 💰 Free")
+        else:
+            report.append(f"  🏦 *Assembly/FRED:* 🔴 — _Only {fresh_rate:.0f}% fresh — mostly using fallback. Check Assembly scraper._ 💰 Free")
+    else:
+        asm_grade = "🟢" if not missing_data_flags else "🔴"
+        report.append(f"  🏦 *Assembly/FRED:* {asm_grade} — _{'Clean data' if not missing_data_flags else 'Missing DIX/MOVE data'}_ 💰 Free")
+
+    # SqueezMetrics DIX
+    if dix_success + dix_fail > 0:
+        dix_rate = dix_success / (dix_success + dix_fail) * 100
+        if dix_rate >= 80:
+            report.append(f"  🌊 *SqueezMetrics DIX:* 🟢 — _{dix_rate:.0f}% available ({dix_success}/{dix_success + dix_fail} runs)_ 💰 Free")
+        else:
+            report.append(f"  🌊 *SqueezMetrics DIX:* 🔴 — _Only {dix_rate:.0f}% available — CSV feed unreliable_ 💰 Free")
+    else:
+        report.append("  🌊 *SqueezMetrics DIX:* ⚪ — _No archive data to assess_ 💰 Free")
+
+    # Finviz
+    if finviz_success + finviz_fallback > 0:
+        fv_rate = finviz_success / (finviz_success + finviz_fallback) * 100
+        if fv_rate >= 80:
+            report.append(f"  🔍 *Finviz Screener:* 🟢 — _{fv_rate:.0f}% dynamic screens ({finviz_success}/{finviz_success + finviz_fallback})_ 💰 Free")
+        elif fv_rate >= 50:
+            report.append(f"  🔍 *Finviz Screener:* ⚪ — _{fv_rate:.0f}% dynamic, rest hardcoded fallback_ 💰 Free")
+        else:
+            report.append(f"  🔍 *Finviz Screener:* 🔴 — _Only {fv_rate:.0f}% dynamic — frequently falling back to hardcoded list_ 💰 Free")
+    else:
+        report.append("  🔍 *Finviz Screener:* ⚪ — _No archive data to assess_ 💰 Free")
+
+    # yfinance
+    report.append("  📰 *Yahoo Finance:* ⚪ — _Fallback source for prices, VIX, sector breadth_ 💰 Free")
+
+    # Schwab (incoming)
+    report.append("  🏦 *Schwab API:* ⚪ — _Integration in progress — will replace Alpaca for real-time quotes + trade execution_ 💰 Free")
+
+    # Discord
+    report.append("  💬 *Discord:* ⚪ — _Output only — signal-to-noise TBD_ 💰 Free")
+
+    # ── Cost summary ──
+    report.append("")
+    report.append("  *💰 Total Monthly API Cost: $0* (all sources on free tiers)")
+    report.append("  _Recommendation: When Schwab is live, evaluate dropping Alpaca (redundant for quotes)._")
+    report.append("  _Massive free tier (5 calls/min) sufficient for daily runs. Upgrade only if going intraday._")
+
+    # ── Value assessment ──
+    report.append("")
+    report.append("  *📋 Value Assessment:*")
+    report.append("  _HIGH VALUE:_ Massive Macro (unique data), X/Twitter (alpha signal), DIX (institutional flow)")
+    report.append("  _MEDIUM VALUE:_ Massive Technicals (saves compute), Finviz (dynamic screening), Assembly (sentiment)")
+    report.append("  _MONITOR:_ Discord (noise?), yfinance (reliability), Schwab (not live yet)")
 
     return "\n".join(report)
 

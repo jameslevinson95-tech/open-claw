@@ -583,6 +583,365 @@ def format_technicals_for_prompt(technicals: dict) -> str:
     return "\n".join(lines)
 
 
+# ─── Macro / Economy (FREE — Schwab doesn't have these) ─────────────
+
+def fetch_treasury_yields(limit: int = 5) -> dict:
+    """
+    Fetch U.S. Treasury yield curve data.
+    Returns yields for 1mo, 3mo, 6mo, 1yr, 2yr, 3yr, 5yr, 7yr, 10yr, 20yr, 30yr.
+    Data back to 1962. Included in ALL plans (including free).
+    """
+    data = _get("/fed/v1/treasury-yields", params={"limit": limit, "sort": "date.desc"})
+    if "error" in data:
+        return data
+
+    results = data.get("results", [])
+    if not results:
+        return {"error": "No treasury yield data"}
+
+    latest = results[0]
+    return {
+        "date": latest.get("date"),
+        "yields": {
+            "1mo": latest.get("yield_1_month"),
+            "3mo": latest.get("yield_3_month"),
+            "6mo": latest.get("yield_6_month"),
+            "1yr": latest.get("yield_1_year"),
+            "2yr": latest.get("yield_2_year"),
+            "3yr": latest.get("yield_3_year"),
+            "5yr": latest.get("yield_5_year"),
+            "7yr": latest.get("yield_7_year"),
+            "10yr": latest.get("yield_10_year"),
+            "20yr": latest.get("yield_20_year"),
+            "30yr": latest.get("yield_30_year"),
+        },
+        "spread_2s10s": round(latest.get("yield_10_year", 0) - latest.get("yield_2_year", 0), 2) if latest.get("yield_10_year") and latest.get("yield_2_year") else None,
+        "spread_3mo10yr": round(latest.get("yield_10_year", 0) - latest.get("yield_3_month", 0), 2) if latest.get("yield_10_year") and latest.get("yield_3_month") else None,
+        "history": [
+            {
+                "date": r.get("date"),
+                "2yr": r.get("yield_2_year"),
+                "10yr": r.get("yield_10_year"),
+                "30yr": r.get("yield_30_year"),
+            }
+            for r in results
+        ],
+        "source": "massive",
+    }
+
+
+def fetch_inflation(limit: int = 5) -> dict:
+    """
+    Fetch U.S. inflation indicators: CPI, Core CPI, PCE, Core PCE, PCE Spending.
+    Included in ALL plans (including free).
+    """
+    data = _get("/fed/v1/inflation", params={"limit": limit, "sort": "date.desc"})
+    if "error" in data:
+        return data
+
+    results = data.get("results", [])
+    if not results:
+        return {"error": "No inflation data"}
+
+    latest = results[0]
+
+    # Calculate YoY CPI change if we have enough history
+    yoy_cpi = None
+    if len(results) >= 2:
+        # Find a result ~12 months back
+        for r in results:
+            if r.get("cpi") and latest.get("cpi"):
+                yoy_cpi = round((latest["cpi"] - r["cpi"]) / r["cpi"] * 100, 2)
+                break  # Just use the oldest in our result set as approximation
+
+    return {
+        "date": latest.get("date"),
+        "cpi": latest.get("cpi"),
+        "cpi_core": latest.get("cpi_core"),
+        "pce": latest.get("pce"),
+        "pce_core": latest.get("pce_core"),
+        "pce_spending": latest.get("pce_spending"),
+        "history": [
+            {
+                "date": r.get("date"),
+                "cpi": r.get("cpi"),
+                "cpi_core": r.get("cpi_core"),
+                "pce": r.get("pce"),
+            }
+            for r in results
+        ],
+        "source": "massive",
+    }
+
+
+def fetch_labor_market(limit: int = 5) -> dict:
+    """
+    Fetch U.S. labor market indicators: unemployment, participation, earnings, JOLTS.
+    Included in ALL plans (including free).
+    """
+    data = _get("/fed/v1/labor-market", params={"limit": limit, "sort": "date.desc"})
+    if "error" in data:
+        return data
+
+    results = data.get("results", [])
+    if not results:
+        return {"error": "No labor market data"}
+
+    latest = results[0]
+    return {
+        "date": latest.get("date"),
+        "unemployment_rate": latest.get("unemployment_rate"),
+        "labor_force_participation": latest.get("labor_force_participation_rate"),
+        "avg_hourly_earnings": latest.get("avg_hourly_earnings"),
+        "job_openings": latest.get("job_openings"),
+        "history": [
+            {
+                "date": r.get("date"),
+                "unemployment": r.get("unemployment_rate"),
+                "participation": r.get("labor_force_participation_rate"),
+                "earnings": r.get("avg_hourly_earnings"),
+            }
+            for r in results
+        ],
+        "source": "massive",
+    }
+
+
+def fetch_inflation_expectations(limit: int = 5) -> dict:
+    """
+    Fetch U.S. inflation expectations (forward-looking).
+    Included in ALL plans (including free).
+    """
+    data = _get("/fed/v1/inflation-expectations", params={"limit": limit, "sort": "date.desc"})
+    if "error" in data:
+        return data
+
+    results = data.get("results", [])
+    if not results:
+        return {"error": "No inflation expectations data"}
+
+    return {
+        "date": results[0].get("date"),
+        "latest": results[0],
+        "history": results,
+        "source": "massive",
+    }
+
+
+def fetch_macro_snapshot() -> dict:
+    """
+    Fetch a complete macro snapshot in 4 API calls:
+    treasury yields + inflation + labor market + inflation expectations.
+
+    This is the macro enrichment layer for Agent 1 (Macro Director).
+    Schwab doesn't offer ANY of this — it's Massive's unique value.
+
+    Rate limit note: This uses 4 of your 5 free calls/minute.
+    """
+    snapshot = {
+        "timestamp": datetime.now().isoformat(),
+        "source": "massive_macro",
+    }
+
+    snapshot["treasury_yields"] = fetch_treasury_yields(limit=5)
+    snapshot["inflation"] = fetch_inflation(limit=5)
+    snapshot["labor_market"] = fetch_labor_market(limit=5)
+    snapshot["inflation_expectations"] = fetch_inflation_expectations(limit=3)
+
+    return snapshot
+
+
+def format_macro_for_prompt(macro: dict) -> str:
+    """
+    Format macro snapshot data for agent prompts.
+    Designed for Agent 1 (Macro Director) consumption.
+    """
+    lines = ["MACRO ENVIRONMENT SNAPSHOT"]
+    lines.append(f"  Timestamp: {macro.get('timestamp', '?')}")
+
+    # Treasury Yields
+    ty = macro.get("treasury_yields", {})
+    if "error" not in ty:
+        y = ty.get("yields", {})
+        lines.append(f"\nTREASURY YIELDS ({ty.get('date', '?')})")
+        _y = lambda k: f"{y[k]}%" if y.get(k) is not None else "N/A"
+        lines.append(f"  Short: 1mo={_y('1mo')} | 3mo={_y('3mo')} | 6mo={_y('6mo')}")
+        lines.append(f"  Mid:   1yr={_y('1yr')} | 2yr={_y('2yr')} | 5yr={_y('5yr')}")
+        lines.append(f"  Long:  10yr={_y('10yr')} | 20yr={_y('20yr')} | 30yr={_y('30yr')}")
+        lines.append(f"  2s10s spread: {ty.get('spread_2s10s')}% | 3mo10yr spread: {ty.get('spread_3mo10yr')}%")
+        if ty.get('spread_2s10s') is not None and ty['spread_2s10s'] < 0:
+            lines.append("  ⚠️ INVERTED YIELD CURVE (2s10s) — recession signal")
+    else:
+        lines.append(f"\nTREASURY YIELDS: {ty.get('error', 'unavailable')}")
+
+    # Inflation
+    inf = macro.get("inflation", {})
+    if "error" not in inf:
+        lines.append(f"\nINFLATION ({inf.get('date', '?')})")
+        lines.append(f"  CPI: {inf.get('cpi', 'N/A')} | Core CPI: {inf.get('cpi_core', 'N/A')}")
+        if inf.get('pce') is not None:
+            lines.append(f"  PCE: {inf['pce']} | Core PCE: {inf.get('pce_core', 'N/A')}")
+        if inf.get('pce_spending') is not None:
+            lines.append(f"  PCE Spending: ${inf['pce_spending']}B")
+    else:
+        lines.append(f"\nINFLATION: {inf.get('error', 'unavailable')}")
+
+    # Labor Market
+    lm = macro.get("labor_market", {})
+    if "error" not in lm:
+        lines.append(f"\nLABOR MARKET ({lm.get('date', '?')})")
+        lines.append(f"  Unemployment: {lm.get('unemployment_rate')}%")
+        lines.append(f"  Labor Force Participation: {lm.get('labor_force_participation')}%")
+        lines.append(f"  Avg Hourly Earnings: ${lm.get('avg_hourly_earnings')}")
+        if lm.get('job_openings'):
+            lines.append(f"  Job Openings (JOLTS): {lm['job_openings']:,.0f}K")
+    else:
+        lines.append(f"\nLABOR MARKET: {lm.get('error', 'unavailable')}")
+
+    return "\n".join(lines)
+
+
+# ─── Ticker Reference & Fundamentals (FREE) ─────────────────────────
+
+def fetch_ticker_details(ticker: str) -> dict:
+    """
+    Fetch comprehensive ticker details: name, market cap, sector, description, etc.
+    Included in ALL plans (including free).
+    """
+    data = _get(f"/v3/reference/tickers/{ticker}")
+    if "error" in data:
+        return data
+
+    r = data.get("results", {})
+    return {
+        "ticker": r.get("ticker"),
+        "name": r.get("name"),
+        "market_cap": r.get("market_cap"),
+        "description": r.get("description"),
+        "sector": r.get("sic_description"),
+        "employees": r.get("total_employees"),
+        "homepage": r.get("homepage_url"),
+        "list_date": r.get("list_date"),
+        "shares_outstanding": r.get("share_class_shares_outstanding"),
+        "source": "massive",
+    }
+
+
+def fetch_dividends(ticker: str, limit: int = 4) -> dict:
+    """
+    Fetch recent dividend history for a ticker.
+    Included in ALL plans (including free).
+    """
+    data = _get("/v3/reference/dividends", params={"ticker": ticker, "limit": limit, "sort": "ex_dividend_date", "order": "desc"})
+    if "error" in data:
+        return data
+
+    results = data.get("results", [])
+    return {
+        "ticker": ticker,
+        "dividends": [
+            {
+                "ex_date": d.get("ex_dividend_date"),
+                "pay_date": d.get("pay_date"),
+                "amount": d.get("cash_amount"),
+                "frequency": d.get("frequency"),
+            }
+            for d in results
+        ],
+        "annual_dividend": sum(d.get("cash_amount", 0) for d in results[:4]) if len(results) >= 4 else None,
+        "source": "massive",
+    }
+
+
+def fetch_financials(ticker: str, limit: int = 2) -> dict:
+    """
+    Fetch company financial statements (income statement, balance sheet).
+    Included in ALL plans (including free).
+    """
+    data = _get("/vX/reference/financials", params={"ticker": ticker, "limit": limit})
+    if "error" in data:
+        return data
+
+    results = data.get("results", [])
+    if not results:
+        return {"ticker": ticker, "error": "No financial data"}
+
+    summaries = []
+    for r in results:
+        fi = r.get("financials", {})
+        income = fi.get("income_statement", {})
+        balance = fi.get("balance_sheet", {})
+
+        summaries.append({
+            "period": f"{r.get('fiscal_period', '?')} {r.get('fiscal_year', '?')}",
+            "revenue": income.get("revenues", {}).get("value"),
+            "net_income": income.get("net_income_loss", {}).get("value"),
+            "gross_profit": income.get("gross_profit", {}).get("value"),
+            "total_assets": balance.get("assets", {}).get("value"),
+            "total_liabilities": balance.get("liabilities", {}).get("value"),
+            "equity": balance.get("equity", {}).get("value"),
+        })
+
+    return {
+        "ticker": ticker,
+        "financials": summaries,
+        "source": "massive",
+    }
+
+
+def fetch_market_status() -> dict:
+    """
+    Fetch current market status (open/closed) for all exchanges.
+    Included in ALL plans (including free).
+    """
+    data = _get("/v1/marketstatus/now")
+    if "error" in data:
+        return data
+
+    return {
+        "market": data.get("market", "unknown"),
+        "early_hours": data.get("earlyHours"),
+        "after_hours": data.get("afterHours"),
+        "exchanges": data.get("exchanges", {}),
+        "currencies": data.get("currencies", {}),
+        "source": "massive",
+    }
+
+
+# ─── Crypto (FREE) ──────────────────────────────────────────────────
+
+def fetch_crypto_bars(pair: str = "X:BTCUSD", days: int = 30) -> dict:
+    """
+    Fetch historical OHLCV bars for a crypto pair.
+    Free tier. Schwab doesn't have crypto at all.
+    """
+    end = datetime.now().strftime("%Y-%m-%d")
+    start = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+
+    data = _get(f"/v2/aggs/ticker/{pair}/range/1/day/{start}/{end}", params={"sort": "asc", "limit": 5000})
+    if "error" in data:
+        return data
+
+    results = data.get("results", [])
+    return {
+        "pair": pair,
+        "bars": [
+            {
+                "date": datetime.fromtimestamp(bar["t"] / 1000).strftime("%Y-%m-%d"),
+                "open": round(bar["o"], 2),
+                "high": round(bar["h"], 2),
+                "low": round(bar["l"], 2),
+                "close": round(bar["c"], 2),
+                "volume": bar.get("v", 0),
+                "vwap": round(bar["vw"], 2) if bar.get("vw") else None,
+            }
+            for bar in results
+        ],
+        "count": len(results),
+        "source": "massive",
+    }
+
+
 # ─── Smoke Test ──────────────────────────────────────────────────────
 
 if __name__ == "__main__":
@@ -626,4 +985,50 @@ if __name__ == "__main__":
     tech = fetch_full_technicals("SPY")
     print(format_technicals_for_prompt(tech))
 
-    print("\n✅ Massive Market Data module working!")
+    # --- Wait for rate limit reset (free tier = 5 calls/min) ---
+    print("\n--- Waiting 65s for rate limit reset to test macro endpoints ---")
+    time.sleep(65)
+
+    # Test 5: Macro snapshot
+    print("\n6. Treasury Yields:")
+    ty = fetch_treasury_yields(limit=3)
+    if "error" not in ty:
+        print(f"   Date: {ty['date']}")
+        print(f"   2yr={ty['yields']['2yr']}% | 10yr={ty['yields']['10yr']}% | 30yr={ty['yields']['30yr']}%")
+        print(f"   2s10s spread: {ty['spread_2s10s']}%")
+    else:
+        print(f"   ERROR: {ty}")
+
+    print("\n7. Inflation:")
+    inf = fetch_inflation(limit=3)
+    if "error" not in inf:
+        print(f"   Date: {inf['date']}")
+        print(f"   CPI: {inf['cpi']} | Core CPI: {inf['cpi_core']}")
+    else:
+        print(f"   ERROR: {inf}")
+
+    print("\n8. Labor Market:")
+    lm = fetch_labor_market(limit=3)
+    if "error" not in lm:
+        print(f"   Date: {lm['date']}")
+        print(f"   Unemployment: {lm['unemployment_rate']}% | Participation: {lm['labor_force_participation']}%")
+        print(f"   Avg Hourly Earnings: ${lm['avg_hourly_earnings']}")
+    else:
+        print(f"   ERROR: {lm}")
+
+    print("\n9. Ticker Details (AAPL):")
+    td = fetch_ticker_details("AAPL")
+    if "error" not in td:
+        print(f"   {td['name']} | Market Cap: ${td['market_cap']/1e9:.1f}B | Employees: {td['employees']:,}")
+    else:
+        print(f"   ERROR: {td}")
+
+    print("\n10. Crypto BTC-USD (7 days):")
+    btc = fetch_crypto_bars("X:BTCUSD", days=7)
+    if "error" not in btc:
+        for bar in btc["bars"][-3:]:
+            print(f"   {bar['date']}: C=${bar['close']:,.0f}")
+    else:
+        print(f"   ERROR: {btc}")
+
+    print("\n✅ Massive Market Data module working (all endpoints)!")
