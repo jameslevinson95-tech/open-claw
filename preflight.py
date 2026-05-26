@@ -509,7 +509,7 @@ def _run_finviz_screen(theme_filters: Optional[Dict] = None) -> list:
     o = Overview()
     o.set_filter(filters_dict=filt)
     # Fetch up to 200 rows (sorted by volume desc), then trim to MAX
-    df = o.screener_view(order="Volume", ascend=False, limit=200, verbose=0)
+    df = o.screener_view(order="Volume", ascend=False, limit=500, verbose=0)
 
     if df is None or df.empty:
         return []
@@ -971,6 +971,10 @@ def run_preflight(themes: Optional[List[str]] = None) -> dict:
                 Maps to Finviz sector/industry filters for focused screening.
                 E.g. ["AI Infrastructure", "Energy", "Uranium"]
     """
+    # ━━━ HOLIDAY GATE: Abort if market is closed (prevents holiday runs) ━━━
+    from safeguards import assert_market_open
+    assert_market_open()
+
     print("[Pre-Flight] Starting 7:55 AM data fetch...")
     print("[Pre-Flight] Using PRIOR CLOSE prices (not live/intraday)")
     if themes:

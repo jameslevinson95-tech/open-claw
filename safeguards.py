@@ -73,6 +73,25 @@ def is_market_open_today() -> dict:
         return {"is_open": None, "should_run": True, "reason": f"clock_check_failed: {e}"}
 
 
+class MarketClosedError(Exception):
+    """Raised when the pipeline is invoked on a market holiday or closed day."""
+    pass
+
+
+def assert_market_open():
+    """
+    Hard gate: raises MarketClosedError if the market is closed today.
+    Call this at any pipeline entry point to prevent holiday runs.
+    """
+    cal = is_market_open_today()
+    if cal.get("should_run") is False:
+        reason = cal.get("reason", "unknown")
+        msg = f"Market is CLOSED today ({reason}). Pipeline aborted."
+        print(f"[Safeguard] 🚫 {msg}")
+        raise MarketClosedError(msg)
+    return cal
+
+
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # 2. PENALTY BOX — Whipsaw & Wash Sale Prevention
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

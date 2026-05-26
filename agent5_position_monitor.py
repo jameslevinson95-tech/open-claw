@@ -492,6 +492,10 @@ Respond with ONLY the JSON output."""
 
 def run_agent5_preflight() -> dict:
     """3:25 PM pre-flight: Snapshot current prices for open positions."""
+    # ━━━ HOLIDAY GATE: Abort if market is closed (prevents holiday runs) ━━━
+    from safeguards import assert_market_open
+    assert_market_open()
+
     print("[Agent 5 Pre-Flight] Snapshotting prices at 3:25 PM...")
 
     positions = load_open_positions()
