@@ -146,9 +146,8 @@ def correlation_veto(new_ticker: str, current_positions: list, threshold: float 
                     print(f"  [Agent 4B] CORRELATION VETO: {new_ticker} vs {pos} = {corr:.2f} (>{threshold})")
                     return True
     except Exception as e:
-        print(f"  [Agent 4B] Correlation check failed (non-fatal): {e}")
-
-    return False
+        print(f"  [Agent 4B] Correlation check failed — FAIL-CLOSED (vetoing {new_ticker}): {e}")
+        return True  # Fail-closed: if we can't verify, assume correlated and veto
 
 
 def calculate_portfolio_heat() -> dict:
@@ -546,6 +545,16 @@ def generate_tear_sheet(result: dict, directive: dict) -> str:
     """
     Generate Markdown tear sheet for manual execution at 9:30 AM.
     This is what gets sent to Telegram/Slack.
+
+    v3 field mapping (post-sizing refactor):
+      order keys: shares, entry_price, stop_loss, stop_anchor_label,
+                  position_value, pct_of_account, risk_budgeted, risk_actual,
+                  risk_multiplier, stop_distance_pct, binding_constraint,
+                  theme, conviction_tier, confirm_enhanced
+      modifiers_used keys: regime, vol_regime, posture
+      session_summary keys: total_trades, session_risk_used, session_risk_budget,
+                            total_allocated, existing_exposure, pct_deployed,
+                            dry_powder_pct, account_value
     """
     orders = result.get("trade_orders", [])
     summary = result.get("session_summary", {})
@@ -557,13 +566,14 @@ def generate_tear_sheet(result: dict, directive: dict) -> str:
         f"📅 {datetime.now().strftime('%Y-%m-%d')} | Execute at 9:30 AM ET",
         f"{'='*35}",
         f"",
-        f"🌍 Regime: {mods.get('regime')} | Vol: {mods.get('vol_regime')}",
-        f"📋 Posture Mod: {mods.get('posture_mod')} | Vol Mod: {mods.get('vol_mod')}",
+        f"🌍 Regime: {mods.get('regime', '?')} | Vol: {mods.get('vol_regime', '?')}",
+        f"📋 Posture: {mods.get('posture', '?')}",
+        f"💼 Account: ${summary.get('account_value', 0):,.2f}",
         f"",
     ]
 
     buy_orders = [o for o in orders if o.get("action") == "BUY"]
-    skip_orders = [o for o in orders if o.get("action") == "SKIP"]
+    skip_orders = [o for o in orders if o.get("action") in ("SKIP", "REJECTED")]
 
     if not buy_orders:
         lines.append("🚫 NO TRADES TODAY")
@@ -574,44 +584,36 @@ def generate_tear_sheet(result: dict, directive: dict) -> str:
         return "\n".join(lines)
 
     for i, order in enumerate(buy_orders, 1):
-        math_info = order.get("sizing_math", {})
         lines.append(f"{'─'*30}")
         lines.append(f"TRADE #{i}: {order.get('ticker')}")
         lines.append(f"")
         lines.append(f"  Action:     BUY")
         lines.append(f"  Shares:     {order.get('shares')}")
-        lines.append(f"  Entry:      ${order.get('entry_price'):.2f} (prior close)")
-        lines.append(f"  Stop:       ${order.get('stop_loss'):.2f} ({order.get('stop_anchor_label')})")
-        lines.append(f"  Stop Dist:  {order.get('stop_distance_pct'):.1f}%")
-        lines.append(f"  Theme:      {order.get('theme')}")
-        lines.append(f"  Conviction: {order.get('final_conviction')}/10")
+        lines.append(f"  Entry:      ${order.get('entry_price', 0):.2f} (prior close)")
+        lines.append(f"  Stop:       ${order.get('stop_loss', 0):.2f} ({order.get('stop_anchor_label', '')})")
+        lines.append(f"  Stop Dist:  {order.get('stop_distance_pct', 0):.1f}%")
+        lines.append(f"  Theme:      {order.get('theme', '?')}")
+        lines.append(f"  Tier:       {order.get('conviction_tier', '?')} {'✨ ENHANCED' if order.get('confirm_enhanced') else ''}")
         lines.append(f"")
-        lines.append(f"  💰 Cost:    ${order.get('total_cost'):,.2f} ({order.get('pct_of_account'):.1f}% of account)")
-        lines.append(f"  🎯 Risk:    ${order.get('dollar_risk'):.2f}")
-        lines.append(f"  📏 Sizing:  {order.get('sizing_note')}")
-        lines.append(f"")
-        lines.append(f"  Math: {math_info.get('base_alloc',0)*100:.0f}% base × "
-                      f"{math_info.get('conviction_mod',0)} conv × "
-                      f"{math_info.get('vol_mod',0)} vol × "
-                      f"{math_info.get('posture_mod',0)} posture × "
-                      f"{math_info.get('contrarian_penalty',0)} contrarian "
-                      f"= {math_info.get('target_alloc_pct',0):.2f}% → "
-                      f"${math_info.get('target_alloc_dollars',0):.2f}")
+        lines.append(f"  💰 Position: ${order.get('position_value', 0):,.2f} ({order.get('pct_of_account', 0):.1f}% of account)")
+        lines.append(f"  🎯 Risk:     ${order.get('risk_actual', 0):,.2f} (budgeted ${order.get('risk_budgeted', 0):,.2f})")
+        lines.append(f"  📏 Bound:    {order.get('binding_constraint', '?')} | Risk mult: {order.get('risk_multiplier', 0):.3f}")
         lines.append(f"")
 
     if skip_orders:
         lines.append(f"{'─'*30}")
-        lines.append(f"SKIPPED:")
+        lines.append(f"SKIPPED/REJECTED:")
         for s in skip_orders:
             lines.append(f"  ⏭️ {s.get('ticker')}: {s.get('reason')}")
         lines.append(f"")
 
     lines.append(f"{'─'*30}")
     lines.append(f"SESSION TOTALS:")
-    lines.append(f"  Trades:      {summary.get('total_trades')}")
-    lines.append(f"  Total Risk:  ${summary.get('total_risk', 0):.2f} / ${summary.get('session_risk_budget', 0):.2f}")
-    lines.append(f"  Deployed:    {summary.get('pct_deployed', 0):.1f}%")
-    lines.append(f"  Dry Powder:  {summary.get('dry_powder_pct', 0):.1f}%")
+    lines.append(f"  Trades:       {summary.get('total_trades', 0)}")
+    lines.append(f"  Risk Used:    ${summary.get('session_risk_used', 0):,.2f} / ${summary.get('session_risk_budget', 0):,.2f}")
+    lines.append(f"  Allocated:    ${summary.get('total_allocated', 0):,.2f}")
+    lines.append(f"  Deployed:     {summary.get('pct_deployed', 0):.1f}%")
+    lines.append(f"  Dry Powder:   {summary.get('dry_powder_pct', 0):.1f}%")
     lines.append(f"{'='*35}")
 
     return "\n".join(lines)

@@ -42,7 +42,7 @@ def is_market_open_today() -> dict:
         
         if not api_key or not secret_key:
             print("[Safeguard] ⚠️ No Alpaca keys — cannot check market calendar. Proceeding anyway.")
-            return {"is_open": None, "should_run": True, "reason": "no_alpaca_keys"}
+            return {"is_open": None, "should_run": False, "reason": "no_alpaca_keys_fail_closed"}
         
         client = TradingClient(api_key, secret_key, paper=True)
         clock = client.get_clock()
@@ -70,7 +70,7 @@ def is_market_open_today() -> dict:
         return result
     except Exception as e:
         print(f"[Safeguard] ⚠️ Clock API check failed: {e}. Proceeding anyway.")
-        return {"is_open": None, "should_run": True, "reason": f"clock_check_failed: {e}"}
+        return {"is_open": None, "should_run": False, "reason": f"clock_check_failed_fail_closed: {e}"}
 
 
 class MarketClosedError(Exception):
@@ -111,38 +111,64 @@ def _save_cooldown(data: dict):
         json.dump(data, f, indent=2)
 
 
+def _estimate_expiry_date(trading_days: int) -> str:
+    """
+    Estimate the expiry date by adding trading_days (skipping weekends).
+    Conservative: doesn't account for market holidays, so cooldown may
+    expire slightly early on holiday weeks. Good enough.
+    """
+    date = datetime.now().date()
+    days_added = 0
+    while days_added < trading_days:
+        date += timedelta(days=1)
+        if date.weekday() < 5:  # Mon-Fri
+            days_added += 1
+    return date.isoformat()
+
+
 def add_to_penalty_box(ticker: str, loss_amount: float, reason: str = "stop_loss"):
     """
     Add a ticker to the penalty box after a losing trade.
-    Called by Agent 5 / broker when a position is closed for a loss.
+    Uses date-stamped expiry instead of tick-based countdown to prevent
+    test runs / retries from burning through the cooldown.
     """
     cooldown = _load_cooldown()
+    expiry = _estimate_expiry_date(COOLDOWN_TRADING_DAYS)
     cooldown["tickers"][ticker] = {
         "added": datetime.now().isoformat(),
+        "added_date": datetime.now().date().isoformat(),
+        "expiry_date": expiry,
         "loss_amount": loss_amount,
         "reason": reason,
-        "trading_days_remaining": COOLDOWN_TRADING_DAYS,
+        "trading_days_remaining": COOLDOWN_TRADING_DAYS,  # kept for backward compat
     }
     _save_cooldown(cooldown)
-    print(f"[Penalty Box] 🚫 {ticker} added — cooldown {COOLDOWN_TRADING_DAYS} trading days (loss: ${loss_amount:.2f})")
+    print(f"[Penalty Box] 🚫 {ticker} added — cooldown until {expiry} ({COOLDOWN_TRADING_DAYS} trading days, loss: ${loss_amount:.2f})")
 
 
 def tick_penalty_box():
     """
-    Decrement trading days for all tickers in the penalty box.
-    Call this once per trading day (in preflight).
-    Removes tickers whose cooldown has expired.
+    Check date-based expiry for all tickers in the penalty box.
+    Safe to call multiple times per day or across retries — expiry is
+    date-stamped, not tick-based.
     """
     cooldown = _load_cooldown()
     expired = []
+    today = datetime.now().date().isoformat()
     
     for ticker, info in list(cooldown["tickers"].items()):
-        remaining = info.get("trading_days_remaining", 0) - 1
-        if remaining <= 0:
+        expiry = info.get("expiry_date")
+        if expiry and today >= expiry:
             expired.append(ticker)
             del cooldown["tickers"][ticker]
-        else:
-            info["trading_days_remaining"] = remaining
+        elif not expiry:
+            # Legacy entry without expiry_date — fall back to old tick behavior
+            remaining = info.get("trading_days_remaining", 0) - 1
+            if remaining <= 0:
+                expired.append(ticker)
+                del cooldown["tickers"][ticker]
+            else:
+                info["trading_days_remaining"] = remaining
     
     _save_cooldown(cooldown)
     
@@ -151,15 +177,23 @@ def tick_penalty_box():
     
     active = list(cooldown["tickers"].keys())
     if active:
-        print(f"[Penalty Box] 🚫 Still in cooldown: {', '.join(active)}")
+        for t in active:
+            exp = cooldown["tickers"][t].get("expiry_date", "?")
+            print(f"[Penalty Box] 🚫 {t} in cooldown until {exp}")
     
     return expired
 
 
 def is_in_penalty_box(ticker: str) -> bool:
-    """Check if a ticker is currently in the penalty box."""
+    """Check if a ticker is currently in the penalty box (date-based)."""
     cooldown = _load_cooldown()
-    return ticker in cooldown["tickers"]
+    if ticker not in cooldown["tickers"]:
+        return False
+    info = cooldown["tickers"][ticker]
+    expiry = info.get("expiry_date")
+    if expiry and datetime.now().date().isoformat() >= expiry:
+        return False  # Expired but not yet cleaned up
+    return True
 
 
 def get_penalty_box_tickers() -> list:

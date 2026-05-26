@@ -13,7 +13,7 @@ ACCOUNT_SIZE = 100_000  # $100K paper trading account
 DRY_POWDER_FLOOR = 0.20  # Never deploy beyond 80%
 
 # Alpaca
-ALPACA_USERNAME = "jameslevinson95@gmail.com"
+ALPACA_USERNAME = os.environ.get("ALPACA_USERNAME", "")
 ALPACA_API_KEY = os.environ.get("ALPACA_API_KEY", "")
 ALPACA_SECRET_KEY = os.environ.get("ALPACA_SECRET_KEY", "")
 ALPACA_BASE_URL = "https://paper-api.alpaca.markets"  # Paper trading first
@@ -24,7 +24,7 @@ GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY", "")  # For Gemini (Agent 2)
 
 # Telegram Output
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "-5238217629")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 
 # Schedule (ET) — Golden Path timing
 PREFLIGHT_TIME = "07:55"       # Python pre-flight data fetch

@@ -83,14 +83,16 @@ def vwap_gate(trade_orders: list[dict]) -> tuple[list[dict], list[dict]]:
 
         if vwap_data is None:
             # No intraday data — can't check VWAP (pre-market, weekend, etc.)
-            # Let it through with a warning
-            order["vwap_note"] = "No intraday data — VWAP check skipped"
-            approved.append(order)
+            # FAIL-CLOSED: reject if we can't verify VWAP
+            order["vwap_note"] = "No intraday data — VWAP check FAILED (fail-closed)"
+            order["reject_reason"] = "VWAP unavailable — fail-closed"
+            rejected.append(order)
             continue
 
         if vwap_data.get("error"):
-            order["vwap_note"] = f"VWAP error: {vwap_data['error']}"
-            approved.append(order)
+            order["vwap_note"] = f"VWAP error: {vwap_data['error']} (fail-closed)"
+            order["reject_reason"] = f"VWAP error: {vwap_data['error']}"
+            rejected.append(order)
             continue
 
         if vwap_data["above_vwap"]:

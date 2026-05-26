@@ -103,7 +103,7 @@ OUTPUT_SCHEMA = {
                     "catalyst": {"type": "string"},
                     "source": {"type": "string", "enum": ["Newsletter", "Screener Stage 2"]},
                 },
-                "required": ["ticker", "name", "type", "theme_match", "conviction_score", "thesis", "catalyst", "source"],
+                "required": ["ticker", "name", "type", "theme_match", "conviction_tier", "thesis", "catalyst", "source"],
             },
         },
         "screening_notes": {"type": "string"},
@@ -260,7 +260,6 @@ After your analysis, output the final result as a JSON object with this schema:
       "catalyst": "Near-term catalyst",
       "theme_match": "Exact theme from Agent 1",
       "conviction_tier": "PASS|STRONG|EXCEPTIONAL",
-      "conviction_score": 7,
       "source": "Screener Stage 2"
     }}
   ],
@@ -413,11 +412,14 @@ def call_deep_research(directive: dict, screener_universe: list, fundamental_dat
             parsed = _extract_json_from_report(report_text)
 
             # Validate conviction_tier enums
+            # Safety net: if Gemini ignores the prompt and outputs conviction_score
+            # instead of conviction_tier, convert it. This should not be needed
+            # now that the schema/prompt contradiction is fixed.
             for c in parsed.get("candidates", []):
                 tier = c.get("conviction_tier")
                 if tier not in ("PASS", "STRONG", "EXCEPTIONAL"):
                     score = c.get("conviction_score")
-                    if isinstance(score, int):
+                    if isinstance(score, (int, float)):
                         if score >= 9:
                             c["conviction_tier"] = "EXCEPTIONAL"
                         elif score >= 7:
