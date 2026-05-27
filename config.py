@@ -9,8 +9,12 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).parent / ".env")
 
 # Account
-ACCOUNT_SIZE = 100_000  # $100K paper trading account
-DRY_POWDER_FLOOR = 0.20  # Never deploy beyond 80%
+# Robinhood agentic account: $500 funded, sizing to represent ~$5,500 remaining
+# budget (out of $10K total project allowance, ~$4K already deployed elsewhere).
+# Scale factor: $500 / $5,500 ≈ 9.1% — pipeline sizes as if $500 is the full account,
+# so all risk parameters below are calibrated to this amount.
+ACCOUNT_SIZE = 500  # $500 Robinhood agentic account (proportional to $5,500 remaining)
+DRY_POWDER_FLOOR = 0.20  # Never deploy beyond 80% ($400 max deployed)
 
 # Alpaca
 ALPACA_USERNAME = os.environ.get("ALPACA_USERNAME", "")
@@ -36,9 +40,9 @@ TEARSHEET_TIME = "08:18"       # Deliver tear sheet
 AGENT5_PREFLIGHT_TIME = "15:25"  # Agent 5 pre-flight price snapshot
 AGENT5_TIME = "15:30"          # Agent 5 - Position Monitor
 
-# Risk Parameters
-PER_TRADE_RISK_CAP = 1500.00   # $1,500 max risk per trade (1.5% of $100K)
-SESSION_RISK_BUDGET = 10000.00  # $10,000 max session risk (10% of $100K)
+# Risk Parameters (scaled to $500 account)
+PER_TRADE_RISK_CAP = 7.50      # $7.50 max risk per trade (1.5% of $500)
+SESSION_RISK_BUDGET = 50.00    # $50 max session risk (10% of $500)
 THEME_CAP = 1                  # Max 1 position per theme per session (tweak #5)
 
 # Screener Rules
@@ -106,10 +110,10 @@ def normalize_vol_regime(s: str) -> str:
         f"Unknown vol_regime: {s!r} (expected one of {list(_VOL_CANONICAL)})"
     )
 
-# Risk-first sizing constants
-BASE_RISK = 1500               # Per-trade $ at neutral conviction
-MAX_RISK_PER_TRADE = 2000      # Hard ceiling regardless of multiplier stack
-MIN_RISK_PER_TRADE = 500       # Below this, skip (regime says don't trade)
+# Risk-first sizing constants (scaled to $500 account)
+BASE_RISK = 7.50               # Per-trade $ at neutral conviction (1.5% of $500)
+MAX_RISK_PER_TRADE = 10.00     # Hard ceiling regardless of multiplier stack
+MIN_RISK_PER_TRADE = 2.50      # Below this, skip (regime says don't trade)
 MAX_ALLOCATION_PCT = 0.25      # Share-count cap as % of account
 
 # Tier risk multipliers (replaces numeric conviction_mod)
