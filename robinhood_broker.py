@@ -1,0 +1,634 @@
+"""
+Robinhood Broker Module — Agentic Trading via MCP
+
+Executes tear sheet orders, manages positions, and tracks fills
+through Robinhood's MCP (Model Context Protocol) API.
+
+Drop-in replacement for AlpacaBroker — same interface, different execution layer.
+
+Usage:
+  from robinhood_broker import RobinhoodBroker
+  broker = RobinhoodBroker()
+  broker.execute_tear_sheet(trade_orders)
+  broker.get_positions()
+  broker.close_position("AAPL")
+"""
+import json
+import os
+import uuid
+import time
+from datetime import datetime
+from pathlib import Path
+from urllib.request import Request, urlopen
+from urllib.error import HTTPError
+
+from dotenv import load_dotenv
+
+load_dotenv(Path(__file__).parent / ".env")
+
+MCP_URL = "https://agent.robinhood.com/mcp/trading"
+TOKEN_PATH = Path(__file__).parent / "robinhood-mcp" / "token.json"
+
+
+class RobinhoodBroker:
+    def __init__(self):
+        self._session_id = None
+        self._access_token = None
+        self._req_id = 0
+        self._agentic_account = None
+        self._all_accounts = []
+        self._load_token()
+        self._init_mcp()
+        self._discover_accounts()
+
+    # ── Auth ─────────────────────────────────────────────────────────────
+    def _load_token(self):
+        if not TOKEN_PATH.exists():
+            raise RuntimeError(
+                f"No Robinhood token at {TOKEN_PATH}. "
+                "Run robinhood-mcp/auth_and_discover.py first."
+            )
+        data = json.loads(TOKEN_PATH.read_text())
+        self._access_token = data["access_token"]
+        self._refresh_token = data.get("refresh_token")
+        self._client_id = data.get("client_id")
+
+    def _refresh_access_token(self):
+        """Refresh the access token using the refresh token."""
+        if not self._refresh_token or not self._client_id:
+            raise RuntimeError("No refresh token available. Re-run auth_and_discover.py.")
+
+        import urllib.parse
+        data = urllib.parse.urlencode({
+            "grant_type": "refresh_token",
+            "client_id": self._client_id,
+            "refresh_token": self._refresh_token,
+        }).encode()
+
+        req = Request(
+            "https://api.robinhood.com/oauth2/token/",
+            data=data,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        resp = urlopen(req)
+        token_data = json.loads(resp.read())
+
+        self._access_token = token_data["access_token"]
+        self._refresh_token = token_data.get("refresh_token", self._refresh_token)
+
+        # Persist
+        TOKEN_PATH.write_text(json.dumps({
+            "client_id": self._client_id,
+            "access_token": self._access_token,
+            "refresh_token": self._refresh_token,
+            "expires_in": token_data.get("expires_in"),
+            "token_type": token_data.get("token_type"),
+        }, indent=2))
+        print("[RH-Broker] Access token refreshed")
+
+    # ── MCP Transport ────────────────────────────────────────────────────
+    def _mcp_request(self, method, params=None):
+        """Send a JSON-RPC request to the MCP endpoint."""
+        self._req_id += 1
+        payload = {"jsonrpc": "2.0", "id": self._req_id, "method": method}
+        if params:
+            payload["params"] = params
+
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+            "Authorization": f"Bearer {self._access_token}",
+        }
+        if self._session_id:
+            headers["Mcp-Session-Id"] = self._session_id
+
+        data = json.dumps(payload).encode()
+        req = Request(MCP_URL, data=data, headers=headers)
+
+        try:
+            resp = urlopen(req)
+        except HTTPError as e:
+            if e.code == 401:
+                # Token expired — try refresh
+                print("[RH-Broker] Token expired, refreshing...")
+                self._refresh_access_token()
+                self._init_mcp()
+                return self._mcp_request(method, params)
+            body = e.read().decode()
+            raise RuntimeError(f"MCP error {e.code}: {body}")
+
+        sid = resp.headers.get("Mcp-Session-Id")
+        if sid:
+            self._session_id = sid
+
+        body = resp.read().decode()
+        content_type = resp.headers.get("Content-Type", "")
+
+        if "text/event-stream" in content_type:
+            result = None
+            for line in body.split("\n"):
+                if line.startswith("data: "):
+                    try:
+                        result = json.loads(line[6:])
+                    except json.JSONDecodeError:
+                        pass
+            return result
+        else:
+            return json.loads(body) if body.strip() else None
+
+    def _call_tool(self, tool_name, arguments=None):
+        """Call an MCP tool and return the parsed result."""
+        resp = self._mcp_request("tools/call", {
+            "name": tool_name,
+            "arguments": arguments or {},
+        })
+        if not resp:
+            return None
+
+        content = resp.get("result", {}).get("content", [])
+        for item in content:
+            if item.get("type") == "text":
+                try:
+                    parsed = json.loads(item["text"])
+                    return parsed.get("data", parsed)
+                except json.JSONDecodeError:
+                    return item["text"]
+        return content
+
+    def _init_mcp(self):
+        """Initialize the MCP session."""
+        resp = self._mcp_request("initialize", {
+            "protocolVersion": "2025-03-26",
+            "capabilities": {},
+            "clientInfo": {"name": "trading-pipeline", "version": "1.0.0"},
+        })
+        if resp and resp.get("result", {}).get("serverInfo"):
+            print(f"[RH-Broker] MCP connected: {resp['result']['serverInfo']}")
+
+        # Send initialized notification
+        try:
+            notify = json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}).encode()
+            headers = {
+                "Content-Type": "application/json",
+                "Accept": "application/json, text/event-stream",
+                "Authorization": f"Bearer {self._access_token}",
+            }
+            if self._session_id:
+                headers["Mcp-Session-Id"] = self._session_id
+            req = Request(MCP_URL, data=notify, headers=headers)
+            urlopen(req)
+        except Exception:
+            pass
+
+    def _discover_accounts(self):
+        """Find all accounts and identify the agentic one."""
+        result = self._call_tool("get_accounts")
+        accounts = result.get("accounts", []) if isinstance(result, dict) else []
+        self._all_accounts = accounts
+
+        for acct in accounts:
+            if acct.get("agentic_allowed"):
+                self._agentic_account = acct["account_number"]
+                break
+
+        if not self._agentic_account:
+            raise RuntimeError("No agentic-enabled account found on this Robinhood login")
+
+        print(f"[RH-Broker] Connected to Robinhood agentic account ···{self._agentic_account[-4:]}")
+
+    # ── Public Interface (matches AlpacaBroker) ──────────────────────────
+
+    def get_account_summary(self) -> dict:
+        """Get current account state for the agentic account."""
+        result = self._call_tool("get_portfolio", {
+            "account_number": self._agentic_account,
+        })
+        if not result:
+            return {"error": "Failed to get portfolio"}
+
+        # Parse buying power (can be a nested dict or a string)
+        bp = result.get("buying_power", 0)
+        if isinstance(bp, dict):
+            bp = float(bp.get("buying_power", 0))
+        else:
+            bp = float(bp)
+
+        cash = float(result.get("cash", 0))
+        total = float(result.get("total_value", 0))
+        equity_val = float(result.get("equity_value", 0))
+
+        return {
+            "account_number": self._agentic_account,
+            "cash": cash,
+            "equity": total,
+            "market_value": equity_val,
+            "buying_power": bp,
+            "portfolio_value": total,
+            "status": "active",
+        }
+
+    def get_positions(self) -> list:
+        """Get all open positions in the agentic account."""
+        result = self._call_tool("get_equity_positions", {
+            "account_number": self._agentic_account,
+        })
+
+        positions = result.get("positions", []) if isinstance(result, dict) else []
+        parsed = []
+        for p in positions:
+            parsed.append({
+                "ticker": p.get("symbol", ""),
+                "shares": float(p.get("quantity", 0)),
+                "avg_entry_price": float(p.get("average_buy_price", 0)),
+                "current_price": float(p.get("current_price", 0)),
+                "market_value": float(p.get("equity", 0)),
+                "unrealized_pl": float(p.get("unrealized_pl", 0)),
+                "unrealized_plpc": float(p.get("unrealized_plpc", 0)),
+            })
+        return parsed
+
+    def get_existing_exposure(self) -> float:
+        """Get total dollar value of existing positions."""
+        positions = self.get_positions()
+        return sum(p["market_value"] for p in positions)
+
+    def get_position_tickers(self) -> list:
+        """Get list of tickers with open positions."""
+        positions = self.get_positions()
+        return [p["ticker"] for p in positions]
+
+    def get_quote(self, ticker: str) -> dict:
+        """Get real-time quote for a single ticker."""
+        quotes = self.get_quotes([ticker])
+        return quotes.get(ticker, {"error": f"No quote for {ticker}"})
+
+    def get_quotes(self, tickers: list) -> dict:
+        """Get real-time quotes for multiple tickers."""
+        result = self._call_tool("get_equity_quotes", {"symbols": tickers})
+        parsed = {}
+        # Handle the actual MCP response structure: {results: [{quote: {...}, close: {...}}, ...]}
+        items = []
+        if isinstance(result, dict):
+            items = result.get("results", result.get("quotes", []))
+        elif isinstance(result, list):
+            items = result
+
+        for item in items:
+            # Each item has a "quote" sub-object and optionally a "close" sub-object
+            q = item.get("quote", item) if isinstance(item, dict) else item
+            sym = q.get("symbol", "")
+            bid = float(q.get("bid_price", 0))
+            ask = float(q.get("ask_price", 0))
+            last = float(q.get("last_trade_price", 0))
+            prev_close = float(q.get("previous_close", 0))
+            # Also check the close sub-object for official previous close
+            close_obj = item.get("close", {}) if isinstance(item, dict) else {}
+            if close_obj and close_obj.get("price"):
+                prev_close = float(close_obj["price"])
+            parsed[sym] = {
+                "bid": bid,
+                "ask": ask,
+                "last": last,
+                "mid": round((bid + ask) / 2, 2) if bid and ask else last,
+                "previous_close": prev_close,
+            }
+        return parsed
+
+    def review_order(self, ticker: str, side: str, order_type: str = "market",
+                     quantity: str = None, dollar_amount: str = None,
+                     limit_price: str = None, stop_price: str = None) -> dict:
+        """
+        Dry-run an order — returns pre-trade alerts without placing.
+        """
+        args = {
+            "account_number": self._agentic_account,
+            "symbol": ticker,
+            "side": side,
+            "type": order_type,
+        }
+        if quantity:
+            args["quantity"] = str(quantity)
+        if dollar_amount:
+            args["dollar_amount"] = str(dollar_amount)
+        if limit_price:
+            args["limit_price"] = str(limit_price)
+        if stop_price:
+            args["stop_price"] = str(stop_price)
+
+        return self._call_tool("review_equity_order", args)
+
+    def place_order(self, ticker: str, side: str, order_type: str = "market",
+                    quantity: str = None, dollar_amount: str = None,
+                    limit_price: str = None, stop_price: str = None,
+                    time_in_force: str = "gfd") -> dict:
+        """
+        Place a real equity order.
+        """
+        args = {
+            "account_number": self._agentic_account,
+            "symbol": ticker,
+            "side": side,
+            "type": order_type,
+            "time_in_force": time_in_force,
+            "ref_id": str(uuid.uuid4()),
+        }
+        if quantity:
+            args["quantity"] = str(quantity)
+        if dollar_amount:
+            args["dollar_amount"] = str(dollar_amount)
+        if limit_price:
+            args["limit_price"] = str(limit_price)
+        if stop_price:
+            args["stop_price"] = str(stop_price)
+
+        return self._call_tool("place_equity_order", args)
+
+    def execute_tear_sheet(self, trade_orders: list, max_gap_pct: float = 0.02) -> list:
+        """
+        Execute BUY orders from Agent 4B's tear sheet with live re-pricing.
+
+        Same logic as AlpacaBroker but uses Robinhood MCP for quotes and execution.
+        Robinhood doesn't support OTO (bracket) orders via MCP, so stop-losses
+        need to be placed as separate orders after fills.
+        """
+        fills = []
+
+        # Collect BUY tickers for batch quote fetch
+        buy_tickers = [o["ticker"] for o in trade_orders if o.get("action") == "BUY"]
+
+        # Fetch live quotes via Robinhood
+        live_quotes = {}
+        if buy_tickers:
+            try:
+                live_quotes = self.get_quotes(buy_tickers)
+                print(f"  [RH-Broker] Live quotes fetched for {len(live_quotes)} tickers")
+            except Exception as e:
+                print(f"  [RH-Broker] WARNING: Could not fetch live quotes ({e}), using planned prices")
+
+        for order in trade_orders:
+            if order.get("action") != "BUY":
+                fills.append({
+                    "ticker": order.get("ticker", "?"),
+                    "status": "skipped",
+                    "reason": order.get("reason", order.get("action", "not a BUY")),
+                })
+                continue
+
+            ticker = order["ticker"]
+            planned_entry = order["entry_price"]
+            stop_price = order.get("stop_loss")
+            risk_budget = order.get("risk_budgeted", order.get("risk_actual", 0))
+            planned_shares = order["shares"]
+
+            try:
+                # Get live price
+                quote = live_quotes.get(ticker, {})
+                live_ask = quote.get("ask") or quote.get("mid") or quote.get("last") or 0
+
+                if live_ask > 0 and stop_price and stop_price > 0 and risk_budget > 0:
+                    # === LIVE RE-PRICING MODE ===
+                    deviation_pct = abs(live_ask - planned_entry) / planned_entry
+
+                    if deviation_pct > max_gap_pct:
+                        # Cross-reference with Schwab
+                        from broker import _cross_reference_price
+                        verified_price = _cross_reference_price(ticker, planned_entry, live_ask)
+                        if verified_price is not None:
+                            print(f"  [RH-Broker] ✅ {ticker}: Cross-ref price ${verified_price:.2f}")
+                            live_ask = verified_price
+                        else:
+                            fills.append({
+                                "ticker": ticker,
+                                "status": "rejected",
+                                "reason": f"Quote anomaly: ${live_ask:.2f} vs planned ${planned_entry:.2f} ({deviation_pct*100:.1f}%)",
+                            })
+                            continue
+
+                    # Gap-up protection
+                    gap_pct = (live_ask - planned_entry) / planned_entry
+                    if gap_pct > max_gap_pct:
+                        print(f"  [RH-Broker] 🚫 REJECTED {ticker}: Gapped up {gap_pct*100:.1f}%")
+                        fills.append({
+                            "ticker": ticker,
+                            "status": "rejected",
+                            "reason": f"Gap up {gap_pct*100:.1f}% > {max_gap_pct*100:.0f}%",
+                            "planned_entry": planned_entry,
+                            "live_ask": live_ask,
+                        })
+                        continue
+
+                    # Dynamic share recalculation
+                    live_risk_per_share = live_ask - stop_price
+                    if live_risk_per_share <= 0:
+                        fills.append({
+                            "ticker": ticker,
+                            "status": "rejected",
+                            "reason": f"Live ${live_ask:.2f} at/below stop ${stop_price:.2f}",
+                        })
+                        continue
+
+                    live_shares = int(risk_budget // live_risk_per_share)
+                    if live_shares <= 0:
+                        fills.append({"ticker": ticker, "status": "rejected", "reason": "Zero shares after re-sizing"})
+                        continue
+
+                    limit_price = round(live_ask * 1.0015, 2)
+                    shares = live_shares
+                    pricing_mode = "live"
+
+                    if shares != planned_shares:
+                        print(f"  [RH-Broker] 📐 {ticker}: Re-sized {planned_shares} → {shares} shares")
+                else:
+                    limit_price = round(planned_entry * 1.015, 2)
+                    shares = planned_shares
+                    pricing_mode = "planned"
+
+                # First: review the order (dry run)
+                review = self.review_order(ticker, "buy", "limit",
+                                           quantity=str(shares), limit_price=str(limit_price))
+                if review and isinstance(review, dict):
+                    alerts = review.get("alerts", [])
+                    if alerts:
+                        print(f"  [RH-Broker] ⚠️ {ticker} pre-trade alerts: {alerts}")
+
+                # Place the order
+                result = self.place_order(
+                    ticker, "buy", "limit",
+                    quantity=str(shares),
+                    limit_price=str(limit_price),
+                    time_in_force="gfd",
+                )
+
+                order_id = None
+                if isinstance(result, dict):
+                    order_id = result.get("order_id") or result.get("id")
+
+                fills.append({
+                    "ticker": ticker,
+                    "status": "submitted",
+                    "order_id": order_id,
+                    "shares": shares,
+                    "planned_shares": planned_shares,
+                    "order_type": "limit",
+                    "limit_price": limit_price,
+                    "pricing_mode": pricing_mode,
+                    "live_ask": live_ask if live_ask > 0 else None,
+                    "planned_entry": planned_entry,
+                    "risk_budget": risk_budget,
+                    "stop_price": stop_price,
+                    "broker": "robinhood",
+                })
+                print(f"  [RH-Broker] ✅ BUY {shares} {ticker} @ limit ${limit_price} ({pricing_mode})")
+
+                # Note: Robinhood MCP doesn't support bracket/OTO orders.
+                # Stop-loss orders need to be placed separately after fill confirmation.
+                if stop_price and stop_price > 0:
+                    print(f"  [RH-Broker] ⏳ Stop-loss ${stop_price:.2f} pending — will place after fill")
+
+            except Exception as e:
+                fills.append({"ticker": ticker, "status": "error", "error": str(e)})
+                print(f"  [RH-Broker] ❌ ERROR on {ticker}: {e}")
+
+        # Save fills
+        os.makedirs("output", exist_ok=True)
+        with open("output/broker_fills.json", "w") as f:
+            json.dump({"timestamp": datetime.now().isoformat(), "broker": "robinhood", "fills": fills}, f, indent=2)
+
+        return fills
+
+    def close_position(self, ticker: str, qty: int = None) -> dict:
+        """Close a position (full or partial). Market order."""
+        try:
+            if qty:
+                result = self.place_order(ticker, "sell", "market", quantity=str(qty))
+                print(f"  [RH-Broker] TRIM {qty} shares of {ticker}")
+            else:
+                # Full close — get current position size first
+                positions = self.get_positions()
+                pos = next((p for p in positions if p["ticker"] == ticker), None)
+                if not pos:
+                    return {"ticker": ticker, "status": "no_position"}
+                result = self.place_order(ticker, "sell", "market", quantity=str(int(pos["shares"])))
+                print(f"  [RH-Broker] CLOSE {ticker} ({int(pos['shares'])} shares)")
+
+            return {"ticker": ticker, "status": "submitted", "action": "trim" if qty else "close", "qty": qty, "result": result}
+        except Exception as e:
+            print(f"  [RH-Broker] ERROR closing {ticker}: {e}")
+            return {"ticker": ticker, "status": "error", "error": str(e)}
+
+    def close_all_positions(self) -> dict:
+        """CRISIS_LIQUIDATION — close everything at market."""
+        positions = self.get_positions()
+        results = []
+        for p in positions:
+            r = self.close_position(p["ticker"])
+            results.append(r)
+        print(f"  [RH-Broker] CRISIS_LIQUIDATION — closing {len(positions)} positions")
+        return {"status": "submitted", "action": "close_all", "count": len(positions), "results": results}
+
+    def cancel_order(self, order_id: str) -> dict:
+        """Cancel an open order."""
+        return self._call_tool("cancel_equity_order", {
+            "account_number": self._agentic_account,
+            "order_id": order_id,
+        })
+
+    def get_orders(self, state: str = None, symbol: str = None) -> list:
+        """Get orders for the agentic account."""
+        args = {"account_number": self._agentic_account}
+        if state:
+            args["state"] = state
+        if symbol:
+            args["symbol"] = symbol
+        result = self._call_tool("get_equity_orders", args)
+        return result.get("orders", []) if isinstance(result, dict) else []
+
+    def get_orders_today(self) -> list:
+        """Get all orders — matches AlpacaBroker interface."""
+        return self.get_orders()
+
+    def check_tradability(self, tickers: list) -> dict:
+        """Check if tickers can be traded on the agentic account."""
+        return self._call_tool("get_equity_tradability", {
+            "account_number": self._agentic_account,
+            "symbols": tickers[:10],  # Max 10 per call
+        })
+
+    def search(self, query: str) -> list:
+        """Search for instruments by name or ticker."""
+        result = self._call_tool("search", {"query": query})
+        return result.get("results", []) if isinstance(result, dict) else []
+
+    def execute_agent5_decisions(self, decisions: list, crisis: bool = False) -> list:
+        """Execute Agent 5's HOLD/TRIM/CLOSE decisions."""
+        if crisis:
+            self.close_all_positions()
+            return [{"action": "CRISIS_LIQUIDATION", "status": "submitted"}]
+
+        results = []
+        for d in decisions:
+            ticker = d.get("ticker")
+            action = d.get("action", "HOLD")
+
+            if action == "HOLD":
+                # Robinhood MCP doesn't support stop orders directly via the current tools
+                # Stop management would need a separate mechanism
+                new_stop = d.get("new_stop")
+                original_stop = d.get("original_stop")
+                if new_stop and original_stop and new_stop > original_stop:
+                    print(f"  [RH-Broker] ⚠️ {ticker}: Stop tightened ${original_stop} → ${new_stop} (manual management needed)")
+                    results.append({"ticker": ticker, "action": "HOLD_STOP_TIGHTENED", "new_stop": new_stop, "status": "noted"})
+                else:
+                    results.append({"ticker": ticker, "action": "HOLD", "status": "no_action"})
+
+            elif action == "CLOSE":
+                result = self.close_position(ticker)
+                results.append(result)
+
+            elif action == "TRIM":
+                trim_pct = d.get("trim_pct", 50) / 100
+                positions = self.get_positions()
+                pos = next((p for p in positions if p["ticker"] == ticker), None)
+                if pos:
+                    trim_qty = max(1, int(pos["shares"] * trim_pct))
+                    result = self.close_position(ticker, qty=trim_qty)
+                    results.append(result)
+                else:
+                    results.append({"ticker": ticker, "action": "TRIM", "status": "no_position"})
+
+        return results
+
+
+# Quick smoke test
+if __name__ == "__main__":
+    print("Testing Robinhood MCP Broker connection...\n")
+
+    broker = RobinhoodBroker()
+
+    # Test 1: Account summary
+    print("\n1. Account Summary:")
+    summary = broker.get_account_summary()
+    for k, v in summary.items():
+        if k != "raw":
+            print(f"   {k}: {v}")
+
+    # Test 2: Positions
+    print("\n2. Open Positions:")
+    positions = broker.get_positions()
+    if positions:
+        for p in positions:
+            print(f"   {p['ticker']}: {p['shares']} shares @ ${p['avg_entry_price']:.2f}")
+    else:
+        print("   No open positions")
+
+    # Test 3: Quote
+    print("\n3. Quote for AAPL:")
+    quote = broker.get_quote("AAPL")
+    print(f"   {quote}")
+
+    # Test 4: Review order (dry run)
+    print("\n4. Review order — BUY 1 AAPL @ market:")
+    review = broker.review_order("AAPL", "buy", "market", quantity="1")
+    print(f"   {json.dumps(review, indent=2)[:500]}")
+
+    print("\n✅ Robinhood Broker module working!")
