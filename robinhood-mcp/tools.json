@@ -1,0 +1,1675 @@
+[
+  {
+    "description": "Cancel an open equity order by order_id. Always confirm with the user before calling. Resolve order_id via get_equity_orders if the user refers to it by symbol or description; pass the same account_number. Requires an agentic_allowed=true account; non-agentic accounts are rejected \u2014 do not call. Cancellation may be rejected if the order has already filled, was already cancelled, or is otherwise ineligible.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "account_number": {
+          "type": "string",
+          "description": "Brokerage account that owns the order. Must come from the user or be clearly implied \u2014 never default from get_accounts. Must be agentic_allowed=true. The upstream rejects mismatches against the order's owning account."
+        },
+        "order_id": {
+          "type": "string",
+          "description": "Order UUID from get_equity_orders. Must live in account_number."
+        }
+      },
+      "required": [
+        "account_number",
+        "order_id"
+      ],
+      "additionalProperties": false
+    },
+    "name": "cancel_equity_order",
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "data": {
+          "type": "object",
+          "properties": {
+            "accepted": {
+              "type": "boolean",
+              "description": "True when the broker accepted the cancel request."
+            }
+          },
+          "description": "Tool-specific result payload; see the inner properties for fields.",
+          "required": [
+            "accepted"
+          ],
+          "additionalProperties": false
+        },
+        "guide": {
+          "type": "string",
+          "description": "accepted=true means the broker accepted the cancel request, NOT that the order is already cancelled (cancellation is asynchronous). For the final state, call get_equity_orders: state 'pending_cancelled' = in flight; 'cancelled' or 'partially_filled_rest_cancelled' = succeeded; any filled state = a fill raced the cancel. Offer to check the final state. On error, the cancel was rejected outright \u2014 report verbatim."
+        }
+      },
+      "required": [
+        "data",
+        "guide"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "description": "List the user's brokerage accounts. Use this to look up account_number values needed by other tools. If the user has multiple accounts and hasn't specified which one, present the list and ask them to choose. Does NOT return reliable buying power \u2014 route buying-power questions through get_portfolio.",
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false
+    },
+    "name": "get_accounts",
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "data": {
+          "type": "object",
+          "properties": {
+            "accounts": {
+              "type": [
+                "null",
+                "array"
+              ],
+              "items": {
+                "type": [
+                  "null",
+                  "object"
+                ],
+                "properties": {
+                  "account_number": {
+                    "type": "string",
+                    "description": "Brokerage account number; pass to any tool that requires account_number. Mask all but the last 4 digits (e.g. '\u2022\u2022\u2022\u20221234') when displaying to the user."
+                  },
+                  "rhs_account_number": {
+                    "type": "string",
+                    "description": "Numeric brokerage account number \u2014 pass this (not account_number) to any nummus-backed tool that asks for an account identifier."
+                  },
+                  "type": {
+                    "type": "string",
+                    "description": "'cash' or 'margin' \u2014 the trading-permissions classification."
+                  },
+                  "brokerage_account_type": {
+                    "type": "string",
+                    "description": "Account type, e.g. 'individual', 'ira_traditional', 'ira_roth', 'ira_traditional_inherited', 'ira_roth_inherited', 'isa_stocks_and_shares'."
+                  },
+                  "nickname": {
+                    "type": "string",
+                    "description": "User-set nickname; present alongside account_number when set."
+                  },
+                  "is_default": {
+                    "type": "boolean",
+                    "description": "True for the user's default account. Surface when choosing among multiple accounts."
+                  },
+                  "agentic_allowed": {
+                    "type": "boolean",
+                    "description": "True when the account is enabled for agent-driven trading. review_*/place_*/cancel_* tools reject accounts where this is false."
+                  },
+                  "option_level": {
+                    "type": "string",
+                    "description": "Options approval: 'option_level_2' (long calls/puts, covered calls, cash-secured puts), 'option_level_3' (spreads and complex strategies), or empty/'option_level_0' (not approved)."
+                  },
+                  "only_position_closing_trades": {
+                    "type": "boolean",
+                    "description": "True when the account can only sell existing positions (no new opens)."
+                  },
+                  "management_type": {
+                    "type": "string",
+                    "description": "Management classification (e.g. 'managed') when applicable; layered on top of brokerage_account_type rather than replacing it."
+                  },
+                  "affiliate": {
+                    "type": "string",
+                    "description": "Affiliate / region code (e.g. 'RHF', 'RHUK', 'RHSG'). Affects feature availability for the account."
+                  },
+                  "state": {
+                    "type": "string",
+                    "description": "Account state \u2014 'active' is normal; anything else (deactivated, restricted, etc.) means the account cannot trade normally."
+                  },
+                  "deactivated": {
+                    "type": "boolean",
+                    "description": "True when the account is currently deactivated."
+                  },
+                  "permanently_deactivated": {
+                    "type": "boolean",
+                    "description": "True when the account is permanently closed (cannot be reactivated)."
+                  },
+                  "locked": {
+                    "type": "boolean",
+                    "description": "True when the account is locked from new activity."
+                  },
+                  "equity_trading_lock": {
+                    "type": "string",
+                    "description": "Equity-side trading lock reason; empty when no lock is active."
+                  },
+                  "option_trading_lock": {
+                    "type": "string",
+                    "description": "Option-side trading lock reason; empty when no lock is active."
+                  }
+                },
+                "required": [
+                  "account_number",
+                  "rhs_account_number",
+                  "type",
+                  "brokerage_account_type",
+                  "is_default",
+                  "agentic_allowed",
+                  "option_level",
+                  "only_position_closing_trades",
+                  "state",
+                  "deactivated",
+                  "permanently_deactivated",
+                  "locked"
+                ],
+                "additionalProperties": false
+              },
+              "description": "The user's brokerage accounts. Empty when the user has none."
+            }
+          },
+          "description": "Tool-specific result payload; see the inner properties for fields.",
+          "required": [
+            "accounts"
+          ],
+          "additionalProperties": false
+        },
+        "guide": {
+          "type": "string",
+          "description": "Sort the list deterministically when presenting: the default account first, agentic accounts (agentic_allowed=true) second, then other individual accounts, then retirement (IRA) accounts. Present account_number, brokerage_account_type, type, nickname (if set), and is_default. When displaying account_number to the user, mask all but the last 4 digits (e.g. '\u2022\u2022\u2022\u20221234'); pass the full value to other tools unchanged. Flag agentic_allowed when the user is choosing an account for a trade. When option_level is empty or 'option_level_0' and the user wants options, point them to https://robinhood.com/account/investing?applink=upgrade_options to apply. management_type='managed' is layered on brokerage_account_type \u2014 surface alongside, not as a replacement. For tools that ask for an account identifier on a crypto-backed flow (get_crypto_positions, future crypto write tools), pass rhs_account_number; for everything else (equities, options, etc.) pass account_number."
+        }
+      },
+      "required": [
+        "data",
+        "guide"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "description": "Fetch equity orders for an account \u2014 list mode (newest first; open and closed, including fills, cancellations, rejections) or single-order mode by passing order_id. When the user asks for \"orders\" without specifying equity or options, call both get_equity_orders and get_option_orders in parallel.\n\nFiltering tips:\n- Prefer narrow queries: combine state, symbol, and/or created_at_gte for specific questions (e.g. \"my filled AAPL orders this week\") \u2014 the per-page cap is fixed.\n- created_at_gte: interpret relative times in the user's timezone, convert to UTC before sending.\n- symbol forces a symbol\u2192instrument lookup; omit it if you don't need it.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "account_number": {
+          "type": "string",
+          "description": "Brokerage account number. Must come from the user or be clearly implied \u2014 never default from get_accounts."
+        },
+        "order_id": {
+          "type": "string",
+          "description": "Filter to a single order by UUID. The response shape is unchanged (orders[] with at most one entry); empty when the order does not belong to account_number."
+        },
+        "state": {
+          "type": "string",
+          "description": "Filter by single state: new, queued, confirmed, unconfirmed, partially_filled, filled, cancelled, rejected, failed, voided."
+        },
+        "symbol": {
+          "type": "string",
+          "description": "Filter to one symbol (triggers a symbol\u2192instrument lookup before the orders call)."
+        },
+        "created_at_gte": {
+          "type": "string",
+          "description": "Lower bound (inclusive). ISO 8601 UTC or YYYY-MM-DD; naive values are interpreted as UTC."
+        },
+        "placed_agent": {
+          "type": "string",
+          "description": "Filter to one source: 'user', 'agentic' (MCP), 'recurring', 'drip', etc."
+        },
+        "cursor": {
+          "type": "string",
+          "description": "Pagination cursor. Omit for the first page; for the next page, pass the cursor query param from the prior response's next URL."
+        }
+      },
+      "required": [
+        "account_number"
+      ],
+      "additionalProperties": false
+    },
+    "name": "get_equity_orders",
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "data": {
+          "type": "object",
+          "properties": {
+            "orders": {
+              "type": [
+                "null",
+                "array"
+              ],
+              "items": {
+                "type": [
+                  "null",
+                  "object"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "description": "Order UUID; needed by cancel_equity_order."
+                  },
+                  "instrument_id": {
+                    "type": "string",
+                    "description": "Instrument UUID; resolve to symbol via the instruments endpoint if needed."
+                  },
+                  "symbol": {
+                    "type": "string",
+                    "description": "Ticker symbol."
+                  },
+                  "side": {
+                    "type": "string",
+                    "description": "'buy' or 'sell'."
+                  },
+                  "type": {
+                    "type": "string",
+                    "description": "Upstream type: 'market' or 'limit'. Combine with trigger to recover the user-facing market/limit/stop_market/stop_limit."
+                  },
+                  "state": {
+                    "type": "string",
+                    "description": "Lifecycle state: new, queued, unconfirmed, partially_filled, filled, cancelled, rejected, failed, voided, pending_cancelled, partially_filled_rest_cancelled, and (for short-sale orders) locating, locate_failed."
+                  },
+                  "quantity": {
+                    "type": [
+                      "null",
+                      "string"
+                    ],
+                    "description": "Originally-requested share quantity. Null for dollar-based orders before the first fill."
+                  },
+                  "cumulative_quantity": {
+                    "type": "string",
+                    "description": "Shares filled so far. Less than quantity while partially filled; equal once filled."
+                  },
+                  "price": {
+                    "type": [
+                      "null",
+                      "string"
+                    ],
+                    "description": "Limit price for limit/stop_limit orders; null for market orders."
+                  },
+                  "stop_price": {
+                    "type": [
+                      "null",
+                      "string"
+                    ],
+                    "description": "Stop trigger price for stop_market/stop_limit orders; null otherwise."
+                  },
+                  "average_price": {
+                    "type": [
+                      "null",
+                      "string"
+                    ],
+                    "description": "Weighted average fill price across executions. Null until the first fill."
+                  },
+                  "fees": {
+                    "type": "string",
+                    "description": "Cumulative fees (regulatory + clearing) in USD."
+                  },
+                  "dollar_based_amount": {
+                    "type": [
+                      "null",
+                      "object"
+                    ],
+                    "properties": {
+                      "amount": {
+                        "type": "string",
+                        "description": "Quoted-decimal amount, e.g. '100.00'."
+                      },
+                      "currency_code": {
+                        "type": "string",
+                        "description": "ISO currency code; always 'USD' for equity orders today."
+                      }
+                    },
+                    "description": "Notional amount for dollar-based market orders; null for share-quantity orders.",
+                    "required": [
+                      "amount",
+                      "currency_code"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "time_in_force": {
+                    "type": "string",
+                    "description": "'gfd' (good for day) or 'gtc' (good till cancelled)."
+                  },
+                  "market_hours": {
+                    "type": "string",
+                    "description": "'regular_hours', 'extended_hours', or 'all_day_hours'."
+                  },
+                  "trigger": {
+                    "type": "string",
+                    "description": "'immediate' (market/limit) or 'stop' (stop_market/stop_limit)."
+                  },
+                  "placed_agent": {
+                    "type": "string",
+                    "description": "Source that placed the order: 'user' (app), 'agentic' (MCP), 'recurring', 'drip', 'brokeback' (system), or other internal values."
+                  },
+                  "created_at": {
+                    "type": "string",
+                    "description": "When the order was created."
+                  },
+                  "last_transaction_at": {
+                    "type": [
+                      "null",
+                      "string"
+                    ],
+                    "description": "Time of the most recent fill, cancel, or reject. Null on a brand-new unfilled order."
+                  },
+                  "executions": {
+                    "type": [
+                      "null",
+                      "array"
+                    ],
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "description": "Execution UUID."
+                        },
+                        "price": {
+                          "type": "string",
+                          "description": "Fill price per share."
+                        },
+                        "quantity": {
+                          "type": "string",
+                          "description": "Shares filled in this execution."
+                        },
+                        "timestamp": {
+                          "type": "string",
+                          "description": "When the fill occurred."
+                        },
+                        "fees": {
+                          "type": "string",
+                          "description": "Per-execution fees (regulatory + clearing) in USD."
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "price",
+                        "quantity",
+                        "timestamp",
+                        "fees"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "description": "Per-fill detail; reference only for per-lot questions."
+                  },
+                  "reject_reason": {
+                    "type": "string",
+                    "description": "Free-text reason when state is 'rejected'."
+                  }
+                },
+                "required": [
+                  "id",
+                  "instrument_id",
+                  "symbol",
+                  "side",
+                  "type",
+                  "state",
+                  "quantity",
+                  "cumulative_quantity",
+                  "price",
+                  "stop_price",
+                  "average_price",
+                  "fees",
+                  "dollar_based_amount",
+                  "time_in_force",
+                  "market_hours",
+                  "trigger",
+                  "placed_agent",
+                  "created_at",
+                  "last_transaction_at",
+                  "executions"
+                ],
+                "additionalProperties": false
+              },
+              "description": "Equity orders on this page, newest first. Empty when the cursor has no rows."
+            },
+            "next": {
+              "type": "string",
+              "description": "Next-page URL. Empty when there are no more pages."
+            }
+          },
+          "description": "Tool-specific result payload; see the inner properties for fields.",
+          "required": [
+            "orders"
+          ],
+          "additionalProperties": false
+        },
+        "guide": {
+          "type": "string",
+          "description": "For dollar-based orders (dollar_based_amount populated, quantity sometimes null) describe in dollars until cumulative_quantity is meaningful. Mention placed_agent when it is not 'user'. Recover the user-facing order type from type+trigger or from price/stop_price. Present symbol, side, type, state, quantity (or dollar_based_amount), cumulative_quantity when partially filled, price for limit orders, average_price once filled, last_transaction_at (or created_at), and id when cancellation may follow; suppress other fields unless asked."
+        }
+      },
+      "required": [
+        "data",
+        "guide"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "description": "List open equity positions for a specific brokerage account. Returns symbol, quantity, cost basis, and per-position hold breakdowns.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "account_number": {
+          "type": "string",
+          "description": "Brokerage account number. Must come from the user or be clearly implied \u2014 never default from get_accounts."
+        },
+        "cursor": {
+          "type": "string",
+          "description": "Pagination cursor. Omit for the first page; for the next page, pass the cursor query param from the prior response's next URL."
+        }
+      },
+      "required": [
+        "account_number"
+      ],
+      "additionalProperties": false
+    },
+    "name": "get_equity_positions",
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "data": {
+          "type": "object",
+          "properties": {
+            "positions": {
+              "type": [
+                "null",
+                "array"
+              ],
+              "items": {
+                "type": [
+                  "null",
+                  "object"
+                ],
+                "properties": {
+                  "symbol": {
+                    "type": "string",
+                    "description": "Ticker symbol."
+                  },
+                  "quantity": {
+                    "type": "string",
+                    "description": "Total shares held, including today's fills. Negative for short positions."
+                  },
+                  "intraday_quantity": {
+                    "type": "string",
+                    "description": "Portion of quantity filled today (upstream is timezone-aware)."
+                  },
+                  "average_buy_price": {
+                    "type": "string",
+                    "description": "All-time average cost per share across every fill."
+                  },
+                  "intraday_average_buy_price": {
+                    "type": "string",
+                    "description": "Average cost per share of today's fills only."
+                  },
+                  "pending_average_buy_price": {
+                    "type": "string",
+                    "description": "Average buy price blended with shares pending from an options exercise/assignment. Equals average_buy_price when shares_pending_from_options_events is zero."
+                  },
+                  "shares_available_for_sells": {
+                    "type": "string",
+                    "description": "Shares the user can sell right now (server-computed after subtracting holds)."
+                  },
+                  "shares_held_for_sells": {
+                    "type": "string",
+                    "description": "Shares locked by open outgoing sell orders."
+                  },
+                  "shares_held_for_stock_grants": {
+                    "type": "string",
+                    "description": "Shares held for settlement of stock grants / unsettled inbound fills."
+                  },
+                  "shares_held_for_options_events": {
+                    "type": "string",
+                    "description": "Shares earmarked for an upcoming options exercise/assignment."
+                  },
+                  "shares_held_for_asset_transfer": {
+                    "type": "string",
+                    "description": "Shares locked by an outgoing asset transfer (e.g. ACATS-out)."
+                  },
+                  "shares_pending_from_options_events": {
+                    "type": "string",
+                    "description": "Shares pending from an options exercise/assignment, not yet booked into quantity."
+                  },
+                  "avg_cost_affected": {
+                    "type": "boolean",
+                    "description": "True when average_buy_price was distorted by a corporate action, transfer, or IPO allocation; see avg_cost_affected_reason."
+                  },
+                  "avg_cost_affected_reason": {
+                    "type": [
+                      "null",
+                      "array"
+                    ],
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "Distortion reasons: any of 'corp_action', 'acats', 'iat', 'ipo_access'."
+                  },
+                  "type": {
+                    "type": "string",
+                    "description": "'long' (positive quantity), 'short' (negative), 'boxed' (both, rare), or 'empty' (zero)."
+                  }
+                },
+                "required": [
+                  "symbol",
+                  "quantity",
+                  "intraday_quantity",
+                  "average_buy_price",
+                  "intraday_average_buy_price",
+                  "pending_average_buy_price",
+                  "shares_available_for_sells",
+                  "shares_held_for_sells",
+                  "shares_held_for_stock_grants",
+                  "shares_held_for_options_events",
+                  "shares_held_for_asset_transfer",
+                  "shares_pending_from_options_events",
+                  "avg_cost_affected",
+                  "type"
+                ],
+                "additionalProperties": false
+              },
+              "description": "Open equity positions on this page. Empty when the cursor has no rows."
+            },
+            "next": {
+              "type": "string",
+              "description": "Next-page URL. Empty when there are no more pages."
+            }
+          },
+          "description": "Tool-specific result payload; see the inner properties for fields.",
+          "required": [
+            "positions"
+          ],
+          "additionalProperties": false
+        },
+        "guide": {
+          "type": "string",
+          "description": "Sellable shares: use shares_available_for_sells, not quantity. Yesterday's quantity = quantity - intraday_quantity; pre-intraday cost basis = (average_buy_price * quantity) - (intraday_average_buy_price * intraday_quantity). When avg_cost_affected is true, warn the user that cost basis may be unreliable for tax purposes. No market price here \u2014 for current value or PnL, call get_equity_quotes and multiply by quantity. Present symbol, quantity, average_buy_price (with the avg-cost warning if set), and type when not 'long'; suppress other fields unless asked."
+        }
+      },
+      "required": [
+        "data",
+        "guide"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "description": "Get real-time stock quotes and the official last-completed-session close for one or more symbols.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "symbols": {
+          "type": [
+            "null",
+            "array"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "description": "One or more stock symbols. Above 20 symbols, quotes still return but closes is omitted with closes_error set."
+        }
+      },
+      "required": [
+        "symbols"
+      ],
+      "additionalProperties": false
+    },
+    "name": "get_equity_quotes",
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "data": {
+          "type": "object",
+          "properties": {
+            "results": {
+              "type": [
+                "null",
+                "array"
+              ],
+              "items": {
+                "type": [
+                  "null",
+                  "object"
+                ],
+                "properties": {
+                  "quote": {
+                    "type": [
+                      "null",
+                      "object"
+                    ],
+                    "properties": {
+                      "symbol": {
+                        "type": "string",
+                        "description": "Ticker symbol."
+                      },
+                      "last_trade_price": {
+                        "type": "string",
+                        "description": "Most recent regular-hours trade (9:30-16:00 ET). Stays frozen at the closing print after the close until the next open; not the official settled close."
+                      },
+                      "venue_last_trade_time": {
+                        "type": "string",
+                        "description": "Timestamp of last_trade_price."
+                      },
+                      "last_non_reg_trade_price": {
+                        "type": [
+                          "null",
+                          "string"
+                        ],
+                        "description": "Most recent pre-market / after-hours / overnight trade. Null during regular hours or when the symbol does not trade in the current session."
+                      },
+                      "venue_last_non_reg_trade_time": {
+                        "type": [
+                          "null",
+                          "string"
+                        ],
+                        "description": "Timestamp of last_non_reg_trade_price. Reveals which non-regular session the trade came from."
+                      },
+                      "adjusted_previous_close": {
+                        "type": "string",
+                        "description": "Prior-day close adjusted for splits, dividends, and mergers."
+                      },
+                      "previous_close": {
+                        "type": "string",
+                        "description": "Raw prior closing print \u2014 not corporate-action adjusted and not the official settled close."
+                      },
+                      "previous_close_date": {
+                        "type": [
+                          "null",
+                          "string"
+                        ],
+                        "description": "YYYY-MM-DD trading date that previous_close corresponds to. Null for symbols that have never had a settled close."
+                      },
+                      "bid_price": {
+                        "type": "string",
+                        "description": "Highest current buy-order price. Zero when the book is closed or unavailable."
+                      },
+                      "venue_bid_time": {
+                        "type": "string",
+                        "description": "Timestamp of bid_price."
+                      },
+                      "ask_price": {
+                        "type": "string",
+                        "description": "Lowest current sell-order price. Zero when the book is closed or unavailable."
+                      },
+                      "venue_ask_time": {
+                        "type": "string",
+                        "description": "Timestamp of ask_price."
+                      },
+                      "has_traded": {
+                        "type": "boolean",
+                        "description": "False for instruments that have never traded; price fields are meaningless when false."
+                      },
+                      "state": {
+                        "type": "string",
+                        "description": "Instrument listing state \u2014 'active' is normal; other values (inactive, delisted, unlisted) mean the instrument is not in normal trading state."
+                      }
+                    },
+                    "description": "Live market data for this symbol.",
+                    "required": [
+                      "symbol",
+                      "last_trade_price",
+                      "venue_last_trade_time",
+                      "last_non_reg_trade_price",
+                      "venue_last_non_reg_trade_time",
+                      "adjusted_previous_close",
+                      "previous_close",
+                      "previous_close_date",
+                      "bid_price",
+                      "venue_bid_time",
+                      "ask_price",
+                      "venue_ask_time",
+                      "has_traded",
+                      "state"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "close": {
+                    "type": [
+                      "null",
+                      "object"
+                    ],
+                    "properties": {
+                      "symbol": {
+                        "type": "string",
+                        "description": "Ticker symbol."
+                      },
+                      "date": {
+                        "type": [
+                          "null",
+                          "string"
+                        ],
+                        "description": "YYYY-MM-DD trading date for this close. May be earlier than the requested date when interpolated."
+                      },
+                      "price": {
+                        "type": [
+                          "null",
+                          "string"
+                        ],
+                        "description": "Official settled close price. Null when the upstream has no close (rare)."
+                      },
+                      "interpolated": {
+                        "type": [
+                          "null",
+                          "boolean"
+                        ],
+                        "description": "True when the requested date had no session and the price came from an earlier date."
+                      },
+                      "source": {
+                        "type": [
+                          "null",
+                          "string"
+                        ],
+                        "description": "Upstream provenance (e.g. 'sip-close'). Informational."
+                      }
+                    },
+                    "description": "Official settled close from the most recent completed session. Absent when closes_error is set, or when this symbol had no close in an otherwise-successful closes batch.",
+                    "required": [
+                      "symbol",
+                      "date",
+                      "price",
+                      "interpolated",
+                      "source"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "quote"
+                ],
+                "additionalProperties": false
+              },
+              "description": "One entry per symbol resolved from /quotes/, in upstream order, each carrying the live quote and (when available) the official prior-session close. Empty if no symbol resolved."
+            },
+            "closes_error": {
+              "type": "string",
+              "description": "Populated when the closes lookup is skipped or fails tool-wide (e.g. too many symbols, upstream timeout, no previous_close_date). Per-symbol gaps surface as a missing close on the affected result, not here."
+            }
+          },
+          "description": "Tool-specific result payload; see the inner properties for fields.",
+          "required": [
+            "results"
+          ],
+          "additionalProperties": false
+        },
+        "guide": {
+          "type": "string",
+          "description": "Each entry in results pairs the live quote with the official prior-session close for the same symbol. Current price: pick whichever of quote.last_trade_price / quote.last_non_reg_trade_price has the more recent timestamp, then verify that timestamp is recent before calling it \"current\" \u2014 otherwise phrase as \"as of <time>\". Daily change uses quote.adjusted_previous_close. \"Yesterday's close\" uses results[].close.price (official settled close); when a result is missing close \u2014 either closes_error is set tool-wide, or this symbol had no close in an otherwise-successful batch \u2014 fall back to quote.previous_close and tell the user the official close lookup is unavailable. Drop bid/ask when zero. Surface has_traded=false or any non-'active' state before quoting a price."
+        }
+      },
+      "required": [
+        "data",
+        "guide"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "description": "Check tradability for up to 10 equity symbols on a given account: per-session eligibility and fractional. Call before placing an order to surface restrictions. Exact-ticker match \u2014 no name or partial-ticker resolution.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "account_number": {
+          "type": "string",
+          "description": "Brokerage account number. Must come from the user or be clearly implied \u2014 never default from get_accounts."
+        },
+        "symbols": {
+          "type": [
+            "null",
+            "array"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "description": "Stock symbols (max 10 per call). Exact-ticker match only."
+        }
+      },
+      "required": [
+        "account_number",
+        "symbols"
+      ],
+      "additionalProperties": false
+    },
+    "name": "get_equity_tradability",
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "data": {
+          "type": "object",
+          "properties": {
+            "results": {
+              "type": [
+                "null",
+                "array"
+              ],
+              "items": {
+                "type": "object",
+                "properties": {
+                  "symbol": {
+                    "type": "string",
+                    "description": "Ticker symbol."
+                  },
+                  "name": {
+                    "type": "string",
+                    "description": "Full instrument name (e.g. 'Apple Inc. - Common Stock')."
+                  },
+                  "simple_name": {
+                    "type": "string",
+                    "description": "Short product name (e.g. 'Apple')."
+                  },
+                  "state": {
+                    "type": "string",
+                    "description": "'active' or 'inactive' (delisted/expired)."
+                  },
+                  "country": {
+                    "type": "string",
+                    "description": "ISO country code of the listing."
+                  },
+                  "tradeable": {
+                    "type": "boolean",
+                    "description": "Listed and clearable on Robinhood; false routes nothing."
+                  },
+                  "fractional_tradability": {
+                    "type": "string",
+                    "description": "Decimal-quantity eligibility; non-'tradable' values require whole-share quantities."
+                  },
+                  "extended_hours_fractional_tradability": {
+                    "type": "boolean",
+                    "description": "Informational; effectively always false at order-placement today."
+                  },
+                  "all_day_tradability": {
+                    "type": "string",
+                    "description": "Extended/all-day session (4 AM \u2013 8 PM ET) eligibility. 'all_day_tradability_tradable' opens extended_hours and all_day_hours."
+                  },
+                  "twenty_four_seven_tradability": {
+                    "type": "string",
+                    "description": "Overnight 24/7 eligibility. Absent when the session is not applicable."
+                  },
+                  "short_selling_tradability": {
+                    "type": "string",
+                    "description": "Short-side eligibility; independent of long-side flags."
+                  },
+                  "internal_halt_reason": {
+                    "type": "string",
+                    "description": "Internal halt reason (e.g. 'regulatory')."
+                  },
+                  "internal_halt_details": {
+                    "type": "string",
+                    "description": "Human-readable halt details."
+                  },
+                  "internal_halt_sessions": {
+                    "type": [
+                      "null",
+                      "array"
+                    ],
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "Sessions covered by the halt: any of 'regular_hours', 'extended_hours', 'all_day_hours'."
+                  },
+                  "internal_halt_start_time": {
+                    "type": "string",
+                    "description": "ISO 8601 halt start."
+                  },
+                  "internal_halt_end_time": {
+                    "type": "string",
+                    "description": "ISO 8601 halt end."
+                  },
+                  "account_type_tradabilities": {
+                    "type": [
+                      "null",
+                      "array"
+                    ],
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "account_type": {
+                          "type": "string",
+                          "description": "Brokerage account type (e.g. 'individual', 'ira_traditional', 'ira_roth')."
+                        },
+                        "account_type_tradability": {
+                          "type": "string",
+                          "description": "'tradable', 'untradable', or 'position_closing_only' (sell-only)."
+                        }
+                      },
+                      "required": [
+                        "account_type",
+                        "account_type_tradability"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "description": "Per-account-type tradability for every account type the user's affiliate supports."
+                  }
+                },
+                "required": [
+                  "symbol",
+                  "tradeable",
+                  "extended_hours_fractional_tradability"
+                ],
+                "additionalProperties": false
+              },
+              "description": "One entry per resolved symbol, in request order."
+            },
+            "not_found": {
+              "type": [
+                "null",
+                "array"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "description": "Symbols that did not resolve (likely delisted, invalid, or non-equity)."
+            }
+          },
+          "description": "Tool-specific result payload; see the inner properties for fields.",
+          "required": [
+            "results"
+          ],
+          "additionalProperties": false
+        },
+        "guide": {
+          "type": "string",
+          "description": "Headline answer: use the account_type_tradabilities entry matching the user's account_type. If account_type_tradabilities is empty, report that account-type tradability could not be determined and rely on tradeable + state alone. Any of tradeable=false, state='inactive', or 'untradable' overrides everything below \u2014 surface first. Session mapping: regular_hours uses the headline; extended_hours / all_day_hours need all_day_tradability='all_day_tradability_tradable'; 24/7 needs twenty_four_seven_tradability='twenty_four_seven_tradability_tradable'. Mention internal_halt_* only when internal_halt_sessions overlaps the session the user wants. Fractional and dollar-based orders place only in regular_hours regardless of the flags. See trading://market-hours for session clock times."
+        }
+      },
+      "required": [
+        "data",
+        "guide"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "description": "Get the account's portfolio market value breakdown by asset type and buying power. Use for \"how much is my account worth?\", \"what's my portfolio breakdown?\", \"how much do I have in options?\", and \"how much can I spend / afford?\" questions.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "account_number": {
+          "type": "string",
+          "description": "Brokerage account number. Obtain from get_accounts."
+        }
+      },
+      "required": [
+        "account_number"
+      ],
+      "additionalProperties": false
+    },
+    "name": "get_portfolio",
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "data": {
+          "type": "object",
+          "properties": {
+            "total_value": {
+              "type": "string",
+              "description": "Total portfolio value across all asset types. The default 'account value' to show the user."
+            },
+            "equity_value": {
+              "type": "string",
+              "description": "Value of stock and ETF positions."
+            },
+            "options_value": {
+              "type": "string",
+              "description": "Value of options positions."
+            },
+            "futures_value": {
+              "type": "string",
+              "description": "Value of futures positions (includes RHD cost basis)."
+            },
+            "event_contracts_value": {
+              "type": "string",
+              "description": "Value of event contract positions."
+            },
+            "forex_value": {
+              "type": "string",
+              "description": "Value of forex holdings."
+            },
+            "cash": {
+              "type": "string",
+              "description": "Available cash (includes early access from pending deposits)."
+            },
+            "pending_deposits": {
+              "type": "string",
+              "description": "Deposits in transit, not yet settled."
+            },
+            "crypto_perpetuals_value": {
+              "type": "string",
+              "description": "Value of crypto perpetuals positions."
+            },
+            "mutual_funds_value": {
+              "type": "string",
+              "description": "Value of mutual fund positions."
+            },
+            "fixed_income_value": {
+              "type": "string",
+              "description": "Value of fixed income instruments."
+            },
+            "currency": {
+              "type": "string",
+              "description": "Currency all values are denominated in (e.g. USD)."
+            },
+            "buying_power": {
+              "type": [
+                "null",
+                "object"
+              ],
+              "properties": {
+                "buying_power": {
+                  "type": "string",
+                  "description": "Authoritative spendable figure used to gate order placement. For margin-enabled accounts it already includes available margin leverage; for cash and leverage-disabled accounts it equals the cash-only figure."
+                },
+                "unleveraged_buying_power": {
+                  "type": "string",
+                  "description": "Buying power ignoring margin leverage. Typically <= buying_power. Negative when the account is in deficit \u2014 new positions cannot be opened until the deficit is cleared."
+                },
+                "intraday_buying_power": {
+                  "type": [
+                    "null",
+                    "string"
+                  ],
+                  "description": "Buying power for intraday leverage, when applicable; null when the account does not have intraday margin enabled."
+                },
+                "off_intraday_buying_power": {
+                  "type": [
+                    "null",
+                    "string"
+                  ],
+                  "description": "Buying power outside the intraday-leverage window; null when not applicable."
+                },
+                "display_currency": {
+                  "type": "string",
+                  "description": "Currency of the figures, e.g. 'USD'."
+                }
+              },
+              "description": "Real-time buying power from the broker.",
+              "required": [
+                "buying_power",
+                "unleveraged_buying_power",
+                "display_currency"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "description": "Tool-specific result payload; see the inner properties for fields.",
+          "required": [
+            "total_value",
+            "equity_value",
+            "options_value",
+            "futures_value",
+            "event_contracts_value",
+            "forex_value",
+            "cash",
+            "pending_deposits",
+            "crypto_perpetuals_value",
+            "mutual_funds_value",
+            "fixed_income_value",
+            "currency",
+            "buying_power"
+          ],
+          "additionalProperties": false
+        },
+        "guide": {
+          "type": "string",
+          "description": "Show total_value as \"account value\" or \"portfolio value\". The breakdown fields show how value is distributed across asset types. Zero-value fields mean the user has no holdings in that asset class \u2014 omit them from display unless the user explicitly asks. For \"how much cash do I have?\" use the cash field. buying_power is the real-time authoritative spendable figure from the broker; quote buying_power.buying_power as the primary affordability answer with buying_power.display_currency. Crypto is held in a separate Nummus account and is NOT included in these values."
+        }
+      },
+      "required": [
+        "data",
+        "guide"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "description": "Place a real equity order with real money. Parameters mirror review_equity_order plus the optional ref_id. Requires an agentic_allowed=true account; non-agentic accounts are rejected \u2014 do not call.\n\nWorkflow: by default call review_equity_order first, present the estimated cost and any alerts, and get explicit user confirmation before calling this tool. Skip review only when the user has very explicitly asked to bypass it (e.g. \"skip the review\", \"just place it, don't review\") \u2014 a generic \"place this order\" is NOT a bypass.\n\nIdempotency: pass a fresh UUID as ref_id on the first call for each logical order, and re-send the SAME ref_id on retries of transient transport failures. Use a new ref_id only when the user wants a new order.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "account_number": {
+          "type": "string",
+          "description": "Brokerage account number. Must come from the user or be clearly implied \u2014 never default from get_accounts. Must be agentic_allowed=true; non-agentic accounts are rejected."
+        },
+        "symbol": {
+          "type": "string",
+          "description": "Stock symbol."
+        },
+        "side": {
+          "type": "string",
+          "description": "'buy' or 'sell'."
+        },
+        "type": {
+          "type": "string",
+          "description": "'market', 'limit', 'stop_market', or 'stop_limit'."
+        },
+        "quantity": {
+          "type": "string",
+          "description": "Number of shares. Decimals (fractional) allowed for market + regular_hours only."
+        },
+        "dollar_amount": {
+          "type": "string",
+          "description": "USD notional (e.g. '100.00'). Only valid with type=market."
+        },
+        "limit_price": {
+          "type": "string",
+          "description": "Limit price; required for limit or stop_limit."
+        },
+        "stop_price": {
+          "type": "string",
+          "description": "Stop trigger price; required for stop_market or stop_limit."
+        },
+        "time_in_force": {
+          "type": "string",
+          "description": "'gfd' or 'gtc'. Default: gfd."
+        },
+        "market_hours": {
+          "type": "string",
+          "description": "'regular_hours' (default), 'extended_hours', or 'all_day_hours'."
+        },
+        "ref_id": {
+          "type": "string",
+          "description": "Idempotency key (UUID). Generate once per logical order and re-send on retry \u2014 the upstream deduplicates by ref_id. Omitting falls back to a server-generated key (loses client\u2194gateway idempotency)."
+        }
+      },
+      "required": [
+        "account_number",
+        "symbol",
+        "side",
+        "type"
+      ],
+      "additionalProperties": false
+    },
+    "name": "place_equity_order",
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "data": {
+          "type": "object",
+          "properties": {
+            "order": {
+              "type": [
+                "null",
+                "object"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "description": "Order UUID; needed by cancel_equity_order."
+                },
+                "instrument_id": {
+                  "type": "string",
+                  "description": "Instrument UUID; resolve to symbol via the instruments endpoint if needed."
+                },
+                "symbol": {
+                  "type": "string",
+                  "description": "Ticker symbol."
+                },
+                "side": {
+                  "type": "string",
+                  "description": "'buy' or 'sell'."
+                },
+                "type": {
+                  "type": "string",
+                  "description": "Upstream type: 'market' or 'limit'. Combine with trigger to recover the user-facing market/limit/stop_market/stop_limit."
+                },
+                "state": {
+                  "type": "string",
+                  "description": "Lifecycle state: new, queued, unconfirmed, partially_filled, filled, cancelled, rejected, failed, voided, pending_cancelled, partially_filled_rest_cancelled, and (for short-sale orders) locating, locate_failed."
+                },
+                "quantity": {
+                  "type": [
+                    "null",
+                    "string"
+                  ],
+                  "description": "Originally-requested share quantity. Null for dollar-based orders before the first fill."
+                },
+                "cumulative_quantity": {
+                  "type": "string",
+                  "description": "Shares filled so far. Less than quantity while partially filled; equal once filled."
+                },
+                "price": {
+                  "type": [
+                    "null",
+                    "string"
+                  ],
+                  "description": "Limit price for limit/stop_limit orders; null for market orders."
+                },
+                "stop_price": {
+                  "type": [
+                    "null",
+                    "string"
+                  ],
+                  "description": "Stop trigger price for stop_market/stop_limit orders; null otherwise."
+                },
+                "average_price": {
+                  "type": [
+                    "null",
+                    "string"
+                  ],
+                  "description": "Weighted average fill price across executions. Null until the first fill."
+                },
+                "fees": {
+                  "type": "string",
+                  "description": "Cumulative fees (regulatory + clearing) in USD."
+                },
+                "dollar_based_amount": {
+                  "type": [
+                    "null",
+                    "object"
+                  ],
+                  "properties": {
+                    "amount": {
+                      "type": "string",
+                      "description": "Quoted-decimal amount, e.g. '100.00'."
+                    },
+                    "currency_code": {
+                      "type": "string",
+                      "description": "ISO currency code; always 'USD' for equity orders today."
+                    }
+                  },
+                  "description": "Notional amount for dollar-based market orders; null for share-quantity orders.",
+                  "required": [
+                    "amount",
+                    "currency_code"
+                  ],
+                  "additionalProperties": false
+                },
+                "time_in_force": {
+                  "type": "string",
+                  "description": "'gfd' (good for day) or 'gtc' (good till cancelled)."
+                },
+                "market_hours": {
+                  "type": "string",
+                  "description": "'regular_hours', 'extended_hours', or 'all_day_hours'."
+                },
+                "trigger": {
+                  "type": "string",
+                  "description": "'immediate' (market/limit) or 'stop' (stop_market/stop_limit)."
+                },
+                "placed_agent": {
+                  "type": "string",
+                  "description": "Source that placed the order: 'user' (app), 'agentic' (MCP), 'recurring', 'drip', 'brokeback' (system), or other internal values."
+                },
+                "created_at": {
+                  "type": "string",
+                  "description": "When the order was created."
+                },
+                "last_transaction_at": {
+                  "type": [
+                    "null",
+                    "string"
+                  ],
+                  "description": "Time of the most recent fill, cancel, or reject. Null on a brand-new unfilled order."
+                },
+                "executions": {
+                  "type": [
+                    "null",
+                    "array"
+                  ],
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "description": "Execution UUID."
+                      },
+                      "price": {
+                        "type": "string",
+                        "description": "Fill price per share."
+                      },
+                      "quantity": {
+                        "type": "string",
+                        "description": "Shares filled in this execution."
+                      },
+                      "timestamp": {
+                        "type": "string",
+                        "description": "When the fill occurred."
+                      },
+                      "fees": {
+                        "type": "string",
+                        "description": "Per-execution fees (regulatory + clearing) in USD."
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "price",
+                      "quantity",
+                      "timestamp",
+                      "fees"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "description": "Per-fill detail; reference only for per-lot questions."
+                },
+                "reject_reason": {
+                  "type": "string",
+                  "description": "Free-text reason when state is 'rejected'."
+                }
+              },
+              "description": "Newly-created equity order. Same shape as get_equity_orders orders[].",
+              "required": [
+                "id",
+                "instrument_id",
+                "symbol",
+                "side",
+                "type",
+                "state",
+                "quantity",
+                "cumulative_quantity",
+                "price",
+                "stop_price",
+                "average_price",
+                "fees",
+                "dollar_based_amount",
+                "time_in_force",
+                "market_hours",
+                "trigger",
+                "placed_agent",
+                "created_at",
+                "last_transaction_at",
+                "executions"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "description": "Tool-specific result payload; see the inner properties for fields.",
+          "required": [
+            "order"
+          ],
+          "additionalProperties": false
+        },
+        "guide": {
+          "type": "string",
+          "description": "The order has been submitted \u2014 not necessarily filled. Describe with state. Tell the user the order was placed and summarize symbol, side, type, quantity (or dollar_based_amount), and limit/stop prices; remind them it may not have filled yet and that they can check status or cancel via id. On error, the order was NOT placed \u2014 report the error verbatim."
+        }
+      },
+      "required": [
+        "data",
+        "guide"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "description": "Simulate a stock order without placing it. Returns the current quote plus pre-trade alerts (buying power, PDT, instrument halt, etc.). Call this by default before place_equity_order unless the user has very explicitly asked to skip review. Requires an agentic_allowed=true account; non-agentic accounts are rejected \u2014 do not call.\n\nParameter rules:\n- If the user has not specified type, ask. For immediate fills with price protection, prefer a marketable limit at the current ask over a plain market.\n- Provide exactly one of quantity or dollar_amount; dollar_amount requires type=market (server computes shares from last_trade_price).\n- Fractional shares: only on type=market with market_hours=regular_hours, eligible accounts, up to 6 decimal places, no short sells.\n- limit_price required for limit/stop_limit; stop_price required for stop_market/stop_limit.\n- Fractional and dollar-based orders only place in regular_hours; the tool rejects them in other sessions.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "account_number": {
+          "type": "string",
+          "description": "Brokerage account number. Must come from the user or be clearly implied \u2014 never default from get_accounts. Must be agentic_allowed=true; non-agentic accounts are rejected."
+        },
+        "symbol": {
+          "type": "string",
+          "description": "Stock symbol."
+        },
+        "side": {
+          "type": "string",
+          "description": "'buy' or 'sell'."
+        },
+        "type": {
+          "type": "string",
+          "description": "'market', 'limit', 'stop_market', or 'stop_limit'."
+        },
+        "quantity": {
+          "type": "string",
+          "description": "Number of shares. Decimals (fractional) allowed for market + regular_hours only."
+        },
+        "dollar_amount": {
+          "type": "string",
+          "description": "USD notional (e.g. '100.00'). Only valid with type=market."
+        },
+        "limit_price": {
+          "type": "string",
+          "description": "Limit price; required for limit or stop_limit."
+        },
+        "stop_price": {
+          "type": "string",
+          "description": "Stop trigger price; required for stop_market or stop_limit."
+        },
+        "time_in_force": {
+          "type": "string",
+          "description": "'gfd' (good for day) or 'gtc' (good till cancelled). Default: gfd."
+        },
+        "market_hours": {
+          "type": "string",
+          "description": "'regular_hours' (default), 'extended_hours', or 'all_day_hours'."
+        }
+      },
+      "required": [
+        "account_number",
+        "symbol",
+        "side",
+        "type"
+      ],
+      "additionalProperties": false
+    },
+    "name": "review_equity_order",
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "data": {
+          "type": "object",
+          "properties": {
+            "symbol": {
+              "type": "string",
+              "description": "Echoed symbol."
+            },
+            "side": {
+              "type": "string",
+              "description": "Echoed side."
+            },
+            "type": {
+              "type": "string",
+              "description": "Echoed order type."
+            },
+            "quantity": {
+              "type": "string",
+              "description": "Echoed share quantity. Omitted for dollar-based orders."
+            },
+            "dollar_amount": {
+              "type": "string",
+              "description": "Echoed dollar amount (USD). Omitted for share-quantity orders."
+            },
+            "limit_price": {
+              "type": "string",
+              "description": "Echoed limit price."
+            },
+            "stop_price": {
+              "type": "string",
+              "description": "Echoed stop trigger price."
+            },
+            "order_checks": {
+              "type": "object",
+              "description": "Pre-trade alert. Empty object {} means no alerts. Non-empty shape: {alert_type: <UPPER_SNAKE_CASE>, <alert_type_lowercase>_alert_details: {...}}. Present alert_type verbatim along with the details \u2014 do not enumerate alert types; new ones ship regularly."
+            },
+            "quote_data": {
+              "type": [
+                "null",
+                "object"
+              ],
+              "properties": {
+                "symbol": {
+                  "type": "string",
+                  "description": "Ticker symbol."
+                },
+                "last_trade_price": {
+                  "type": "string",
+                  "description": "Most recent regular-hours trade (9:30-16:00 ET). Stays frozen at the closing print after the close until the next open; not the official settled close."
+                },
+                "venue_last_trade_time": {
+                  "type": "string",
+                  "description": "Timestamp of last_trade_price."
+                },
+                "last_non_reg_trade_price": {
+                  "type": [
+                    "null",
+                    "string"
+                  ],
+                  "description": "Most recent pre-market / after-hours / overnight trade. Null during regular hours or when the symbol does not trade in the current session."
+                },
+                "venue_last_non_reg_trade_time": {
+                  "type": [
+                    "null",
+                    "string"
+                  ],
+                  "description": "Timestamp of last_non_reg_trade_price. Reveals which non-regular session the trade came from."
+                },
+                "adjusted_previous_close": {
+                  "type": "string",
+                  "description": "Prior-day close adjusted for splits, dividends, and mergers."
+                },
+                "previous_close": {
+                  "type": "string",
+                  "description": "Raw prior closing print \u2014 not corporate-action adjusted and not the official settled close."
+                },
+                "previous_close_date": {
+                  "type": [
+                    "null",
+                    "string"
+                  ],
+                  "description": "YYYY-MM-DD trading date that previous_close corresponds to. Null for symbols that have never had a settled close."
+                },
+                "bid_price": {
+                  "type": "string",
+                  "description": "Highest current buy-order price. Zero when the book is closed or unavailable."
+                },
+                "venue_bid_time": {
+                  "type": "string",
+                  "description": "Timestamp of bid_price."
+                },
+                "ask_price": {
+                  "type": "string",
+                  "description": "Lowest current sell-order price. Zero when the book is closed or unavailable."
+                },
+                "venue_ask_time": {
+                  "type": "string",
+                  "description": "Timestamp of ask_price."
+                },
+                "has_traded": {
+                  "type": "boolean",
+                  "description": "False for instruments that have never traded; price fields are meaningless when false."
+                },
+                "state": {
+                  "type": "string",
+                  "description": "Instrument listing state \u2014 'active' is normal; other values (inactive, delisted, unlisted) mean the instrument is not in normal trading state."
+                }
+              },
+              "description": "Live market data (single quote); same shape and semantics as get_equity_quotes results[0].quote.",
+              "required": [
+                "symbol",
+                "last_trade_price",
+                "venue_last_trade_time",
+                "last_non_reg_trade_price",
+                "venue_last_non_reg_trade_time",
+                "adjusted_previous_close",
+                "previous_close",
+                "previous_close_date",
+                "bid_price",
+                "venue_bid_time",
+                "ask_price",
+                "venue_ask_time",
+                "has_traded",
+                "state"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "description": "Tool-specific result payload; see the inner properties for fields.",
+          "required": [
+            "symbol",
+            "side",
+            "type",
+            "order_checks",
+            "quote_data"
+          ],
+          "additionalProperties": false
+        },
+        "guide": {
+          "type": "string",
+          "description": "This tool does NOT place the order \u2014 it returns a preview for the user to review. Reaching this tool means the user opted into the review step, so you MUST present the preview to the user (symbol, side, type, quantity or dollar_amount, limit/stop prices, estimated execution) and get explicit confirmation before calling place_equity_order. This holds even when order_checks is empty ({}) \u2014 empty means no broker alerts, NOT that confirmation can be skipped; the user asked to review, so let them review. Surface any non-empty alert in order_checks verbatim alongside the preview. In addition, you MUST always show the quotes to the user for compliance reasons. Market orders: estimate execution from quote_data.last_trade_price (ask for buys, bid for sells when spreads are wide). Limit orders: compare limit_price to quote_data bid/ask so the user knows the distance from market."
+        }
+      },
+      "required": [
+        "data",
+        "guide"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "description": "Resolve a natural-language query to Robinhood instruments. Use when the user names a company by its name (or partial name) instead of a ticker, or when you need an instrument_id for a downstream tool. Returns matched US-listed stocks/ETFs with their canonical symbol, full name, and instrument_id. Use the returned symbol with get_equity_quotes / get_equity_tradability / place_equity_order; use instrument_id for tools that require one.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "description": "Natural-language search query: company name, partial name, or ticker (e.g. \"apple\", \"tesla motors\", \"AAPL\"). Required."
+        },
+        "asset_type": {
+          "type": "string",
+          "description": "Asset category to search. Today only \"instrument\" (US-listed stocks/ETFs) is supported; defaults to \"instrument\" when omitted. More categories (events, currency_pairs, futures, market_indexes) will be added as their corresponding tools land."
+        },
+        "limit": {
+          "type": "integer",
+          "description": "Max results to return. Defaults to 10; clamped to 20."
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "additionalProperties": false
+    },
+    "name": "search",
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "data": {
+          "type": "object",
+          "properties": {
+            "results": {
+              "type": [
+                "null",
+                "array"
+              ],
+              "items": {
+                "type": "object",
+                "properties": {
+                  "instrument_id": {
+                    "type": "string",
+                    "description": "Robinhood instrument UUID. Pass to tools that take an instrument_id."
+                  },
+                  "symbol": {
+                    "type": "string",
+                    "description": "Ticker symbol, e.g. AAPL. Pass to tools that take a symbol (get_equity_quotes, get_equity_tradability, place_equity_order)."
+                  },
+                  "name": {
+                    "type": "string",
+                    "description": "Full instrument name, e.g. \"Apple Inc. - Common Stock\"."
+                  },
+                  "simple_name": {
+                    "type": "string",
+                    "description": "Short product name shown in UI, e.g. \"Apple\". Omitted when upstream did not return one."
+                  }
+                },
+                "required": [
+                  "instrument_id",
+                  "symbol",
+                  "name"
+                ],
+                "additionalProperties": false
+              },
+              "description": "Matched instruments in upstream relevance order. Empty when no Robinhood-tradable instrument matches the query."
+            }
+          },
+          "description": "Tool-specific result payload; see the inner properties for fields.",
+          "required": [
+            "results"
+          ],
+          "additionalProperties": false
+        },
+        "guide": {
+          "type": "string",
+          "description": "Each entry in results[] carries both symbol and instrument_id \u2014 pass symbol to symbol-based tools (get_equity_quotes, get_equity_tradability, place_equity_order) and instrument_id to id-based tools. Multiple results means the query was ambiguous (e.g. \"apple\" could match AAPL or APLE); ask the user to disambiguate before placing trades. An empty results[] means no Robinhood-tradable instrument matches the query \u2014 do not invent a symbol."
+        }
+      },
+      "required": [
+        "data",
+        "guide"
+      ],
+      "additionalProperties": false
+    }
+  }
+]
