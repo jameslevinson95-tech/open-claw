@@ -36,21 +36,46 @@ from alpaca.trading.enums import OrderSide, TimeInForce, OrderStatus, QueryOrder
 def _cross_reference_price(ticker: str, prior_close: float, suspect_price: float):
     """
     Cross-reference a suspect broker quote against yfinance and Massive.
-    Returns a trusted price if one source agrees with prior close (within 15%),
+    Returns a trusted price if one source agrees with prior close (within 5%),
     or None if no reliable price can be found.
 
-    Priority: Massive previous day bar > yfinance regularMarketPrice > None
+    Priority: Schwab quote > Massive previous day bar > yfinance regularMarketPrice > None
     """
     trusted = None
 
+    # 0. Try Schwab API (independent real-time data feed)
+    try:
+        from schwab_data import fetch_schwab_quotes
+        schwab_quotes = fetch_schwab_quotes([ticker])
+        if ticker in schwab_quotes:
+            sq = schwab_quotes[ticker]
+            schwab_price = sq.get("ask") or sq.get("last") or sq.get("mid") or 0
+            if schwab_price > 0:
+                schwab_dev = abs(schwab_price - prior_close) / prior_close
+                if schwab_dev < 0.05:
+                    trusted = schwab_price
+                    print(f"  [CrossRef] Schwab quote ${schwab_price:.2f} (dev {schwab_dev*100:.1f}%) — TRUSTED")
+                else:
+                    # Schwab also disagrees with prior close — check if Schwab agrees with Alpaca
+                    schwab_alpaca_dev = abs(schwab_price - suspect_price) / suspect_price if suspect_price > 0 else 999
+                    if schwab_alpaca_dev < 0.03:
+                        print(f"  [CrossRef] Schwab ${schwab_price:.2f} agrees with Alpaca ${suspect_price:.2f} — real price move, using Schwab")
+                        trusted = schwab_price
+                    else:
+                        print(f"  [CrossRef] Schwab ${schwab_price:.2f} diverges from both prior close and Alpaca — no consensus yet")
+    except Exception as e:
+        print(f"  [CrossRef] Schwab lookup failed: {e}")
+
     # 1. Try Massive API (prior day close — most reliable, no rate-limit issues)
+    if trusted is not None:
+        return trusted
     try:
         from massive_data import fetch_previous_day
         massive_prev = fetch_previous_day(ticker)
         if "error" not in massive_prev and massive_prev.get("close"):
             massive_close = massive_prev["close"]
             massive_dev = abs(massive_close - prior_close) / prior_close
-            if massive_dev < 0.15:  # Massive agrees with our prior close
+            if massive_dev < 0.05:  # Massive agrees with our prior close
                 trusted = massive_close
                 print(f"  [CrossRef] Massive prior close ${massive_close:.2f} (dev {massive_dev*100:.1f}% from planned) — TRUSTED")
             else:
@@ -59,14 +84,16 @@ def _cross_reference_price(ticker: str, prior_close: float, suspect_price: float
         print(f"  [CrossRef] Massive lookup failed: {e}")
 
     # 2. Try yfinance as backup
-    if trusted is None:
+    if trusted is not None:
+        return trusted
+    if True:
         try:
             import yfinance as yf
             info = yf.Ticker(ticker).info
             yf_price = info.get("regularMarketPrice") or info.get("previousClose")
             if yf_price:
                 yf_dev = abs(yf_price - prior_close) / prior_close
-                if yf_dev < 0.15:
+                if yf_dev < 0.05:
                     trusted = yf_price
                     print(f"  [CrossRef] yfinance price ${yf_price:.2f} (dev {yf_dev*100:.1f}%) — TRUSTED")
                 else:
@@ -191,11 +218,12 @@ class AlpacaBroker:
                 if live_ask > 0 and stop_price and stop_price > 0 and risk_budget > 0:
                     # === LIVE RE-PRICING MODE ===
 
-                    # 0. Quote anomaly detection: if live price deviates >15% from
-                    #    prior close, cross-reference before rejecting. Pre-market
-                    #    Alpaca IEX quotes can be garbage on thin liquidity.
+                    # 0. Quote anomaly detection: if live price deviates beyond
+                    #    the gap threshold, cross-reference before rejecting.
+                    #    Pre-market Alpaca IEX quotes can be garbage on thin
+                    #    liquidity (e.g. BAC showing $54.80 when real = $51.60).
                     deviation_pct = abs(live_ask - planned_entry) / planned_entry
-                    if deviation_pct > 0.15:
+                    if deviation_pct > max_gap_pct:
                         print(f"  [Broker] ⚠️ {ticker}: Alpaca quote ${live_ask:.2f} deviates {deviation_pct*100:.1f}% from prior close ${planned_entry:.2f} — cross-referencing...")
                         verified_price = _cross_reference_price(ticker, planned_entry, live_ask)
                         if verified_price is not None:

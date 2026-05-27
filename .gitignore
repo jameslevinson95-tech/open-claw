@@ -11,3 +11,8 @@ output/*.html
 journal/trades.csv
 *.egg-info/
 .DS_Store
+schwab_token.json
+schwab_localhost.pem
+schwab_localhost.key
+schwab_auth_server.py
+schwab_exchange_token.sh
