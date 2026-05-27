@@ -32,7 +32,7 @@ from agent2_fundamental_screener import run_agent2, format_agent2_for_telegram
 from agent3_synthesizer import run_agent3, format_agent3_for_slack
 from agent4_risk_manager import run_agent4, generate_tear_sheet
 from agent5_position_monitor import run_agent5, run_agent5_preflight, format_agent5_for_telegram
-from broker import AlpacaBroker
+from broker_factory import get_broker
 from trade_journal import log_close, build_trade_record
 from watchlist import Watchlist, promote_ready_candidates
 from vwap_gate import check_vwap, vwap_gate
@@ -381,7 +381,7 @@ def run_morning_pipeline(verbose: bool = False) -> dict:
     print("\n" + "=" * 50)
     print("✅ MORNING PIPELINE COMPLETE")
     print(f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M:%S ET')}")
-    print("📈 Trades submitted to Alpaca paper trading.")
+    print("📈 Trades ready for execution.")
     print("🕒 Agent 5 will run at 3:30 PM to monitor positions.")
     print("=" * 50)
     
@@ -438,7 +438,7 @@ def run_afternoon_monitor(verbose: bool = False) -> dict:
                 print("━" * 40)
                 
                 try:
-                    broker = AlpacaBroker()
+                    broker = get_broker()
                     exec_results = broker.execute_agent5_decisions(decisions, crisis=crisis)
                     agent5_result["broker_results"] = exec_results
                     
@@ -496,7 +496,7 @@ def run_afternoon_monitor(verbose: bool = False) -> dict:
         
         # Send EOD hb_signal
         try:
-            broker = AlpacaBroker()
+            broker = get_broker()
             positions = broker.get_positions()
             account = broker.get_account_summary()
             
@@ -593,10 +593,10 @@ def resume_from_agent3(verbose: bool = False) -> dict:
             print("💰 BROKER EXECUTION — ALPACA")
             print("━" * 40)
             try:
-                broker = AlpacaBroker()
+                broker = get_broker()
                 fills = broker.execute_tear_sheet(trade_orders)
                 submitted = [f for f in fills if f.get("status") == "submitted"]
-                print(f"  ✅ {len(submitted)} orders submitted to Alpaca")
+                print(f"  ✅ {len(submitted)} orders submitted")
             except Exception as e:
                 print(f"❌ Broker execution FAILED: {e}")
     
@@ -648,7 +648,7 @@ def run_deferred_execution() -> dict:
     
     # Execute
     try:
-        broker = AlpacaBroker()
+        broker = get_broker()
         fills = broker.execute_tear_sheet(approved_orders)
         
         submitted = [f for f in fills if f.get("status") == "submitted"]

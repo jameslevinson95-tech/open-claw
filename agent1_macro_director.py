@@ -56,6 +56,28 @@ DECISION INPUTS (what you should analyze):
 - HY spread proxy (HYG/LQD ratio): Falling = credit stress
 - Sector breadth: % of sectors above 20DMA — broad participation vs narrow leadership
 
+FEDWATCH — FED RATE EXPECTATIONS (if provided):
+You may receive Fed Funds futures-derived rate probabilities. Key signals:
+- Next FOMC meeting cut/hold/hike probability: >70% cut = dovish tailwind for risk assets. >70% hold with hawkish drift = headwind.
+- Total cuts priced through year-end: Aggressive easing (3+) = liquidity positive. Tightening priced = risk-off pressure.
+- CRITICAL: If market expectations shift rapidly (e.g., from 3 cuts to 1 cut in a week), that repricing itself causes volatility. Watch for DIVERGENCE between rate expectations and equity positioning.
+
+GEX (GAMMA EXPOSURE) DATA (if provided in DIX section):
+GEX from SqueezeMetrics measures dealer gamma positioning:
+- POSITIVE GEX = dealers are long gamma. They buy dips and sell rips → market stabilizes, moves get dampened, price pins to strikes. Low vol environment.
+- NEGATIVE GEX = dealers are short gamma. They sell dips and buy rips → moves get AMPLIFIED. Expect larger daily ranges, whipsaws, and potential flash crashes.
+- GEX is a VOLATILITY AMPLIFIER signal, not directional. Negative GEX + RISK-OFF = much worse than RISK-OFF alone.
+
+ITC (INTO THE CRYPTOVERSE) DATA (if provided):
+You may also receive data from ITC's platform. These are HIGH-VALUE supplementary signals:
+- Crypto Risk Summary (0-1): Composite of Price, On-Chain, and Social risk. <0.25 = accumulation zone, >0.75 = cycle peak danger
+- BTC Risk Level (0-1): Ben Cowen's model. The lower this is, the more historically favorable BTC entry conditions are
+- Macro Recession Risk (0-1): ITC's composite from Employment + National Income + Production. <0.10 = expansion, >0.50 = recession likely
+- BTC Dominance: >60% with stables = flight to quality within crypto (risk-off signal). <45% = alt season (risk-on euphoria)
+- Market Cap vs Log Regression: Deviation from fair value trendline. Major undervaluation (<-30%) suggests cycle has room to run
+- S&P 500 / DXY / Gold Risk Levels: Cross-asset risk scores on same 0-1 scale
+Use ITC data to CONFIRM or CHALLENGE your regime classification from the core inputs. If ITC recession risk diverges significantly from your yield curve / credit read, flag it.
+
 ASSEMBLY PRIVATE DATA (if provided):
 You may also receive Assembly sentiment and macro data. Use these for additional signal confirmation:
 - Assembly Sentiment Composite (0-100): <25 = Extreme Fear, 25-45 = Fear, 45-55 = Neutral, 55-75 = Greed, >75 = Extreme Greed
@@ -121,6 +143,33 @@ def run_agent1(macro_data: dict = None) -> dict:
         except Exception as e:
             print(f"[Agent 1] Assembly data load failed: {e}")
 
+    # Load FedWatch (rate expectations) data if available
+    fedwatch_text = ""
+    fedwatch_path = "output/fedwatch.json"
+    if os.path.exists(fedwatch_path):
+        try:
+            from fedwatch import load_fedwatch, format_fedwatch_for_prompt
+            fw_loaded = load_fedwatch(fedwatch_path)
+            if fw_loaded and "error" not in fw_loaded:
+                fedwatch_text = "\n\n" + format_fedwatch_for_prompt(fw_loaded)
+                summary = fw_loaded.get("summary", {})
+                print(f"[Agent 1] FedWatch loaded (next: {summary.get('next_meeting', '?')} — {summary.get('next_meeting_action', '?')}, year-end cuts: {summary.get('total_cuts_priced_by_year_end', '?')})")
+        except Exception as e:
+            print(f"[Agent 1] FedWatch load failed: {e}")
+
+    # Load ITC (Into The Cryptoverse) data if available
+    itc_text = ""
+    itc_path = "output/itc_data.json"
+    if os.path.exists(itc_path):
+        try:
+            from itc_data import load_itc_data, format_itc_for_prompt
+            itc_loaded = load_itc_data(itc_path)
+            if itc_loaded:
+                itc_text = "\n\n" + format_itc_for_prompt(itc_loaded)
+                print(f"[Agent 1] ITC data loaded (crypto risk: {itc_loaded.get('crypto_risk', {}).get('summary', '?')}, recession risk: {itc_loaded.get('macro_risk', {}).get('recession_composite', '?')})")
+        except Exception as e:
+            print(f"[Agent 1] ITC data load failed: {e}")
+
     print(f"[Agent 1] Macro data loaded from {macro_data.get('timestamp', 'unknown')}")
 
     # Send to Claude
@@ -137,7 +186,7 @@ def run_agent1(macro_data: dict = None) -> dict:
 
 CRITICAL: If DIX, MOVE, or Credit data is marked as unavailable, you MUST output REGIME: DEFER.
 
-{macro_text}{assembly_text}
+{macro_text}{assembly_text}{itc_text}{fedwatch_text}
 
 Current date/time: {datetime.now().isoformat()}
 

@@ -175,12 +175,12 @@ def load_open_positions() -> list:
     Falls back to agent4_orders.json if Alpaca is unreachable.
     Enriches with stop_loss from agent4_orders.json when available.
     """
-    # Primary: Read from Alpaca
+    # Primary: Read from broker (Robinhood or Alpaca via factory)
     try:
-        from broker import AlpacaBroker
-        broker = AlpacaBroker()
-        alpaca_positions = broker.get_positions()
-        if alpaca_positions:
+        from broker_factory import get_broker
+        broker = get_broker()
+        broker_positions = broker.get_positions()
+        if broker_positions:
             # Enrich with stop/theme data from agent4 orders if available
             stop_map = {}
             orders_path = "output/agent4_orders.json"
@@ -198,7 +198,7 @@ def load_open_positions() -> list:
                         }
 
             positions = []
-            for p in alpaca_positions:
+            for p in broker_positions:
                 enrichment = stop_map.get(p["ticker"], {})
                 positions.append({
                     "ticker": p["ticker"],

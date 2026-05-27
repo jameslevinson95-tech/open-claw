@@ -24,7 +24,7 @@ from datetime import datetime, time
 import pytz
 import yfinance as yf
 
-from broker import AlpacaBroker
+from broker_factory import get_broker
 
 OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
 
@@ -107,7 +107,7 @@ def _append_daemon_log(entry: dict):
     _save_json(log_path, logs)
 
 
-def _get_current_stop_price(broker: AlpacaBroker, ticker: str) -> float:
+def _get_current_stop_price(broker, ticker: str) -> float:
     """Get the current stop-loss price for a ticker from Alpaca open orders."""
     try:
         from alpaca.trading.requests import GetOrdersRequest
@@ -122,7 +122,7 @@ def _get_current_stop_price(broker: AlpacaBroker, ticker: str) -> float:
     return None
 
 
-def execute_defensive_protocol(broker: AlpacaBroker, trigger_reason: str, positions: list) -> list:
+def execute_defensive_protocol(broker, trigger_reason: str, positions: list) -> list:
     """
     Execute defensive protocol on all positions:
     - Profitable positions: tighten stop to breakeven (entry price)
@@ -227,7 +227,7 @@ def execute_defensive_protocol(broker: AlpacaBroker, trigger_reason: str, positi
     return actions
 
 
-def tighten_individual_stop(broker: AlpacaBroker, pos: dict) -> dict:
+def tighten_individual_stop(broker, pos: dict) -> dict:
     """Tighten a single position's stop to breakeven when it's down >5% intraday."""
     ticker = pos["ticker"]
     entry_price = pos["avg_entry_price"]
@@ -356,7 +356,7 @@ def run_daemon():
 
     # --- Load positions ---
     try:
-        broker = AlpacaBroker()
+        broker = get_broker()
         positions = broker.get_positions()
     except Exception as e:
         print(f"[Daemon] ERROR: Could not connect to Alpaca — {e}")

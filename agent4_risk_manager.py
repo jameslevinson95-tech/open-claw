@@ -39,7 +39,7 @@ from config import (
     normalize_regime,
     normalize_vol_regime,
 )
-from broker import AlpacaBroker
+from broker_factory import get_broker
 
 load_dotenv()
 
@@ -166,7 +166,7 @@ def calculate_portfolio_heat() -> dict:
       }
     """
     try:
-        broker = AlpacaBroker()
+        broker = get_broker()
         positions = broker.get_positions()
         account = broker.get_account_summary()
     except Exception as e:
@@ -375,7 +375,7 @@ def run_agent4b(
     # Resolve account_value: caller override → live Alpaca equity → hardcoded fallback
     if account_value is None:
         try:
-            broker_acct = AlpacaBroker().get_account_summary()
+            broker_acct = get_broker().get_account_summary()
             account_value = float(broker_acct["equity"])
             print(f"[Agent 4B] Live equity: ${account_value:,.2f}")
         except Exception as e:
@@ -764,7 +764,7 @@ def run_agent4(agent2_result: dict = None, agent3_result: dict = None, directive
 
     # Fetch existing exposure for dry powder calculation
     try:
-        broker = AlpacaBroker()
+        broker = get_broker()
         existing_exposure = broker.get_existing_exposure()
         print(f"[Agent 4] Existing exposure: ${existing_exposure:,.2f}")
     except Exception as e:

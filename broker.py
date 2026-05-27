@@ -189,7 +189,7 @@ class AlpacaBroker:
         live_quotes = {}
         if buy_tickers:
             try:
-                from alpaca_data import fetch_latest_quotes
+                from market_data import fetch_latest_quotes
                 live_quotes = fetch_latest_quotes(buy_tickers)
                 print(f"  [Broker] Live quotes fetched for {len(live_quotes)} tickers")
             except Exception as e:

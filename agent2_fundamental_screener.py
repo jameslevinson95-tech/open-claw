@@ -493,8 +493,8 @@ def run_agent2(directive: dict = None, screener_universe: list = None) -> dict:
 
     # Fetch current Alpaca positions to avoid portfolio blindness
     try:
-        from broker import AlpacaBroker
-        broker = AlpacaBroker()
+        from broker_factory import get_broker
+        broker = get_broker()
         current_positions = broker.get_positions()
         held_tickers = [p["ticker"] for p in current_positions]
     except Exception:

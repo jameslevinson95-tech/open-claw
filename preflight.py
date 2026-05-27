@@ -17,14 +17,17 @@ import yfinance as yf
 
 from config import SCREENER_MIN_MARKET_CAP, SCREENER_MIN_PRICE
 
-# Alpaca market data — primary source (falls back to yfinance on error)
+# Unified market data — Schwab primary, Yahoo Finance fallback (replaces Alpaca)
 try:
-    import alpaca_data as alpaca
-    ALPACA_AVAILABLE = True
-    print("[Pre-Flight] Alpaca Market Data: AVAILABLE (primary source)")
+    import market_data as mdata
+    MARKET_DATA_AVAILABLE = True
+    print("[Pre-Flight] Unified Market Data: AVAILABLE (Schwab + Yahoo Finance)")
 except Exception as e:
-    ALPACA_AVAILABLE = False
-    print(f"[Pre-Flight] Alpaca Market Data: UNAVAILABLE ({e}) — using yfinance")
+    MARKET_DATA_AVAILABLE = False
+    print(f"[Pre-Flight] Unified Market Data: UNAVAILABLE ({e}) — using yfinance directly")
+
+# Legacy alias for backward compat
+ALPACA_AVAILABLE = MARKET_DATA_AVAILABLE
 
 # Massive (Polygon-compatible) — technical indicators (SMA, RSI, MACD)
 try:
@@ -39,9 +42,28 @@ except Exception as e:
     MASSIVE_AVAILABLE = False
     print(f"[Pre-Flight] Massive Market Data: UNAVAILABLE ({e})")
 
+# ITC (Into The Cryptoverse) — crypto risk, macro recession risk, dominance
+try:
+    import itc_data as itc
+    ITC_AVAILABLE = True
+    print("[Pre-Flight] ITC Data Module: AVAILABLE")
+except Exception as e:
+    ITC_AVAILABLE = False
+    print(f"[Pre-Flight] ITC Data Module: UNAVAILABLE ({e})")
+
+# FedWatch — rate expectations from Fed Funds futures
+try:
+    import fedwatch as fw
+    FEDWATCH_AVAILABLE = True
+    print("[Pre-Flight] FedWatch Module: AVAILABLE")
+except Exception as e:
+    FEDWATCH_AVAILABLE = False
+    print(f"[Pre-Flight] FedWatch Module: UNAVAILABLE ({e})")
+
 OUTPUT_DIR = "output"
 
 ASSEMBLY_STALE_HOURS = 18  # Assembly data older than this triggers fresh fetch from public APIs
+ITC_STALE_HOURS = 18  # ITC data older than this is considered stale
 
 
 def fetch_prior_close(tickers: list) -> dict:
@@ -50,18 +72,17 @@ def fetch_prior_close(tickers: list) -> dict:
     This is critical — all pricing and stop calculations use prior close,
     NOT live/intraday pre-market data (Tweak #6).
     
-    Primary: Alpaca Market Data API (IEX feed, real-time)
-    Fallback: Yahoo Finance
+    Primary: Schwab + Yahoo Finance (unified market data)
+    Fallback: Yahoo Finance direct
     """
-    # Try Alpaca first
-    if ALPACA_AVAILABLE:
+    # Try unified market data first
+    if MARKET_DATA_AVAILABLE:
         try:
-            results = alpaca.fetch_prior_close(tickers)
-            # Check if most results came back OK
+            results = mdata.fetch_prior_close(tickers)
             ok_count = sum(1 for v in results.values() if "error" not in v)
-            if ok_count >= len(tickers) * 0.5:  # At least half succeeded
-                print(f"[Pre-Flight] Prior close: {ok_count}/{len(tickers)} tickers from Alpaca")
-                # Fill any Alpaca failures with yfinance
+            if ok_count >= len(tickers) * 0.5:
+                print(f"[Pre-Flight] Prior close: {ok_count}/{len(tickers)} tickers from unified data")
+                # Fill gaps with yfinance
                 failed = [t for t, v in results.items() if "error" in v]
                 if failed:
                     print(f"[Pre-Flight] Falling back to yfinance for {len(failed)} tickers: {failed[:5]}...")
@@ -69,9 +90,9 @@ def fetch_prior_close(tickers: list) -> dict:
                     results.update(yf_results)
                 return results
             else:
-                print(f"[Pre-Flight] Alpaca returned too many errors ({ok_count}/{len(tickers)}) — falling back to yfinance")
+                print(f"[Pre-Flight] Too many errors ({ok_count}/{len(tickers)}) — falling back to yfinance")
         except Exception as e:
-            print(f"[Pre-Flight] Alpaca prior_close failed: {e} — falling back to yfinance")
+            print(f"[Pre-Flight] Unified data prior_close failed: {e} — falling back to yfinance")
 
     return _fetch_prior_close_yfinance(tickers)
 
@@ -328,12 +349,42 @@ def fetch_dix() -> dict:
         else "NEUTRAL (40-45)"
     )
 
+    # --- GEX (Gamma Exposure) --- also in the CSV, free data we were ignoring
+    gex_latest = _f(rows[-1], "gex")
+    gex_prev_5 = _f(rows[-6], "gex") if len(rows) >= 6 else None
+    gex_prev_20 = _f(rows[-21], "gex") if len(rows) >= 21 else None
+
+    gex_data = {}
+    if gex_latest is not None:
+        # GEX is in billions. Positive = dealers long gamma (market stabilizing/pinning).
+        # Negative = dealers short gamma (market volatile, moves amplified).
+        if gex_latest > 0:
+            gex_interp = "POSITIVE — dealers long gamma, expect dampened moves / pinning"
+        elif gex_latest > -500_000_000:
+            gex_interp = "SLIGHTLY NEGATIVE — mild volatility amplification"
+        else:
+            gex_interp = "DEEPLY NEGATIVE — dealers short gamma, expect amplified moves / whipsaws"
+
+        # Normalize: squeezemetrics reports raw notional. Convert to billions for readability.
+        gex_bn = gex_latest / 1_000_000_000 if abs(gex_latest) > 1000 else gex_latest
+        gex_data = {
+            "current": round(gex_bn, 3),
+            "unit": "billions",
+            "interpretation": gex_interp,
+        }
+        if gex_prev_5 is not None:
+            gex_data["5d_ago"] = round((gex_prev_5 / 1_000_000_000 if abs(gex_prev_5) > 1000 else gex_prev_5), 3)
+        if gex_prev_20 is not None:
+            gex_data["20d_ago"] = round((gex_prev_20 / 1_000_000_000 if abs(gex_prev_20) > 1000 else gex_prev_20), 3)
+
     out = {
         "current": round(latest, 2),
         "date": date_str,
         "source": "squeezemetrics.com/monitor/static/DIX.csv",
         "interpretation": interpretation,
     }
+    if gex_data:
+        out["gex"] = gex_data
     if prev_5 is not None:
         out["5d_ago"] = round(prev_5, 2)
         out["5d_change_pct"] = round((latest - prev_5) / prev_5 * 100, 2)
@@ -347,7 +398,7 @@ def fetch_sector_breadth() -> dict:
     """
     Calculate sector breadth: what % of S&P 500 sectors are above their 20-day MA.
     Uses sector ETFs as proxies.
-    Primary: Alpaca historical bars. Fallback: yfinance.
+    Primary: Yahoo Finance via unified market data. Fallback: yfinance direct.
     """
     sector_etfs = {
         "XLK": "Technology",
@@ -367,10 +418,10 @@ def fetch_sector_breadth() -> dict:
     total = 0
     sector_detail = {}
 
-    # Try Alpaca first for all sector ETFs
-    if ALPACA_AVAILABLE:
+    # Try unified market data first for all sector ETFs
+    if MARKET_DATA_AVAILABLE:
         try:
-            hist = alpaca.fetch_historical_bars(list(sector_etfs.keys()), days=40)
+            hist = mdata.fetch_historical_bars(list(sector_etfs.keys()), days=40)
             for etf, name in sector_etfs.items():
                 etf_data = hist.get(etf, {})
                 bars = etf_data.get("bars", [])
@@ -388,7 +439,7 @@ def fetch_sector_breadth() -> dict:
                     "price": round(current, 2),
                     "ma_20": round(ma_20, 2),
                     "above_20ma": is_above,
-                    "source": "alpaca",
+                    "source": etf_data.get("source", "market_data"),
                 }
             if total > 0:
                 breadth_pct = round(above_20ma / total * 100, 1)
@@ -399,7 +450,7 @@ def fetch_sector_breadth() -> dict:
                     "detail": sector_detail,
                 }
         except Exception as e:
-            print(f"[Pre-Flight] Alpaca sector breadth failed: {e} — falling back to yfinance")
+            print(f"[Pre-Flight] Market data sector breadth failed: {e} — falling back to yfinance")
             above_20ma = 0
             total = 0
             sector_detail = {}
@@ -644,10 +695,10 @@ def generate_screener_universe(themes: Optional[List[str]] = None) -> list:
         # we re-deduplicate; the order from the first theme takes precedence.
         all_results = all_results[:MAX_SCREENER_TICKERS]
 
-        # Enrich with accurate prior_close (Alpaca primary, yfinance fallback)
-        if ALPACA_AVAILABLE:
-            print(f"[Pre-Flight] Enriching {len(all_results)} tickers with Alpaca prior_close...")
-            all_results = alpaca.enrich_screener_universe(all_results)
+        # Enrich with accurate prior_close (Schwab/Yahoo via unified market data)
+        if MARKET_DATA_AVAILABLE:
+            print(f"[Pre-Flight] Enriching {len(all_results)} tickers with market data prior_close...")
+            all_results = mdata.enrich_screener_universe(all_results)
         else:
             print(f"[Pre-Flight] Enriching {len(all_results)} tickers with yfinance prior_close...")
             all_results = _enrich_prior_close(all_results)
@@ -1063,12 +1114,45 @@ def run_preflight(themes: Optional[List[str]] = None) -> dict:
     else:
         print("[Pre-Flight] Skipping Massive technicals (not available)")
 
+    # 6. FedWatch — rate expectations from Fed Funds futures
+    fedwatch_data = {}
+    if FEDWATCH_AVAILABLE:
+        try:
+            print("[Pre-Flight] Fetching FedWatch rate expectations...")
+            fedwatch_data = fw.fetch_fedwatch()
+            if "error" not in fedwatch_data:
+                fw.save_fedwatch(fedwatch_data)
+                summary = fedwatch_data.get("summary", {})
+                print(f"[Pre-Flight] FedWatch: next={summary.get('next_meeting', '?')} action={summary.get('next_meeting_action', '?')} year-end cuts={summary.get('total_cuts_priced_by_year_end', '?')}")
+            else:
+                print(f"[Pre-Flight] FedWatch error: {fedwatch_data['error']}")
+        except Exception as e:
+            print(f"[Pre-Flight] FedWatch fetch failed: {e}")
+    else:
+        print("[Pre-Flight] FedWatch module not available — skipping")
+
+    # 7. ITC (Into The Cryptoverse) data — crypto risk, recession risk, dominance
+    itc_data_loaded = {}
+    if ITC_AVAILABLE:
+        itc_path = f"{OUTPUT_DIR}/itc_data.json"
+        if not itc.is_itc_stale(itc_path, ITC_STALE_HOURS):
+            itc_data_loaded = itc.load_itc_data(itc_path) or {}
+            if itc_data_loaded:
+                print(f"[Pre-Flight] ITC data FRESH — loaded (crypto risk: {itc_data_loaded.get('crypto_risk', {}).get('summary', '?')})")
+        else:
+            print("[Pre-Flight] ITC data STALE or missing — will need browser scrape from Zuck")
+            print("[Pre-Flight] ITC data must be fetched via browser (no public API). Skipping for now.")
+    else:
+        print("[Pre-Flight] ITC module not available — skipping")
+
     preflight_data = {
         "timestamp": datetime.now().isoformat(),
         "macro": macro,
         "screener_universe": screener,
         "assembly": assembly,
         "technicals": technicals,
+        "fedwatch": fedwatch_data,
+        "itc": itc_data_loaded,
     }
 
     # Save all outputs
@@ -1082,6 +1166,8 @@ def run_preflight(themes: Optional[List[str]] = None) -> dict:
 
     print(f"[Pre-Flight] Complete. Macro data + {len(screener)} screener tickers saved.")
     print(f"[Pre-Flight] NOTE: X/Twitter smart money fetch runs in orchestrator after Agent 2 picks tickers.")
+    if itc_data_loaded:
+        print(f"[Pre-Flight] ITC data included (crypto summary risk: {itc_data_loaded.get('crypto_risk', {}).get('summary', '?')}, recession: {itc_data_loaded.get('macro_risk', {}).get('recession_composite', '?')})")
     return preflight_data
 
 
