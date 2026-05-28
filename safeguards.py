@@ -374,11 +374,22 @@ def fetch_earnings_dates(tickers: list) -> dict:
                         "reason": "OK" if safe else f"Earnings in {days_until} days — too close",
                     }
                 else:
-                    results[ticker] = {"earnings_date": None, "days_until": None, "safe": True, "reason": "no_date_parsed"}
+                    # No date parsed — fail-closed unless ETF
+                    _etfs = {"SPY", "QQQ", "IWM", "DIA", "GLD", "SLV", "USO", "TLT", "HYG", "LQD", "JNK",
+                             "XLK", "XLF", "XLV", "XLE", "XLI", "XLY", "XLP", "XLU", "XLB", "XLRE", "XLC"}
+                    if ticker.upper() in _etfs:
+                        results[ticker] = {"earnings_date": None, "days_until": None, "safe": True, "reason": "ETF Bypass"}
+                    else:
+                        results[ticker] = {"earnings_date": None, "days_until": None, "safe": False, "reason": "no_date_parsed_fail_closed"}
             else:
-                results[ticker] = {"earnings_date": None, "days_until": None, "safe": True, "reason": "no_earnings_data"}
+                _etfs = {"SPY", "QQQ", "IWM", "DIA", "GLD", "SLV", "USO", "TLT", "HYG", "LQD", "JNK",
+                         "XLK", "XLF", "XLV", "XLE", "XLI", "XLY", "XLP", "XLU", "XLB", "XLRE", "XLC"}
+                if ticker.upper() in _etfs:
+                    results[ticker] = {"earnings_date": None, "days_until": None, "safe": True, "reason": "ETF Bypass"}
+                else:
+                    results[ticker] = {"earnings_date": None, "days_until": None, "safe": False, "reason": "no_earnings_data_fail_closed"}
         except Exception as e:
-            results[ticker] = {"earnings_date": None, "days_until": None, "safe": True, "reason": f"fetch_error: {e}"}
+            results[ticker] = {"earnings_date": None, "days_until": None, "safe": False, "reason": f"fetch_error_fail_closed: {e}"}
     
     return results
 
@@ -414,6 +425,42 @@ def filter_earnings_tickers(screener: list) -> tuple:
     else:
         print(f"[Earnings Screen] ✅ All tickers clear of near-term earnings")
     
+    return filtered, removed
+
+
+def filter_corporate_actions(screener: list) -> tuple:
+    """
+    Hard-block tickers that had a stock split in the last 7 days.
+    Prevents hallucinated gaps and broken VaR math from adjusted historical prices.
+    """
+    import yfinance as yf
+
+    print(f"[Corp Actions] Checking {len(screener)} tickers for recent splits...")
+    filtered, removed = [], []
+    cutoff = datetime.now() - timedelta(days=7)
+
+    for entry in screener:
+        ticker = entry.get("ticker")
+        try:
+            tk = yf.Ticker(ticker)
+            splits = tk.splits
+            if splits is not None and not splits.empty:
+                last_split_date = splits.index[-1]
+                if last_split_date.tzinfo is not None:
+                    last_split_date = last_split_date.tz_localize(None)
+                if last_split_date >= cutoff:
+                    print(f"  [Corp Actions] {ticker} -- Recent split detected ({last_split_date.date()})")
+                    removed.append({"ticker": ticker, "reason": "Recent corporate action/split"})
+                    continue
+        except Exception:
+            pass
+        filtered.append(entry)
+
+    if removed:
+        print(f"[Corp Actions] Filtered {len(removed)} tickers with recent splits")
+    else:
+        print(f"[Corp Actions] All tickers clear of recent splits")
+
     return filtered, removed
 
 

@@ -540,6 +540,29 @@ class ExecutionEngine:
                         )
                         conn.commit()
 
+                    # --- Sweep Stale Dangling Limits ---
+                    # If entry order has been open > 45 minutes, cancel unfilled remainder
+                    # Prevents accidental fills on a 2 PM flash crash
+                    if status in ("open", "partially_filled"):
+                        try:
+                            last_up_str = trade["last_updated"].replace("Z", "+00:00")
+                            last_up = datetime.fromisoformat(last_up_str)
+                            age_seconds = (datetime.now() - last_up.replace(tzinfo=None)).total_seconds()
+                            if age_seconds > 2700:  # 45 minutes
+                                logger.warning(
+                                    f"  \U0001f9f9 Sweeping stale limit order for {ticker} "
+                                    f"(Order {trade['entry_order_id']} open for > 45 mins)."
+                                )
+                                self.broker.cancel_order(trade["entry_order_id"])
+                                self._log_event(
+                                    trade["trade_id"], ticker, "STALE_LIMIT_SWEPT",
+                                    f"age={age_seconds:.0f}s filled={filled_qty}",
+                                )
+                                # Don't mark canceled in DB yet — next loop iteration will
+                                # see broker status='canceled' and route stop for what DID fill
+                        except Exception as e:
+                            logger.error(f"Error checking order age for {ticker}: {e}")
+
                     # --- Partial Fill Protection ---
                     if status in ("open", "partially_filled") and filled_qty > 0:
                         live_bid = quotes.get(ticker, {}).get("bid", 0)

@@ -168,7 +168,19 @@ def fetch_macro_data() -> dict:
                 macro[name] = {"error": f"No data for {ticker}"}
                 continue
 
-            current = float(data["Close"].iloc[-1].item())
+            # VIX pre-market noise filter: before 9:30 ET, use prior day's close
+            # to avoid illiquid option book spreads causing fake spikes
+            import pytz
+            now_et = datetime.now(pytz.timezone('US/Eastern'))
+            if name == "VIX" and now_et.hour < 9 or (now_et.hour == 9 and now_et.minute < 30):
+                if len(data) >= 2 and str(data.index[-1].date()) == str(now_et.date()):
+                    current = float(data["Close"].iloc[-2].item())
+                    print(f"[Pre-Flight] \U0001f6e1 VIX Guard: Using prior close {current} to avoid pre-market noise.")
+                else:
+                    current = float(data["Close"].iloc[-1].item())
+            else:
+                current = float(data["Close"].iloc[-1].item())
+
             prev_5d = float(data["Close"].iloc[-5].item()) if len(data) >= 5 else current
             prev_20d = float(data["Close"].iloc[-20].item()) if len(data) >= 20 else current
 
@@ -227,7 +239,17 @@ def fetch_move_index() -> dict:
         start = end - timedelta(days=30)
         data = yf.download("^MOVE", start=start, end=end, progress=False)
         if not data.empty and len(data) >= 5:
-            current = float(data["Close"].iloc[-1].item())
+            # MOVE pre-market noise filter (same as VIX)
+            import pytz
+            now_et = datetime.now(pytz.timezone('US/Eastern'))
+            if now_et.hour < 9 or (now_et.hour == 9 and now_et.minute < 30):
+                if len(data) >= 2 and str(data.index[-1].date()) == str(now_et.date()):
+                    current = float(data["Close"].iloc[-2].item())
+                    print(f"[Pre-Flight] \U0001f6e1 MOVE Guard: Using prior close {current} to avoid pre-market noise.")
+                else:
+                    current = float(data["Close"].iloc[-1].item())
+            else:
+                current = float(data["Close"].iloc[-1].item())
             prev_5d = float(data["Close"].iloc[-5].item())
             prev_20d = float(data["Close"].iloc[-20].item()) if len(data) >= 20 else current
             return {
@@ -1099,7 +1121,11 @@ def run_preflight(themes: Optional[List[str]] = None) -> dict:
         except Exception as e:
             print(f"[Pre-Flight] Could not save fallback data: {e}")
 
-    # 4. Merge Assembly momentum screen into screener universe (hybrid approach)
+    # 4a. Filter out tickers with recent stock splits
+    from safeguards import filter_corporate_actions
+    screener, splits_removed = filter_corporate_actions(screener)
+
+    # 4b. Merge Assembly momentum screen into screener universe (hybrid approach)
     screener = merge_assembly_screens(screener, assembly)
 
     # 5. Technical indicators from Massive API (SMA, RSI, MACD)
