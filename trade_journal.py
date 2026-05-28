@@ -91,6 +91,30 @@ def build_trade_record(
     except Exception:
         pass
 
+    # Calculate SPX beta context (Did we beat the market?)
+    if spx_change_pct is None:
+        try:
+            import yfinance as yf
+            from datetime import timedelta
+            if isinstance(entry_dt_str, str) and entry_dt_str:
+                entry_parsed_spx = datetime.fromisoformat(entry_dt_str.replace("Z", "+00:00"))
+                spy = yf.download(
+                    "SPY",
+                    start=entry_parsed_spx.strftime("%Y-%m-%d"),
+                    end=(exit_dt + timedelta(days=1)).strftime("%Y-%m-%d"),
+                    progress=False,
+                )
+                if not spy.empty and len(spy) >= 1:
+                    if hasattr(spy.columns, 'levels') and len(spy.columns.levels) > 1:
+                        spy_entry = float(spy["Close"]["SPY"].iloc[0])
+                        spy_exit = float(spy["Close"]["SPY"].iloc[-1])
+                    else:
+                        spy_entry = float(spy["Close"].iloc[0])
+                        spy_exit = float(spy["Close"].iloc[-1])
+                    spx_change_pct = round((spy_exit - spy_entry) / spy_entry * 100, 2)
+        except Exception:
+            spx_change_pct = None
+
     # Generate trade ID
     trade_id = f"{trade_order.get('ticker', 'UNK')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
