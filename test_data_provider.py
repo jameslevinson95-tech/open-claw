@@ -130,9 +130,22 @@ class TestCorrelationVeto:
         from agent4_risk_manager import correlation_veto
         # FAKE ticker not in mock — should fail-closed (veto)
         result = correlation_veto("FAKE", ["AAPL"], threshold=0.70)
-        # Either vetoes because FAKE data unavailable, or returns False if FAKE not in closes
-        # The key contract: if data is unavailable for the NEW ticker, fail-closed
-        assert isinstance(result, bool)
+        assert result is True  # Fail-closed: no data for candidate = veto
+
+    def test_nan_correlation_vetoes(self, mock_dp):
+        from agent4_risk_manager import correlation_veto
+        from data_provider import MockDataProvider, set_provider
+        # Create two tickers with non-overlapping dates → NaN correlation
+        dates_a = pd.date_range(end="2026-01-15", periods=60, freq="B")
+        dates_b = pd.date_range(end="2026-05-15", periods=60, freq="B")
+        dp = MockDataProvider(bars={
+            "AAA": _make_bars([100 + i for i in range(60)], dates=dates_a),
+            "BBB": _make_bars([200 + i for i in range(60)], dates=dates_b),
+        })
+        set_provider(dp)
+        result = correlation_veto("AAA", ["BBB"], threshold=0.70)
+        assert result is True  # NaN = fail-closed
+        set_provider(mock_dp)  # Restore
 
 
 # ── Size Position Tests ──────────────────────────────────────────────

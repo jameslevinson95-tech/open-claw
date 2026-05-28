@@ -27,23 +27,28 @@ load_dotenv(Path(__file__).parent / ".env")
 BASE_URL = "https://api.massive.com"
 API_KEY = os.environ.get("MASSIVE_API_KEY", "")
 
-# Rate limiter: free tier = 5 calls/min
+# Thread-safe rate limiter: free tier = 5 calls/min
+import threading
 _call_times: list = []
+_rate_lock = threading.Lock()
 RATE_LIMIT = 5
 RATE_WINDOW = 60  # seconds
 
 
 def _rate_limit():
-    """Simple rate limiter for free tier (5 calls/min)."""
+    """Thread-safe rate limiter for free tier (5 calls/min)."""
     global _call_times
-    now = time.time()
-    _call_times = [t for t in _call_times if now - t < RATE_WINDOW]
-    if len(_call_times) >= RATE_LIMIT:
-        wait = RATE_WINDOW - (now - _call_times[0]) + 0.5
-        if wait > 0:
-            print(f"[Massive] Rate limit reached — waiting {wait:.1f}s")
-            time.sleep(wait)
-    _call_times.append(time.time())
+    with _rate_lock:
+        now = time.time()
+        _call_times = [t for t in _call_times if now - t < RATE_WINDOW]
+        if len(_call_times) >= RATE_LIMIT:
+            wait = RATE_WINDOW - (now - _call_times[0]) + 0.5
+            if wait > 0:
+                print(f"[Massive] Rate limit reached \u2014 waiting {wait:.1f}s")
+                _rate_lock.release()
+                time.sleep(wait)
+                _rate_lock.acquire()
+        _call_times.append(time.time())
 
 
 def _get(endpoint: str, params: dict = None) -> dict:

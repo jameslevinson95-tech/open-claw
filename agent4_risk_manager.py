@@ -160,7 +160,13 @@ def correlation_veto(new_ticker: str, current_positions: list, threshold: float 
             except DataUnavailable:
                 continue
 
-        if new_ticker not in closes_dict or len(closes_dict) < 2:
+        if new_ticker not in closes_dict:
+            # Can't get data for the candidate — FAIL-CLOSED
+            print(f"  [Agent 4B] No bar data for {new_ticker} — FAIL-CLOSED (vetoing)")
+            return True
+
+        if len(closes_dict) < 2:
+            # Only one ticker (no positions to compare against) — pass
             return False
 
         closes = pd.DataFrame(closes_dict)
@@ -169,10 +175,14 @@ def correlation_veto(new_ticker: str, current_positions: list, threshold: float 
         for pos in current_positions:
             if pos in returns.columns:
                 corr = returns[new_ticker].corr(returns[pos], min_periods=20)
-                if corr is not None and not pd.isna(corr) and corr > threshold:
+                # NaN means insufficient overlap or unaligned dates — FAIL-CLOSED
+                if pd.isna(corr):
+                    print(f"  [Agent 4B] CORRELATION NaN for {new_ticker} vs {pos} — FAIL-CLOSED (vetoing)")
+                    return True
+                if corr > threshold:
                     print(f"  [Agent 4B] CORRELATION VETO: {new_ticker} vs {pos} = {corr:.2f} (>{threshold})")
                     return True
-        return False  # No correlation found above threshold
+        return False  # All correlations computed and below threshold
     except DataUnavailable as e:
         print(f"  [Agent 4B] Correlation data unavailable \u2014 FAIL-CLOSED (vetoing {new_ticker}): {e}")
         return True

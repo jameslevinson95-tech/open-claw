@@ -15,6 +15,7 @@ Rate limiting: Token-bucket for Massive free tier (5 calls/min).
 import os
 import time
 import logging
+import threading
 import requests
 import pandas as pd
 from datetime import datetime, timedelta
@@ -36,22 +37,32 @@ class DataUnavailable(Exception):
 # ── Rate Limiter ─────────────────────────────────────────────────────
 
 class _TokenBucket:
-    """Simple token-bucket rate limiter for Massive free tier (5 calls/min)."""
+    """Thread-safe token-bucket rate limiter for Massive free tier (5 calls/min).
+    
+    The read-modify-write on _timestamps is protected by a Lock to prevent
+    concurrent ThreadPoolExecutor workers from all seeing "under limit" at
+    the same millisecond and firing parallel requests that trigger 429s.
+    """
 
     def __init__(self, max_calls: int = 5, window_seconds: int = 60):
         self.max_calls = max_calls
         self.window = window_seconds
         self._timestamps: list = []
+        self._lock = threading.Lock()
 
     def wait(self):
-        now = time.time()
-        self._timestamps = [t for t in self._timestamps if now - t < self.window]
-        if len(self._timestamps) >= self.max_calls:
-            sleep_time = self.window - (now - self._timestamps[0]) + 0.5
-            if sleep_time > 0:
-                logger.info(f"Rate limit: waiting {sleep_time:.1f}s")
-                time.sleep(sleep_time)
-        self._timestamps.append(time.time())
+        with self._lock:
+            now = time.time()
+            self._timestamps = [t for t in self._timestamps if now - t < self.window]
+            if len(self._timestamps) >= self.max_calls:
+                sleep_time = self.window - (now - self._timestamps[0]) + 0.5
+                if sleep_time > 0:
+                    logger.info(f"Rate limit: waiting {sleep_time:.1f}s")
+                    # Release lock during sleep so other threads can check
+                    self._lock.release()
+                    time.sleep(sleep_time)
+                    self._lock.acquire()
+            self._timestamps.append(time.time())
 
 
 # ── Data Provider ────────────────────────────────────────────────────
