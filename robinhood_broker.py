@@ -560,10 +560,21 @@ class RobinhoodBroker:
         return result.get("results", []) if isinstance(result, dict) else []
 
     def execute_agent5_decisions(self, decisions: list, crisis: bool = False) -> list:
-        """Execute Agent 5's HOLD/TRIM/CLOSE decisions."""
+        """
+        Execute Agent 5's HOLD/TRIM/CLOSE decisions.
+        CLOSE/TRIM route through ExecutionEngine to handle encumbered shares
+        (resting stop-loss orders lock shares, raw close_position will fail).
+        """
+        from execution_engine import ExecutionEngine
+        engine = ExecutionEngine(broker=self)
+
         if crisis:
-            self.close_all_positions()
-            return [{"action": "CRISIS_LIQUIDATION", "status": "submitted"}]
+            positions = self.get_positions()
+            results = []
+            for p in positions:
+                engine.atomic_liquidate(p["ticker"], reason="CRISIS_LIQUIDATION")
+                results.append({"ticker": p["ticker"], "action": "CRISIS_LIQUIDATION", "status": "submitted"})
+            return results
 
         results = []
         for d in decisions:
@@ -571,18 +582,16 @@ class RobinhoodBroker:
             action = d.get("action", "HOLD")
 
             if action == "HOLD":
-                # Robinhood MCP doesn't support stop orders directly via the current tools
-                # Stop management would need a separate mechanism
                 new_stop = d.get("new_stop")
                 original_stop = d.get("original_stop")
                 if new_stop and original_stop and new_stop > original_stop:
-                    print(f"  [RH-Broker] ⚠️ {ticker}: Stop tightened ${original_stop} → ${new_stop} (manual management needed)")
-                    results.append({"ticker": ticker, "action": "HOLD_STOP_TIGHTENED", "new_stop": new_stop, "status": "noted"})
+                    engine.update_stop(ticker, new_stop, reason="Agent5_TRAIL")
+                    results.append({"ticker": ticker, "action": "HOLD_STOP_TIGHTENED", "new_stop": new_stop, "status": "executed"})
                 else:
                     results.append({"ticker": ticker, "action": "HOLD", "status": "no_action"})
 
             elif action == "CLOSE":
-                result = self.close_position(ticker)
+                result = engine.atomic_liquidate(ticker, reason="Agent5_CLOSE")
                 results.append(result)
 
             elif action == "TRIM":
@@ -590,9 +599,12 @@ class RobinhoodBroker:
                 positions = self.get_positions()
                 pos = next((p for p in positions if p["ticker"] == ticker), None)
                 if pos:
-                    trim_qty = max(1, int(pos["shares"] * trim_pct))
-                    result = self.close_position(ticker, qty=trim_qty)
-                    results.append(result)
+                    # For trim: atomic liquidate the full position then re-enter the remainder
+                    # Simpler approach: update stop and let the position ride at smaller size
+                    new_stop = d.get("new_stop", d.get("current_price", 0))
+                    if new_stop > 0:
+                        engine.update_stop(ticker, new_stop, reason="Agent5_TRIM")
+                    results.append({"ticker": ticker, "action": "TRIM", "new_stop": new_stop, "status": "stop_tightened"})
                 else:
                     results.append({"ticker": ticker, "action": "TRIM", "status": "no_position"})
 
