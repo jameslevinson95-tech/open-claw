@@ -489,32 +489,52 @@ def run_afternoon_monitor(verbose: bool = False) -> dict:
                         print(f"  [{action}] {ticker} — {status}")
                         
                         # Log closed trades to journal + penalty box for losses
-                        if r.get("status") == "submitted" and r.get("action") in ("close", "trim", "close_all"):
-                            pos_data = next((p for p in preflight["positions"] if p["ticker"] == r["ticker"]), {})
-                            ticker_snap = snapshot.get(r["ticker"], {})
-                            exit_price = ticker_snap.get("current_price", 0)
-                            if pos_data and exit_price:
+                        if r.get("action") in ("LIQUIDATED", "CLOSE", "TRIM", "close", "trim", "close_all"):
+                            pos_data = next((p for p in preflight.get("positions", []) if p.get("ticker") == r.get("ticker")), {})
+
+                            # Wait for settlement and fetch actual fill price
+                            import time as _time
+                            _time.sleep(3.0)
+                            try:
+                                todays_orders = engine.broker.get_orders_today()
+                                sell_order = next(
+                                    (o for o in todays_orders
+                                     if o.get("ticker") == r.get("ticker")
+                                     and str(o.get("side", "")).lower() == "sell"
+                                     and o.get("status", "").lower() in ("filled", "executed")),
+                                    None,
+                                )
+                                real_exit_price = (
+                                    float(sell_order["filled_avg_price"])
+                                    if sell_order and sell_order.get("filled_avg_price")
+                                    else snapshot.get(r.get("ticker", ""), {}).get("current_price", 0)
+                                )
+                            except Exception:
+                                real_exit_price = snapshot.get(r.get("ticker", ""), {}).get("current_price", 0)
+
+                            if pos_data and real_exit_price:
                                 try:
                                     record = build_trade_record(
                                         trade_order=pos_data,
                                         directive=directive,
                                         agent3_verification={},
-                                        exit_price=exit_price,
-                                        exit_reason=f"Agent 5 {r['action']}",
+                                        exit_price=real_exit_price,
+                                        exit_reason=f"Agent 5 {r.get('action', 'close')}",
                                     )
                                     log_close(record)
-                                    print(f"  📝 Logged {r['ticker']} to trade journal")
-                                    
+                                    print(f"  📝 Logged {r.get('ticker')} to trade journal (fill: ${real_exit_price:.2f})")
+
                                     # Add to penalty box if closed for a loss
-                                    unrealized_pl = pos_data.get("unrealized_pl", 0)
-                                    if unrealized_pl < 0:
+                                    entry = pos_data.get("entry_price", pos_data.get("avg_entry_price", 0))
+                                    if real_exit_price < entry:
+                                        loss = (entry - real_exit_price) * pos_data.get("shares", 0)
                                         add_to_penalty_box(
-                                            r["ticker"],
-                                            abs(unrealized_pl),
-                                            reason=f"Agent 5 {r['action']}",
+                                            r.get("ticker", ""),
+                                            loss,
+                                            reason=f"Agent 5 {r.get('action', 'close')}",
                                         )
                                 except Exception as je:
-                                    print(f"  ⚠️ Journal log failed for {r['ticker']}: {je}")
+                                    print(f"  ⚠️ Journal log failed for {r.get('ticker')}: {je}")
                 except Exception as e:
                     print(f"❌ Broker execution FAILED: {e}")
                     agent5_result["broker_error"] = str(e)
@@ -698,14 +718,21 @@ def run_deferred_execution() -> dict:
         ask = quote.get("ask", 0)
         last = quote.get("last", order.get("entry_price", 0))
 
-        # Calculate true midpoint. Fall back to last price if NBBO is broken.
-        if bid > 0 and ask > 0:
-            midpoint = round((bid + ask) / 2.0, 2)
-            spread_bps = ((ask - bid) / midpoint) * 10000
-            print(f"  [NBBO] {ticker}: Bid ${bid:.2f} | Ask ${ask:.2f} | Spread {spread_bps:.0f} bps")
-        else:
-            midpoint = round(last, 2)
-            print(f"  [NBBO] {ticker}: Missing bid/ask, defaulting to last ${last:.2f}")
+        # Broken Book Guardrails
+        if bid <= 0 or ask <= 0 or ask < bid:
+            print(f"  🚫 REJECTED {ticker}: Order book broken (Bid: {bid}, Ask: {ask}).")
+            fills.append({"ticker": ticker, "status": "rejected_broken_book"})
+            continue
+
+        midpoint = round((bid + ask) / 2.0, 2)
+        spread_pct = (ask - bid) / midpoint
+
+        if spread_pct > 0.05:
+            print(f"  🚫 REJECTED {ticker}: Spread is toxic ({spread_pct*100:.1f}% wide). Bid: {bid}, Ask: {ask}")
+            fills.append({"ticker": ticker, "status": "rejected_wide_spread"})
+            continue
+
+        print(f"  [NBBO] {ticker}: Bid ${bid:.2f} | Ask ${ask:.2f} | Spread {spread_pct*10000:.0f} bps")
 
         # Safety: reject if stock gapped up > 3% from planned entry (avoid chasing)
         entry_price = order.get("entry_price", midpoint)

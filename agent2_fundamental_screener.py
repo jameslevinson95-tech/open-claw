@@ -569,7 +569,20 @@ def run_agent2(directive: dict = None, screener_universe: list = None) -> dict:
     else:
         print(f"[Agent 2] No current positions (or broker unavailable)")
 
-    # Call Deep Research Max with full context
+    # Hard Python Pre-Screen: Sort by 20-day momentum and keep only the top 10.
+    # This prevents LLM "lost in the middle" attention failure and reduces token costs.
+    valid_universe = []
+    for s in screener_universe:
+        ticker = s["ticker"]
+        if ticker in fundamental_data and "error" not in fundamental_data[ticker]:
+            s["_momentum"] = fundamental_data[ticker].get("change_20d_pct", 0)
+            valid_universe.append(s)
+
+    valid_universe.sort(key=lambda x: x.get("_momentum", 0), reverse=True)
+    screener_universe = valid_universe[:10]
+    print(f"[Agent 2] Python pre-screen: top {len(screener_universe)} momentum candidates (from {len(valid_universe)} valid)")
+
+    # Call model with trimmed universe
     print(f"[Agent 2] Calling {MODEL_DISPLAY} with {len(screener_universe)} tickers + fundamentals...")
     try:
         if USE_DEEP_RESEARCH:

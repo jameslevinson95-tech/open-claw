@@ -1086,31 +1086,22 @@ def run_preflight(themes: Optional[List[str]] = None) -> dict:
     # 5. Technical indicators from Massive API (SMA, RSI, MACD)
     technicals = {}
     if MASSIVE_AVAILABLE:
-        # Get technicals for key macro tickers (SPY, QQQ, IWM)
-        # and top screener picks (first 5 to stay within rate limits)
-        tech_tickers = ["SPY", "QQQ", "IWM"]
-        top_screener = [t["ticker"] for t in screener[:3] if "ticker" in t]
-        tech_tickers.extend([t for t in top_screener if t not in tech_tickers])
+        # Calculate technicals LOCALLY via Pandas (zero API calls)
+        # Uses yfinance for historical data + pandas for RSI/MACD/SMA
+        tech_tickers = ["SPY", "QQQ", "IWM"] + [t["ticker"] for t in screener[:10] if "ticker" in t]
+        tech_tickers = list(dict.fromkeys(tech_tickers))  # Deduplicate preserving order
 
-        print(f"[Pre-Flight] Fetching Massive technicals for {tech_tickers}...")
-        for i, ticker in enumerate(tech_tickers):
-            try:
-                # SPY gets the full treatment (SMA + RSI + MACD = 5 calls)
-                # Others get lightweight (prev + RSI + MACD = 3 calls)
-                if i == 0:  # SPY
-                    tech = massive.fetch_technicals_with_sma(ticker)
-                else:
-                    tech = massive.fetch_full_technicals(ticker)
-                technicals[ticker] = tech
+        print(f"[Pre-Flight] Calculating technicals locally for {len(tech_tickers)} tickers...")
+        technicals = massive.calculate_technicals_batch(tech_tickers, period="6mo")
+        for ticker, tech in technicals.items():
+            if "error" not in tech:
                 print(f"  {ticker}: RSI={tech.get('rsi_14', '?')} MACD_trend={tech.get('macd_trend', '?')}")
-            except Exception as e:
-                print(f"  {ticker}: FAILED — {e}")
-                technicals[ticker] = {"error": str(e)}
+            else:
+                print(f"  {ticker}: {tech['error']}")
 
-        # Save technicals
         with open(f"{OUTPUT_DIR}/technicals.json", "w") as f:
             json.dump(technicals, f, indent=2)
-        print(f"[Pre-Flight] Technicals saved for {len(technicals)} tickers")
+        print(f"[Pre-Flight] Technicals saved for {len(technicals)} tickers (local calc, 0 API calls)")
     else:
         print("[Pre-Flight] Skipping Massive technicals (not available)")
 

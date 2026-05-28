@@ -16,6 +16,7 @@ Architecture (credit: Gemini code review):
 Requires: pip install filelock
 """
 import json
+import os
 import sqlite3
 import time
 import uuid
@@ -393,9 +394,9 @@ class ExecutionEngine:
             with lock:
                 with sqlite3.connect(DB_PATH, timeout=20.0) as conn:
                     conn.row_factory = sqlite3.Row
-                    # Trades that need attention: no stop placed yet, or stop was cleared for update
+                    # All unclosed trades: need stop placement OR stop fill monitoring
                     active_trades = conn.execute(
-                        "SELECT * FROM active_trades WHERE stop_order_id IS NULL AND closed_at IS NULL"
+                        "SELECT * FROM active_trades WHERE closed_at IS NULL"
                     ).fetchall()
 
                 if not active_trades:
@@ -461,9 +462,11 @@ class ExecutionEngine:
                             )
                             continue
 
-                    # --- Terminal State: Route Native Stop ---
+                    # --- Terminal State: Route Native Stop (only if no stop placed yet) ---
                     terminal_states = ("filled", "canceled", "cancelled", "rejected", "expired")
-                    if status in terminal_states and filled_qty > 0 and ticker not in panic_liquidations:
+                    if (status in terminal_states and filled_qty > 0
+                            and ticker not in panic_liquidations
+                            and not trade.get("stop_order_id")):
                         logger.info(
                             f"✅ {ticker} entry terminal ('{status}'). "
                             f"Placing stop for {filled_qty} shares at ${trade['target_stop_price']:.2f}"
@@ -501,6 +504,56 @@ class ExecutionEngine:
                         except Exception as e:
                             logger.error(f"  Stop placement failed for {ticker}: {e}")
                             self._log_event(trade["trade_id"], ticker, "STOP_ERROR", str(e))
+
+                    # --- Monitor Native Stop Fills ---
+                    if trade.get("stop_order_id"):
+                        stop_order = broker_orders.get(trade["stop_order_id"])
+                        if stop_order and stop_order.get("status", "").lower() in ("filled", "executed"):
+                            exit_price = float(stop_order.get("filled_avg_price", stop_order.get("average_price", trade["target_stop_price"])))
+                            logger.warning(f"  🛑 Native stop filled for {ticker} at ${exit_price:.2f}. Logging to journal.")
+
+                            # Log to trade journal + penalty box
+                            try:
+                                from trade_journal import build_trade_record, log_close
+                                from safeguards import add_to_penalty_box
+
+                                directive = {}
+                                orig_order = {}
+                                if os.path.exists("output/agent1_directive.json"):
+                                    with open("output/agent1_directive.json") as f:
+                                        directive = json.load(f)
+                                if os.path.exists("output/agent4_orders.json"):
+                                    with open("output/agent4_orders.json") as f:
+                                        a4_data = json.load(f)
+                                    orig_order = next((o for o in a4_data.get("trade_orders", []) if o.get("ticker") == ticker), {})
+
+                                if orig_order:
+                                    record = build_trade_record(
+                                        trade_order=orig_order,
+                                        directive=directive,
+                                        agent3_verification={},
+                                        exit_price=exit_price,
+                                        exit_reason="NATIVE_STOP_HIT",
+                                    )
+                                    log_close(record)
+
+                                # Penalty box: loss = (entry - exit) * shares
+                                entry_p = float(trade.get("limit_price", 0) or orig_order.get("entry_price", 0))
+                                loss_amount = max(0, (entry_p - exit_price) * filled_qty)
+                                if loss_amount > 0:
+                                    add_to_penalty_box(ticker, loss_amount, reason="NATIVE_STOP_HIT")
+                            except Exception as e:
+                                logger.error(f"Failed to log native stop for {ticker}: {e}")
+
+                            # Clear from ledger
+                            with sqlite3.connect(DB_PATH, timeout=20.0) as conn:
+                                conn.execute(
+                                    "UPDATE active_trades SET closed_at = ?, close_reason = ? WHERE trade_id = ?",
+                                    (datetime.now().isoformat(), f"NATIVE_STOP_FILLED@{exit_price:.2f}", trade["trade_id"]),
+                                )
+                                conn.commit()
+                            self._log_event(trade["trade_id"], ticker, "STOP_FILLED", f"exit=${exit_price:.2f}")
+                            continue  # Move to next trade
 
                     # --- Entry rejected/expired with 0 fills = dead trade ---
                     if status in ("canceled", "cancelled", "rejected", "expired") and filled_qty == 0:

@@ -299,6 +299,22 @@ def calculate_trailing_stops(positions: list, snapshot: dict) -> list:
         pnl_pct = round((current_price - entry_price) / entry_price * 100, 2)
         pnl_dollars = round((current_price - entry_price) * shares, 2)
 
+        # Corporate Action Guard (Reverse Split protection)
+        # A 1-for-10 reverse split will show as a 900% gain. Lock the stop and flag for human review.
+        if pnl_pct > 150.0:
+            results.append({
+                **pos,
+                "current_price": current_price,
+                "pnl_pct": pnl_pct,
+                "pnl_dollars": 0,
+                "new_stop": original_stop,
+                "mechanical_action": "HOLD",
+                "trailing_stop_note": f"⚠️ CORPORATE ACTION SUSPECTED ({pnl_pct:.0f}% gain). Trailing stop locked. Human review required.",
+                "intraday": price_data,
+            })
+            print(f"  ⚠️ {ticker}: {pnl_pct:.0f}% gain — CORPORATE ACTION SUSPECTED, stop locked")
+            continue
+
         # Calculate trailing stop
         gain_dollars = current_price - entry_price
         new_stop = original_stop  # Start with original
