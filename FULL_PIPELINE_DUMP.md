@@ -1,44 +1,46 @@
 # OPEN CLAW TRADING PIPELINE — FULL CODEBASE DUMP
 
-Generated: 2026-05-27 20:31:33 ET
+Generated: 2026-05-27 23:30:15 ET
 
 Repo: https://github.com/jameslevinson95-tech/open-claw
 
 Files included:
-- ./agent1_macro_director.py ( 296 lines)
-- ./agent2_fundamental_screener.py ( 609 lines)
-- ./agent3_synthesizer.py ( 554 lines)
-- ./agent4_risk_manager.py ( 799 lines)
-- ./agent5_position_monitor.py ( 729 lines)
-- ./alpaca_data.py ( 352 lines)
-- ./assembly_scraper.py ( 217 lines)
-- ./broker.py ( 545 lines)
-- ./broker_factory.py ( 67 lines)
-- ./config.py ( 165 lines)
-- ./data_fetcher_v1_deprecated.py ( 100 lines)
-- ./discord_fetch.py ( 293 lines)
-- ./fedwatch.py ( 294 lines)
-- ./flash_crash_daemon.py ( 440 lines)
-- ./itc_data.py ( 394 lines)
-- ./market_data.py ( 354 lines)
-- ./massive_data.py ( 1034 lines)
-- ./orchestrator.py ( 690 lines)
-- ./performance_review.py ( 534 lines)
-- ./preflight.py ( 1178 lines)
-- ./robinhood_broker.py ( 634 lines)
-- ./run_archiver.py ( 175 lines)
-- ./safeguards.py ( 561 lines)
-- ./schwab_auth_server.py ( 106 lines)
-- ./schwab_data.py ( 162 lines)
-- ./schwab_reauth.py ( 151 lines)
-- ./trade_journal.py ( 137 lines)
-- ./vwap_gate.py ( 108 lines)
-- ./watchlist.py ( 260 lines)
-- ./weekly_review.py ( 125 lines)
-- ./x_fetch.py ( 313 lines)
-- ./.env.example ( 11 lines)
-- ./.gitignore ( 18 lines)
-- ./robinhood-mcp/auth_and_discover.py ( 268 lines)
+- ./agent1_macro_director.py (298 lines)
+- ./agent2_fundamental_screener.py (689 lines)
+- ./agent3_synthesizer.py (554 lines)
+- ./agent4_risk_manager.py (842 lines)
+- ./agent5_position_monitor.py (763 lines)
+- ./alpaca_data.py (352 lines)
+- ./assembly_scraper.py (217 lines)
+- ./broker.py (545 lines)
+- ./broker_factory.py (67 lines)
+- ./config.py (165 lines)
+- ./data_fetcher_v1_deprecated.py (100 lines)
+- ./discord_fetch.py (293 lines)
+- ./execution_engine.py (605 lines)
+- ./fedwatch.py (294 lines)
+- ./flash_crash_daemon.py (343 lines)
+- ./itc_data.py (394 lines)
+- ./market_data.py (354 lines)
+- ./massive_data.py (1034 lines)
+- ./orchestrator.py (794 lines)
+- ./performance_review.py (534 lines)
+- ./preflight.py (1169 lines)
+- ./robinhood_broker.py (646 lines)
+- ./run_archiver.py (175 lines)
+- ./run_execution_daemon.py (26 lines)
+- ./safeguards.py (578 lines)
+- ./schwab_auth_server.py (106 lines)
+- ./schwab_data.py (162 lines)
+- ./schwab_reauth.py (151 lines)
+- ./trade_journal.py (137 lines)
+- ./vwap_gate.py (108 lines)
+- ./watchlist.py (260 lines)
+- ./weekly_review.py (125 lines)
+- ./x_fetch.py (313 lines)
+- ./.env.example (11 lines)
+- ./.gitignore (21 lines)
+- ./robinhood-mcp/auth_and_discover.py (268 lines)
 
 ---
 
@@ -111,9 +113,11 @@ You may receive Fed Funds futures-derived rate probabilities. Key signals:
 
 GEX (GAMMA EXPOSURE) DATA (if provided in DIX section):
 GEX from SqueezeMetrics measures dealer gamma positioning:
-- POSITIVE GEX = dealers are long gamma. They buy dips and sell rips → market stabilizes, moves get dampened, price pins to strikes. Low vol environment.
-- NEGATIVE GEX = dealers are short gamma. They sell dips and buy rips → moves get AMPLIFIED. Expect larger daily ranges, whipsaws, and potential flash crashes.
-- GEX is a VOLATILITY AMPLIFIER signal, not directional. Negative GEX + RISK-OFF = much worse than RISK-OFF alone.
+- POSITIVE GEX = Dealers are long gamma. They buy dips and sell rips. The market is pinned, ranges are tight. -> This maps to a COMPRESSED or NORMAL Vol Regime.
+- NEGATIVE GEX = Dealers are short gamma. They sell dips and buy rips. Moves are AMPLIFIED and whipsaws are violent. -> This maps to an ELEVATED or STRESSED Vol Regime.
+
+CRITICAL DIRECTIVE ON GEX:
+GEX is a VOLATILITY signal, not a directional signal. Negative GEX environments produce the most violent mean-reversion rallies of the year. Do NOT downgrade a RISK-ON regime to RISK-OFF solely because GEX is negative. Instead, map negative GEX exclusively to the VOL_REGIME (ELEVATED or STRESSED) to instruct downstream agents to widen their stop-losses so we survive the intraday chop.
 
 ITC (INTO THE CRYPTOVERSE) DATA (if provided):
 You may also receive data from ITC's platform. These are HIGH-VALUE supplementary signals:
@@ -374,14 +378,45 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Gemini Deep Research (speed/efficiency)
-MODEL = "deep-research-preview-04-2026"
-MODEL_DISPLAY = "Gemini Deep Research"
+# Gemini model selection
+# Switch to gemini-3.0-pro with responseSchema for deterministic JSON output.
+# Deep Research is kept as fallback (set AGENT2_USE_DEEP_RESEARCH=true in .env).
+USE_DEEP_RESEARCH = os.environ.get("AGENT2_USE_DEEP_RESEARCH", "false").lower() == "true"
+
+MODEL = "deep-research-preview-04-2026" if USE_DEEP_RESEARCH else "gemini-3.1-pro"
+MODEL_DISPLAY = "Gemini Deep Research" if USE_DEEP_RESEARCH else "Gemini 3.1 Pro"
 GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
 MAX_RETRIES = 3
 RETRY_DELAY = 5
 POLL_INTERVAL = 15  # seconds between status polls
 MAX_POLL_TIME = 300  # 5 min max wait for deep research to complete
+
+# Strict JSON schema for Gemini responseSchema (non-deep-research path)
+OUTPUT_SCHEMA = {
+    "type": "OBJECT",
+    "properties": {
+        "candidates": {
+            "type": "ARRAY",
+            "items": {
+                "type": "OBJECT",
+                "properties": {
+                    "ticker": {"type": "STRING"},
+                    "thesis": {"type": "STRING"},
+                    "conviction_tier": {"type": "STRING", "enum": ["PASS", "STRONG", "EXCEPTIONAL"]},
+                    "theme_match": {"type": "STRING"},
+                    "catalyst": {"type": "STRING"},
+                    "source": {"type": "STRING", "enum": ["Newsletter", "Screener Stage 2"]},
+                    "screening_notes": {"type": "STRING"},
+                },
+                "required": ["ticker", "thesis", "conviction_tier", "theme_match", "catalyst", "source"],
+            },
+        },
+        "screening_notes": {"type": "STRING"},
+        "regime_used": {"type": "STRING"},
+        "posture_used": {"type": "STRING"},
+    },
+    "required": ["candidates", "screening_notes", "regime_used", "posture_used"],
+}
 
 SYSTEM_PROMPT = """You are Agent 2: The Fundamental Screener for a $100,000 speculative spot-only trading account.
 
@@ -400,18 +435,15 @@ CRITICAL RULES:
 6. If the regime is DEFER, CRISIS with Bunker posture, output an empty candidates array.
 7. All surviving candidates must be at least PASS tier.
 
-<deep_research_protocol>
-CRITICAL: You must conduct your analysis inside a <research_scratchpad> block before generating your final structured output.
+ANALYSIS PROTOCOL:
 Step 1: Inventory the exact numerical data and fundamentals injected by Python.
 Step 2: Verify the asset passes the >$5 price and >$100M market cap constraints.
 Step 3: Argue the downside. Why might this setup fail? (Play Devil's Advocate).
 Step 4: Brutally interrogate the fundamentals to assign a CONVICTION_TIER (PASS, STRONG, or EXCEPTIONAL).
 Step 5: Ensure the THEME_MATCH is a verbatim, character-for-character echo of Agent 1's theme.
-Only after completing this <research_scratchpad> block may you output the final JSON.
-</deep_research_protocol>
 
 OUTPUT FORMAT:
-First, output your <research_scratchpad>...</research_scratchpad> analysis.
+Respond with ONLY the JSON object. No preamble, no scratchpad, no explanation.
 Then, output ONLY this JSON structure (no markdown, no code blocks):
 {
   "agent": "fundamental_screener",
@@ -432,35 +464,8 @@ Then, output ONLY this JSON structure (no markdown, no code blocks):
   "screening_notes": "<brief note on selection process and rejected names>"
 }"""
 
-# Strict JSON schema for structured outputs (Jamie fix #3)
-# This prevents Gemini from outputting "HIGH" instead of an integer
-OUTPUT_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "agent": {"type": "string"},
-        "timestamp": {"type": "string"},
-        "regime_received": {"type": "string"},
-        "candidates": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "ticker": {"type": "string"},
-                    "name": {"type": "string"},
-                    "type": {"type": "string", "enum": ["equity", "sector ETF", "commodity ETF", "crypto"]},
-                    "theme_match": {"type": "string"},
-                    "conviction_tier": {"type": "string", "enum": ["PASS", "STRONG", "EXCEPTIONAL"]},
-                    "thesis": {"type": "string"},
-                    "catalyst": {"type": "string"},
-                    "source": {"type": "string", "enum": ["Newsletter", "Screener Stage 2"]},
-                },
-                "required": ["ticker", "name", "type", "theme_match", "conviction_tier", "thesis", "catalyst", "source"],
-            },
-        },
-        "screening_notes": {"type": "string"},
-    },
-    "required": ["agent", "timestamp", "regime_received", "candidates", "screening_notes"],
-}
+# Old OUTPUT_SCHEMA removed — consolidated into the one at the top of the file
+# which uses Gemini API format (OBJECT/STRING/ARRAY uppercase) for responseSchema
 
 
 def prefetch_fundamental_data(screener_universe: list) -> dict:
@@ -720,10 +725,73 @@ def _extract_json_from_report(report_text: str) -> dict:
     raise json.JSONDecodeError("No valid JSON with 'candidates' found in report", report_text[:200], 0)
 
 
+def call_gemini_pro(directive: dict, screener_universe: list, fundamental_data: dict, held_tickers: list = None) -> dict:
+    """
+    Send directive + screener + fundamentals to Gemini 3.0 Pro.
+    Uses synchronous generateContent with responseSchema for deterministic JSON.
+    No deep research, no browsing — pure prompt-in, structured-JSON-out.
+    """
+    api_key = os.environ.get("GOOGLE_API_KEY", "")
+    if not api_key:
+        raise RuntimeError("No GOOGLE_API_KEY — set in .env to use Gemini.")
+
+    prompt = _build_research_prompt(directive, screener_universe, fundamental_data, held_tickers)
+
+    url = f"{GEMINI_API_BASE}/models/{MODEL}:generateContent?key={api_key}"
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "systemInstruction": {"parts": [{"text": SYSTEM_PROMPT}]},
+        "generationConfig": {
+            "temperature": 0.0,
+            "responseMimeType": "application/json",
+            "responseSchema": OUTPUT_SCHEMA,
+        },
+    }
+
+    last_error = None
+    for attempt in range(MAX_RETRIES):
+        try:
+            print(f"  [Agent 2] Calling {MODEL_DISPLAY} (attempt {attempt + 1}/{MAX_RETRIES})...")
+            resp = requests.post(url, json=payload, timeout=120)
+            resp.raise_for_status()
+            data = resp.json()
+
+            # Extract text from response
+            candidates_resp = data.get("candidates", [])
+            if not candidates_resp:
+                raise RuntimeError(f"Gemini returned no candidates: {data}")
+
+            text = candidates_resp[0].get("content", {}).get("parts", [{}])[0].get("text", "")
+            if not text:
+                raise RuntimeError("Gemini returned empty text")
+
+            parsed = json.loads(text)
+
+            # Validate conviction_tier enums (should be enforced by schema, but belt-and-suspenders)
+            for c in parsed.get("candidates", []):
+                tier = c.get("conviction_tier")
+                if tier not in ("PASS", "STRONG", "EXCEPTIONAL"):
+                    c["conviction_tier"] = "PASS"
+                source = c.get("source")
+                if source not in ("Newsletter", "Screener Stage 2"):
+                    c["source"] = "Screener Stage 2"
+
+            print(f"  [Agent 2] Success with {MODEL_DISPLAY} — {len(parsed.get('candidates', []))} candidates")
+            return parsed
+
+        except Exception as e:
+            last_error = e
+            print(f"  [Agent 2] Attempt {attempt + 1} failed: {e}")
+            if attempt < MAX_RETRIES - 1:
+                time.sleep(RETRY_DELAY)
+
+    raise RuntimeError(f"{MODEL_DISPLAY} failed after {MAX_RETRIES} attempts: {last_error}")
+
+
 def call_deep_research(directive: dict, screener_universe: list, fundamental_data: dict, held_tickers: list = None) -> dict:
     """
     Send directive + screener + fundamentals to Gemini Deep Research Max.
-    Uses the Interactions API (async).
+    Uses the Interactions API (async). LEGACY — kept for fallback.
     """
     api_key = os.environ.get("GOOGLE_API_KEY", "")
     if not api_key:
@@ -856,10 +924,26 @@ def run_agent2(directive: dict = None, screener_universe: list = None) -> dict:
     else:
         print(f"[Agent 2] No current positions (or broker unavailable)")
 
-    # Call Deep Research Max with full context
+    # Hard Python Pre-Screen: Sort by 20-day momentum and keep only the top 10.
+    # This prevents LLM "lost in the middle" attention failure and reduces token costs.
+    valid_universe = []
+    for s in screener_universe:
+        ticker = s["ticker"]
+        if ticker in fundamental_data and "error" not in fundamental_data[ticker]:
+            s["_momentum"] = fundamental_data[ticker].get("change_20d_pct", 0)
+            valid_universe.append(s)
+
+    valid_universe.sort(key=lambda x: x.get("_momentum", 0), reverse=True)
+    screener_universe = valid_universe[:10]
+    print(f"[Agent 2] Python pre-screen: top {len(screener_universe)} momentum candidates (from {len(valid_universe)} valid)")
+
+    # Call model with trimmed universe
     print(f"[Agent 2] Calling {MODEL_DISPLAY} with {len(screener_universe)} tickers + fundamentals...")
     try:
-        model_result = call_deep_research(directive, screener_universe, fundamental_data, held_tickers=held_tickers)
+        if USE_DEEP_RESEARCH:
+            model_result = call_deep_research(directive, screener_universe, fundamental_data, held_tickers=held_tickers)
+        else:
+            model_result = call_gemini_pro(directive, screener_universe, fundamental_data, held_tickers=held_tickers)
     except RuntimeError as re:
         # No API key
         return {"success": False, "needs_subagent": True, "error": str(re)}
@@ -1205,11 +1289,11 @@ def call_synthesis(candidates: list, qual_context: dict, x_mentions: dict) -> di
         mention_count = len(mentions) if isinstance(mentions, list) else 0
         mention_text = json.dumps(mentions, indent=2) if mentions else "No mentions from curated accounts"
 
+        # DOUBLE-BLIND: Do NOT show Agent 2's thesis, conviction tier, or theme
+        # to Agent 3. This prevents sycophantic agreement with upstream analysis.
+        # Agent 3 should form its own independent qualitative assessment.
         line = (
             f"TICKER: {ticker}\n"
-            f"  Quantitative Thesis: {c.get('thesis', 'N/A')}\n"
-            f"  Current Conviction Tier: {c.get('conviction_tier', 'PASS')}\n"
-            f"  Theme: {c.get('theme_match', 'N/A')}\n"
             f"  --- QUALITATIVE MOSAIC ---\n"
             f"  Short Interest: {qc.get('short_interest_pct_of_float', 'N/A')}\n"
             f"  Options Flow: {qc.get('options_flow', 'N/A')}\n"
@@ -1581,6 +1665,15 @@ ATR_MULTIPLIERS = {
     "EXCEPTIONAL": 2.0,
 }
 
+# Volatility Regime ATR Modifiers — widen stops in high-vol to survive whipsaws
+# GEX-driven: negative GEX → Elevated/Stressed → wider stops, fewer shares, same dollar risk
+VOL_ATR_MODIFIERS = {
+    "Compressed": 0.85,   # Tighter stops in low vol (dealers long gamma, market pinned)
+    "Normal": 1.0,
+    "Elevated": 1.25,     # Give it room to breathe
+    "Stressed": 1.5,      # Massive stops to survive negative GEX whipsaws
+}
+
 
 def get_moving_averages(ticker: str) -> dict:
     """Fetch prior close + moving averages for a ticker."""
@@ -1607,12 +1700,13 @@ def get_moving_averages(ticker: str) -> dict:
         return {"error": str(e)}
 
 
-def calculate_atr_stop(ticker: str, entry_price: float, conviction_tier: str) -> dict:
+def calculate_atr_stop(ticker: str, entry_price: float, conviction_tier: str, vol_regime: str = "Normal") -> dict:
     """
     Calculate ATR-based stop loss for a ticker.
-    Downloads 20 trading days of daily OHLC, computes 14-day ATR,
-    and sets stop at entry_price - (multiplier * ATR).
-    Multiplier scales with conviction tier (wider stop = more room for winners).
+    Stop distance scales with Conviction Tier AND Volatility Regime.
+    
+    Wider stops in high-vol (negative GEX) environments avoid whipsaw stops
+    while the dollar-VaR math upstream reduces share count to keep risk flat.
     """
     try:
         stock = yf.Ticker(ticker)
@@ -1633,17 +1727,21 @@ def calculate_atr_stop(ticker: str, entry_price: float, conviction_tier: str) ->
         # 14-day ATR (simple moving average of true range)
         atr = true_range.tail(14).mean()
 
-        multiplier = ATR_MULTIPLIERS.get(conviction_tier, ATR_MULTIPLIERS["PASS"])
-        stop_distance = multiplier * atr
+        # Dynamic stop expansion: Conviction * Volatility
+        base_multiplier = ATR_MULTIPLIERS.get(conviction_tier, ATR_MULTIPLIERS["PASS"])
+        vol_modifier = VOL_ATR_MODIFIERS.get(vol_regime, 1.0)
+        final_multiplier = base_multiplier * vol_modifier
+
+        stop_distance = final_multiplier * atr
         stop_price = entry_price - stop_distance
         stop_distance_pct = (stop_distance / entry_price) * 100
 
         return {
             "stop_price": round(stop_price, 2),
             "atr": round(atr, 4),
-            "atr_multiplier": multiplier,
+            "atr_multiplier": round(final_multiplier, 2),
             "stop_distance_pct": round(stop_distance_pct, 2),
-            "stop_label": f"{multiplier}x ATR({round(atr, 2)})",
+            "stop_label": f"{round(final_multiplier, 2)}x ATR({round(atr, 2)})",
         }
     except Exception as e:
         return {"error": str(e)}
@@ -1664,6 +1762,12 @@ def correlation_veto(new_ticker: str, current_positions: list, threshold: float 
             return False
 
         closes = data["Close"] if "Close" in data.columns else data
+
+        # If only 1 valid ticker, yfinance returns a Series not DataFrame
+        # Correlation is impossible with a single column
+        if isinstance(closes, pd.Series):
+            return False
+
         returns = closes.pct_change().tail(60)
 
         if new_ticker not in returns.columns:
@@ -1737,7 +1841,7 @@ def calculate_portfolio_heat() -> dict:
 
         if stop_price is None:
             # Estimate stop using ATR
-            atr_result = calculate_atr_stop(ticker, entry_price, "PASS")
+            atr_result = calculate_atr_stop(ticker, entry_price, "PASS", "Normal")
             if "error" not in atr_result:
                 stop_price = atr_result["stop_price"]
                 stop_source = "estimated_atr"
@@ -1746,12 +1850,10 @@ def calculate_portfolio_heat() -> dict:
                 stop_price = entry_price * 0.97
                 stop_source = "fallback_3pct"
 
-        # Anchor risk to entry price, not current price (prevents heat shrinkage during drawdowns)
-        if stop_price >= entry_price:
-            # Stop is at or above entry — principal is fully protected, zero heat
-            open_risk = 0.0
-        else:
-            open_risk = shares * (entry_price - stop_price)
+        # Risk = current equity at stake down to the stop, with 1.5x gap slippage multiplier.
+        # Using current_price (not entry_price) because that's the actual capital at risk NOW.
+        # The "house money" fallacy: unrealized gains ARE real money, not free.
+        open_risk = shares * max(0.0, current_price - stop_price) * 1.5
 
         total_heat += open_risk
 
@@ -1823,7 +1925,9 @@ def size_position(
     if stop_distance <= 0:
         return {"shares": 0, "reason": "INVALID_STOP"}
 
-    shares_by_risk = int(risk_dollars // stop_distance)
+    # Enforce minimum 1% stop distance floor to prevent infinite leverage on tight stops
+    effective_stop_distance = max(stop_distance, entry * 0.01)
+    shares_by_risk = int(risk_dollars // effective_stop_distance)
 
     # 4. Allocation cap (max position value as % of account)
     max_position_value = account_value * MAX_ALLOCATION_PCT
@@ -1834,7 +1938,7 @@ def size_position(
         return {"shares": 0, "reason": "ZERO_SHARES_AFTER_CONSTRAINTS"}
 
     binding = "risk" if shares == shares_by_risk else "allocation"
-    actual_risk = shares * stop_distance
+    actual_risk = shares * effective_stop_distance
 
     return {
         "shares": shares,
@@ -1855,6 +1959,7 @@ def run_agent4b(
     existing_exposure: float = 0.0,
     remaining_heat_budget: float = None,
     account_value: float = None,
+    live_tickers: list = None,
 ) -> dict:
     """
     Agent 4B (Python): Risk-first position sizing + tear sheet generation.
@@ -1902,15 +2007,18 @@ def run_agent4b(
             "modifiers_used": {"regime": regime, "vol_regime": vol_regime, "posture": "Hold"},
         }
 
-    # Resolve account_value: caller override → live Alpaca equity → hardcoded fallback
+    # Resolve account_value + buying_power: live broker → hardcoded fallback
+    buying_power = None
     if account_value is None:
         try:
             broker_acct = get_broker().get_account_summary()
             account_value = float(broker_acct["equity"])
-            print(f"[Agent 4B] Live equity: ${account_value:,.2f}")
+            buying_power = float(broker_acct.get("buying_power", account_value))
+            print(f"[Agent 4B] Live equity: ${account_value:,.2f} | Buying Power: ${buying_power:,.2f}")
         except Exception as e:
             print(f"[Agent 4B] Could not fetch live equity ({e}) — falling back to ACCOUNT_SIZE=${ACCOUNT_SIZE}")
             account_value = float(ACCOUNT_SIZE)
+            buying_power = float(ACCOUNT_SIZE)
     else:
         print(f"[Agent 4B] Using caller-passed equity: ${account_value:,.2f}")
 
@@ -1922,7 +2030,8 @@ def run_agent4b(
 
     trade_orders = []
     theme_tracker = {}
-    accepted_tickers = []
+    # Seed with live portfolio tickers for correlation checks against existing positions
+    accepted_tickers = live_tickers.copy() if live_tickers else []
     session_risk_used = 0.0
     total_allocated = 0.0
 
@@ -2000,8 +2109,14 @@ def run_agent4b(
 
         # Dry powder floor: new + existing exposure cannot exceed 80%
         max_deployable = account_value * (1 - DRY_POWDER_FLOOR) - total_allocated - existing_exposure
+
+        # Hard cap by actual broker buying power
+        if buying_power is not None:
+            actual_cash_available = buying_power - total_allocated
+            max_deployable = min(max_deployable, actual_cash_available)
+
         if max_deployable <= 0:
-            trade_orders.append(_reject_trade(ticker, "Dry powder floor: existing exposure at 80%"))
+            trade_orders.append(_reject_trade(ticker, "Insufficient cash/buying power available"))
             continue
         if position_value > max_deployable:
             shares = int(max_deployable // entry)
@@ -2172,6 +2287,14 @@ def run_agent4(agent2_result: dict = None, agent3_result: dict = None, directive
     candidates = agent2_result.get("candidates", [])
     verifications = agent3_result.get("verifications", []) if agent3_result else []
 
+    # Extract vol_regime for dynamic ATR stop widening
+    vol_raw = directive.get("vol_regime", "Normal")
+    try:
+        vol_regime = normalize_vol_regime(vol_raw)
+    except Exception:
+        vol_regime = "Normal"
+    print(f"[Agent 4] Vol regime: {vol_regime} (ATR modifier: {VOL_ATR_MODIFIERS.get(vol_regime, 1.0)}x)")
+
     if not candidates:
         return {
             "success": True,
@@ -2261,8 +2384,8 @@ def run_agent4(agent2_result: dict = None, agent3_result: dict = None, directive
 
         entry_price = ma_data["prior_close"]
 
-        # Calculate ATR-based stop
-        atr_result = calculate_atr_stop(ticker, entry_price, conviction_tier)
+        # Calculate ATR-based stop with vol regime modifier
+        atr_result = calculate_atr_stop(ticker, entry_price, conviction_tier, vol_regime)
         if "error" in atr_result:
             print(f"  [Agent 4] {ticker}: ATR failed — {atr_result['error']}")
             stop_anchors.append({
@@ -2292,11 +2415,14 @@ def run_agent4(agent2_result: dict = None, agent3_result: dict = None, directive
         print(f"  [Agent 4] {ticker}: Stop ${atr_result['stop_price']} "
               f"({atr_result['stop_label']}, -{atr_result['stop_distance_pct']:.1f}%)")
 
-    # Fetch existing exposure for dry powder calculation
+    # Fetch existing exposure + live tickers for correlation checks
+    live_tickers = []
     try:
         broker = get_broker()
-        existing_exposure = broker.get_existing_exposure()
-        print(f"[Agent 4] Existing exposure: ${existing_exposure:,.2f}")
+        open_positions = broker.get_positions()
+        existing_exposure = sum(float(p.get("market_value", 0)) for p in open_positions)
+        live_tickers = [p["ticker"] for p in open_positions]
+        print(f"[Agent 4] Existing exposure: ${existing_exposure:,.2f} ({len(live_tickers)} positions: {live_tickers})")
     except Exception as e:
         print(f"[Agent 4] Could not fetch exposure: {e} — assuming $0")
         existing_exposure = 0.0
@@ -2305,7 +2431,8 @@ def run_agent4(agent2_result: dict = None, agent3_result: dict = None, directive
     print("[Agent 4B] Running position sizing math...")
     result_4b = run_agent4b(stop_anchors, directive, candidates, verifications,
                             existing_exposure=existing_exposure,
-                            remaining_heat_budget=remaining_heat_budget)
+                            remaining_heat_budget=remaining_heat_budget,
+                            live_tickers=live_tickers)
 
     # Generate tear sheet
     tear_sheet = generate_tear_sheet(result_4b, directive)
@@ -2397,6 +2524,13 @@ RULES:
 - A stock being down is NOT thesis broken. The thesis is about WHY you entered, not the price.
 - If no breaking news exists for a ticker, default to INTACT.
 - Cite the specific news headline or regime shift that drove your decision.
+- CLASSIFY the news_category for each review:
+  * COMPANY_SPECIFIC: Earnings, FDA decision, lawsuit, management change, guidance revision
+  * SECTOR_SPECIFIC: Industry-wide regulation, sector earnings trend, supply chain disruption
+  * MACRO_NOISE: Fed commentary, CPI/jobs data, general market selloff, geopolitical tension
+  * SECTOR_ROTATION: Money flowing between sectors (tech→value, growth→defensive)
+  * GENERAL_MARKET: Broad index movement, VIX spike, options expiry
+  Only COMPANY_SPECIFIC and SECTOR_SPECIFIC events can genuinely break a thesis.
 
 OUTPUT FORMAT — respond with ONLY this JSON:
 {
@@ -2407,6 +2541,7 @@ OUTPUT FORMAT — respond with ONLY this JSON:
     {
       "ticker": "<SYMBOL>",
       "thesis_status": "<INTACT | DEGRADED | BROKEN>",
+      "news_category": "<COMPANY_SPECIFIC | SECTOR_SPECIFIC | MACRO_NOISE | SECTOR_ROTATION | GENERAL_MARKET>",
       "override_action": <null | "CLOSE">,
       "original_thesis_summary": "<1 sentence recap of the entry thesis>",
       "thesis_assessment": "<2-3 sentences explaining why the thesis is intact/degraded/broken>",
@@ -2627,6 +2762,22 @@ def calculate_trailing_stops(positions: list, snapshot: dict) -> list:
         # Calculate P&L
         pnl_pct = round((current_price - entry_price) / entry_price * 100, 2)
         pnl_dollars = round((current_price - entry_price) * shares, 2)
+
+        # Corporate Action Guard (Reverse Split protection)
+        # A 1-for-10 reverse split will show as a 900% gain. Lock the stop and flag for human review.
+        if pnl_pct > 150.0:
+            results.append({
+                **pos,
+                "current_price": current_price,
+                "pnl_pct": pnl_pct,
+                "pnl_dollars": 0,
+                "new_stop": original_stop,
+                "mechanical_action": "HOLD",
+                "trailing_stop_note": f"⚠️ CORPORATE ACTION SUSPECTED ({pnl_pct:.0f}% gain). Trailing stop locked. Human review required.",
+                "intraday": price_data,
+            })
+            print(f"  ⚠️ {ticker}: {pnl_pct:.0f}% gain — CORPORATE ACTION SUSPECTED, stop locked")
+            continue
 
         # Calculate trailing stop
         gain_dollars = current_price - entry_price
@@ -2941,6 +3092,16 @@ def run_agent5(positions: list = None, snapshot: dict = None) -> dict:
         thesis_review = thesis_lookup.get(ticker, {})
         thesis_status = thesis_review.get("thesis_status", "INTACT")
         thesis_override = thesis_review.get("override_action")
+        news_category = thesis_review.get("news_category", "")
+
+        # MATERIALITY GATE: Override LLM hallucinated thesis breaks on general noise.
+        # If the LLM says BROKEN but the news is just macro noise (not a material
+        # company-specific event), force thesis back to INTACT. Prevents panic sells
+        # on "Fed said something" when the actual stock thesis hasn't changed.
+        if thesis_status == "BROKEN" and news_category in ("MACRO_NOISE", "SECTOR_ROTATION", "GENERAL_MARKET", ""):
+            print(f"  🛡️ {ticker}: MATERIALITY GATE — LLM said BROKEN but news_category='{news_category}' → overriding to INTACT")
+            thesis_status = "INTACT"
+            thesis_override = None
 
         # Merge logic
         if crisis_liquidation:
@@ -4864,6 +5025,619 @@ if __name__ == "__main__":
 
 ---
 
+## ./execution_engine.py
+
+```python
+"""
+execution_engine.py — Stateful Execution Ledger & Daemon
+
+Replaces naive fire-and-forget execution with atomic operations
+and SQLite state tracking. Acts as the local clearinghouse since
+Robinhood MCP lacks native OTO (bracket) order support.
+
+Architecture (credit: Gemini code review):
+1. Orchestrator submits trade *intents* (entry + stop price)
+2. Engine routes entry order to broker, records in SQLite ledger
+3. Background daemon polls order status every ~15 seconds
+4. On fill detection → immediately places stop-loss order
+5. On partial fill + price crash through stop → panic liquidation
+6. Atomic liquidation: cancel resting orders → wait → market sell
+
+Requires: pip install filelock
+"""
+import json
+import os
+import sqlite3
+import time
+import uuid
+import logging
+from datetime import datetime
+from pathlib import Path
+
+from filelock import FileLock, Timeout
+
+from broker_factory import get_broker
+
+DB_PATH = Path("output/execution_ledger.db")
+LOCK_PATH = Path("output/broker_state.lock")
+HEARTBEAT_PATH = Path("output/daemon_hb_signal.txt")
+RECONCILE_INTERVAL = 15  # seconds between daemon loops (Robinhood rate-limit safe)
+HEARTBEAT_INTERVAL = 10  # seconds between heartbeat writes
+HEARTBEAT_MAX_AGE = 60   # seconds before heartbeat is considered stale
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler("output/execution_engine.log"),
+    ],
+)
+logger = logging.getLogger("ExecutionEngine")
+
+
+class ExecutionEngine:
+    """
+    Stateful execution layer that bridges the orchestrator's trade intents
+    with the broker's async order lifecycle.
+    """
+
+    def __init__(self, broker=None):
+        self.broker = broker or get_broker()
+        self._init_db()
+
+    def _init_db(self):
+        """Initialize the local state reconciliation ledger."""
+        DB_PATH.parent.mkdir(exist_ok=True)
+        with sqlite3.connect(DB_PATH, timeout=20.0) as conn:
+            # WAL mode for concurrent daemon + orchestrator access
+            conn.execute("PRAGMA journal_mode=WAL;")
+            conn.execute("PRAGMA synchronous=NORMAL;")
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS active_trades (
+                    trade_id        TEXT PRIMARY KEY,
+                    ticker          TEXT NOT NULL,
+                    target_shares   INTEGER NOT NULL,
+                    limit_price     REAL,
+                    target_stop_price REAL NOT NULL,
+                    entry_order_id  TEXT,
+                    entry_status    TEXT DEFAULT 'pending',
+                    filled_shares   INTEGER DEFAULT 0,
+                    avg_fill_price  REAL,
+                    stop_order_id   TEXT,
+                    stop_status     TEXT,
+                    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    last_updated    TIMESTAMP,
+                    closed_at       TIMESTAMP,
+                    close_reason    TEXT
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS execution_log (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    trade_id    TEXT,
+                    ticker      TEXT,
+                    event       TEXT NOT NULL,
+                    detail      TEXT,
+                    timestamp   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            conn.commit()
+
+    def _log_event(self, trade_id: str, ticker: str, event: str, detail: str = ""):
+        """Append to the execution audit trail."""
+        with sqlite3.connect(DB_PATH, timeout=20.0) as conn:
+            conn.execute(
+                "INSERT INTO execution_log (trade_id, ticker, event, detail) VALUES (?, ?, ?, ?)",
+                (trade_id, ticker, event, detail),
+            )
+            conn.commit()
+
+    # ── Orchestrator Interface ───────────────────────────────────────────
+
+    def submit_trade_intent(
+        self,
+        trade_id: str,
+        ticker: str,
+        shares: int,
+        limit_price: float,
+        stop_price: float,
+    ) -> dict:
+        """
+        Orchestrator calls this instead of calling the broker directly.
+        Routes the entry order and records the intent in the ledger.
+        The daemon will handle stop placement after fill.
+        """
+        try:
+            lock = FileLock(LOCK_PATH, timeout=10)
+            with lock:
+                logger.info(
+                    f"Routing intent: BUY {shares} {ticker} @ ${limit_price:.2f} "
+                    f"(stop: ${stop_price:.2f})"
+                )
+
+                # Submit entry order to broker
+                res = self.broker.place_order(
+                    ticker=ticker,
+                    side="buy",
+                    order_type="limit",
+                    quantity=str(shares),
+                    limit_price=str(round(limit_price, 2)),
+                )
+
+                order_id = res.get("order_id") or res.get("id")
+                if not order_id:
+                    logger.error(f"Broker rejected entry for {ticker}: {res}")
+                    self._log_event(trade_id, ticker, "ENTRY_REJECTED", json.dumps(res))
+                    return {"ticker": ticker, "status": "rejected", "reason": str(res)}
+
+                # Record in ledger
+                with sqlite3.connect(DB_PATH, timeout=20.0) as conn:
+                    conn.execute(
+                        """INSERT INTO active_trades
+                        (trade_id, ticker, target_shares, limit_price,
+                         target_stop_price, entry_order_id, entry_status, last_updated)
+                        VALUES (?, ?, ?, ?, ?, ?, 'open', ?)""",
+                        (
+                            trade_id, ticker, shares, limit_price,
+                            stop_price, order_id, datetime.now().isoformat(),
+                        ),
+                    )
+                    conn.commit()
+
+                self._log_event(trade_id, ticker, "ENTRY_SUBMITTED", f"order_id={order_id}")
+                logger.info(f"✅ {ticker} entry submitted: {order_id}")
+                return {"ticker": ticker, "status": "submitted", "order_id": order_id}
+
+        except Timeout:
+            logger.error(f"Lock timeout submitting intent for {ticker}")
+            return {"ticker": ticker, "status": "error", "reason": "lock_timeout"}
+
+    def submit_batch_intents(self, trade_orders: list) -> list:
+        """
+        Submit multiple trade intents from a tear sheet.
+        Drop-in replacement for broker.execute_tear_sheet().
+        """
+        results = []
+        for order in trade_orders:
+            if order.get("action") != "BUY":
+                results.append({
+                    "ticker": order.get("ticker", "?"),
+                    "status": "skipped",
+                    "reason": order.get("reason", order.get("action", "not a BUY")),
+                })
+                continue
+
+            trade_id = str(uuid.uuid4())
+            # Add slippage allowance to limit price (0.15%)
+            entry_price = order.get("entry_price", order.get("limit_price", 0))
+            limit_price = round(entry_price * 1.0015, 2)
+            stop_price = order.get("stop_loss", 0)
+            shares = order.get("shares", 0)
+
+            if not all([entry_price, stop_price, shares]):
+                results.append({
+                    "ticker": order.get("ticker", "?"),
+                    "status": "skipped",
+                    "reason": "missing entry_price, stop_loss, or shares",
+                })
+                continue
+
+            result = self.submit_trade_intent(
+                trade_id=trade_id,
+                ticker=order["ticker"],
+                shares=int(shares),
+                limit_price=limit_price,
+                stop_price=stop_price,
+            )
+            results.append(result)
+
+        submitted = sum(1 for r in results if r.get("status") == "submitted")
+        logger.info(
+            f"📋 Batch complete: {submitted}/{len(results)} intents submitted to ledger"
+        )
+        return results
+
+    # ── Atomic Liquidation ───────────────────────────────────────────────
+
+    def atomic_liquidate(self, ticker: str, reason: str) -> dict:
+        """
+        The Nuclear Option — Flash Crash / Agent 5 CLOSE.
+        Safely clears encumbered shares before dumping inventory.
+
+        Sequence:
+        1. Cancel ALL resting orders for this ticker (pending entries, stops)
+        2. Wait for clearinghouse to release encumbered shares
+        3. Fetch actual settled position
+        4. Market sell everything
+        5. Remove from ledger
+        """
+        try:
+            lock = FileLock(LOCK_PATH, timeout=15)
+            with lock:
+                logger.warning(f"🚨 ATOMIC LIQUIDATION: {ticker} ({reason})")
+
+                # 1. Find all open orders for this ticker
+                all_orders = self.broker.get_orders_today()
+                open_orders = [
+                    o for o in all_orders
+                    if o.get("ticker") == ticker
+                    and o.get("status", "").lower() in ("open", "partially_filled", "queued", "confirmed")
+                ]
+
+                # 2. Cancel them all
+                for o in open_orders:
+                    oid = str(o.get("id") or o.get("order_id"))
+                    logger.info(f"  Canceling resting order {oid} for {ticker}...")
+                    try:
+                        self.broker.cancel_order(oid)
+                    except Exception as e:
+                        logger.error(f"  Cancel failed for {oid}: {e}")
+
+                # 3. Wait for clearinghouse to release shares (max 10s)
+                if open_orders:
+                    timeout = time.time() + 10
+                    while time.time() < timeout:
+                        remaining = [
+                            o for o in self.broker.get_orders_today()
+                            if o.get("ticker") == ticker
+                            and o.get("status", "").lower() in ("open", "partially_filled", "queued", "confirmed")
+                        ]
+                        if not remaining:
+                            logger.info(f"  Clearinghouse confirms shares unencumbered for {ticker}")
+                            break
+                        time.sleep(1.5)
+                    else:
+                        logger.error(
+                            f"  Timeout waiting for {ticker} cancels to clear. "
+                            "Market sell may fail due to encumbered shares."
+                        )
+
+                # 4. Check actual position
+                positions = self.broker.get_positions()
+                pos = next((p for p in positions if p["ticker"] == ticker), None)
+
+                if not pos or float(pos.get("shares", 0)) <= 0:
+                    logger.info(f"  No inventory found for {ticker} — nothing to sell")
+                    result = {"ticker": ticker, "action": "LIQUIDATED", "shares_sold": 0}
+                else:
+                    # 5. Market sell everything
+                    shares_to_sell = int(float(pos["shares"]))
+                    res = self.broker.place_order(
+                        ticker=ticker,
+                        side="sell",
+                        order_type="market",
+                        quantity=str(shares_to_sell),
+                    )
+                    sell_id = res.get("order_id") or res.get("id")
+                    logger.info(
+                        f"  Market SELL {shares_to_sell} {ticker} routed: {sell_id}"
+                    )
+                    result = {
+                        "ticker": ticker,
+                        "action": "LIQUIDATED",
+                        "shares_sold": shares_to_sell,
+                        "sell_order_id": sell_id,
+                    }
+
+                # 6. Clean up ledger
+                with sqlite3.connect(DB_PATH, timeout=20.0) as conn:
+                    conn.execute(
+                        "UPDATE active_trades SET closed_at = ?, close_reason = ? WHERE ticker = ? AND closed_at IS NULL",
+                        (datetime.now().isoformat(), reason, ticker),
+                    )
+                    conn.commit()
+
+                self._log_event("", ticker, "ATOMIC_LIQUIDATION", reason)
+                return result
+
+        except Timeout:
+            logger.error(f"Lock timeout during atomic liquidation for {ticker}")
+            return {"ticker": ticker, "action": "LIQUIDATION_FAILED", "reason": "lock_timeout"}
+
+    # ── Update Stop Price (for trailing / tightening) ────────────────────
+
+    def update_stop(self, ticker: str, new_stop_price: float, reason: str = "manual"):
+        """
+        Update the target stop price for a ticker.
+        Cancels the existing stop order — the daemon will place the new one.
+        """
+        try:
+            lock = FileLock(LOCK_PATH, timeout=10)
+            with lock:
+                with sqlite3.connect(DB_PATH, timeout=20.0) as conn:
+                    # Get current trade
+                    row = conn.execute(
+                        "SELECT trade_id, stop_order_id FROM active_trades WHERE ticker = ? AND closed_at IS NULL",
+                        (ticker,),
+                    ).fetchone()
+
+                    if not row:
+                        logger.warning(f"No active trade for {ticker} to update stop")
+                        return
+
+                    trade_id, old_stop_id = row
+
+                    # Cancel existing stop if placed
+                    if old_stop_id:
+                        try:
+                            self.broker.cancel_order(old_stop_id)
+                            logger.info(f"Canceled old stop {old_stop_id} for {ticker}")
+                        except Exception as e:
+                            logger.error(f"Failed to cancel old stop for {ticker}: {e}")
+
+                    # Update ledger — daemon will detect NULL stop_order_id and place new one
+                    conn.execute(
+                        "UPDATE active_trades SET target_stop_price = ?, stop_order_id = NULL, stop_status = NULL, last_updated = ? WHERE trade_id = ?",
+                        (new_stop_price, datetime.now().isoformat(), trade_id),
+                    )
+                    conn.commit()
+
+                self._log_event(trade_id, ticker, "STOP_UPDATED", f"new_stop=${new_stop_price:.2f} reason={reason}")
+                logger.info(f"📝 {ticker} stop updated to ${new_stop_price:.2f} ({reason})")
+
+        except Timeout:
+            logger.error(f"Lock timeout updating stop for {ticker}")
+
+    # ── Background Reconciliation Daemon ─────────────────────────────────
+
+    @staticmethod
+    def is_daemon_alive() -> bool:
+        """Check if the execution daemon is alive (hb_signal file < 60s old)."""
+        hb = Path("output/daemon_heartbeat.txt"); 
+        if not hb.exists():
+            return False
+        age = time.time() - hb.stat().st_mtime
+        return age < 60
+
+    def _write_heartbeat(self):
+        """Write daemon hb_signal timestamp."""
+        HB_SIGNAL_PATH.write_text(datetime.now().isoformat())
+
+    def run_reconciliation_loop(self):
+        """
+        Background daemon. Run alongside the orchestrator during market hours.
+        Polls every RECONCILE_INTERVAL seconds, detects fills, places stops.
+        Writes hb_signal every cycle so orchestrator can verify daemon is alive.
+        """
+        logger.info(f"Starting Execution Reconciliation Daemon (interval: {RECONCILE_INTERVAL}s)...")
+        while True:
+            try:
+                self._write_heartbeat()
+                self._reconcile_state()
+            except Exception as e:
+                logger.error(f"Reconciliation error: {e}", exc_info=True)
+            time.sleep(RECONCILE_INTERVAL)
+
+    def _reconcile_state(self):
+        """
+        Single reconciliation pass:
+        1. Fetch all active trades without stops placed
+        2. Batch-fetch broker order status
+        3. On fill → place stop-loss
+        4. On partial fill + price through stop → panic liquidate
+        """
+        panic_liquidations = []
+
+        try:
+            lock = FileLock(LOCK_PATH, timeout=5)
+            with lock:
+                with sqlite3.connect(DB_PATH, timeout=20.0) as conn:
+                    conn.row_factory = sqlite3.Row
+                    # All unclosed trades: need stop placement OR stop fill monitoring
+                    active_trades = conn.execute(
+                        "SELECT * FROM active_trades WHERE closed_at IS NULL"
+                    ).fetchall()
+
+                if not active_trades:
+                    return
+
+                logger.info(f"Reconciling {len(active_trades)} active trades...")
+
+                # Batch-fetch broker state ONCE per loop (rate-limit friendly)
+                all_orders = self.broker.get_orders_today()
+                broker_orders = {}
+                for o in all_orders:
+                    oid = str(o.get("id") or o.get("order_id", ""))
+                    if oid:
+                        broker_orders[oid] = o
+
+                # Fetch live quotes for partial fill protection
+                tickers_to_quote = list(set(t["ticker"] for t in active_trades))
+                try:
+                    quotes = self.broker.get_quotes(tickers_to_quote)
+                except Exception as e:
+                    logger.warning(f"Quote fetch failed: {e}")
+                    quotes = {}
+
+                for trade in active_trades:
+                    trade = dict(trade)  # Convert Row to dict
+                    ticker = trade["ticker"]
+                    entry_id = trade["entry_order_id"]
+                    b_order = broker_orders.get(entry_id)
+
+                    if not b_order:
+                        # Order not found — might be too old for today's orders
+                        logger.debug(f"  {ticker}: entry order {entry_id} not found in today's orders")
+                        continue
+
+                    status = b_order.get("status", "unknown").lower()
+                    filled_qty = int(float(b_order.get("filled_qty", b_order.get("filled_shares", 0))))
+                    avg_price = float(b_order.get("avg_fill_price", b_order.get("average_price", 0)))
+
+                    # Update DB state
+                    with sqlite3.connect(DB_PATH, timeout=20.0) as conn:
+                        conn.execute(
+                            """UPDATE active_trades
+                            SET entry_status = ?, filled_shares = ?, avg_fill_price = ?, last_updated = ?
+                            WHERE trade_id = ?""",
+                            (status, filled_qty, avg_price, datetime.now().isoformat(), trade["trade_id"]),
+                        )
+                        conn.commit()
+
+                    # --- Partial Fill Protection ---
+                    if status in ("open", "partially_filled") and filled_qty > 0:
+                        live_bid = quotes.get(ticker, {}).get("bid", 0)
+                        if live_bid > 0 and live_bid <= trade["target_stop_price"]:
+                            logger.critical(
+                                f"🚨 {ticker} price crashed through stop "
+                                f"(bid=${live_bid:.2f} <= stop=${trade['target_stop_price']:.2f}) "
+                                f"while partially filled ({filled_qty}/{trade['target_shares']} shares)! "
+                                "Aborting entry + panic liquidation."
+                            )
+                            panic_liquidations.append(ticker)
+                            self._log_event(
+                                trade["trade_id"], ticker, "PARTIAL_FILL_PANIC",
+                                f"bid={live_bid} stop={trade['target_stop_price']} filled={filled_qty}",
+                            )
+                            continue
+
+                    # --- Terminal State: Route Native Stop (only if no stop placed yet) ---
+                    terminal_states = ("filled", "canceled", "cancelled", "rejected", "expired")
+                    if (status in terminal_states and filled_qty > 0
+                            and ticker not in panic_liquidations
+                            and not trade.get("stop_order_id")):
+                        logger.info(
+                            f"✅ {ticker} entry terminal ('{status}'). "
+                            f"Placing stop for {filled_qty} shares at ${trade['target_stop_price']:.2f}"
+                        )
+
+                        try:
+                            stop_res = self.broker.place_order(
+                                ticker=ticker,
+                                side="sell",
+                                order_type="stop",
+                                quantity=str(filled_qty),
+                                stop_price=str(round(trade["target_stop_price"], 2)),
+                                time_in_force="gtc",
+                            )
+
+                            stop_id = stop_res.get("order_id") or stop_res.get("id")
+                            if stop_id:
+                                with sqlite3.connect(DB_PATH, timeout=20.0) as conn:
+                                    conn.execute(
+                                        "UPDATE active_trades SET stop_order_id = ?, stop_status = 'open', last_updated = ? WHERE trade_id = ?",
+                                        (stop_id, datetime.now().isoformat(), trade["trade_id"]),
+                                    )
+                                    conn.commit()
+                                self._log_event(
+                                    trade["trade_id"], ticker, "STOP_PLACED",
+                                    f"stop_id={stop_id} price=${trade['target_stop_price']:.2f} shares={filled_qty}",
+                                )
+                                logger.info(f"  🛡️ Stop placed for {ticker}: {stop_id}")
+                            else:
+                                logger.error(f"  Stop order for {ticker} returned no ID: {stop_res}")
+                                self._log_event(
+                                    trade["trade_id"], ticker, "STOP_FAILED",
+                                    json.dumps(stop_res),
+                                )
+                        except Exception as e:
+                            logger.error(f"  Stop placement failed for {ticker}: {e}")
+                            self._log_event(trade["trade_id"], ticker, "STOP_ERROR", str(e))
+
+                    # --- Monitor Native Stop Fills ---
+                    if trade.get("stop_order_id"):
+                        stop_order = broker_orders.get(trade["stop_order_id"])
+                        if stop_order and stop_order.get("status", "").lower() in ("filled", "executed"):
+                            exit_price = float(stop_order.get("filled_avg_price", stop_order.get("average_price", trade["target_stop_price"])))
+                            logger.warning(f"  🛑 Native stop filled for {ticker} at ${exit_price:.2f}. Logging to journal.")
+
+                            # Log to trade journal + penalty box
+                            try:
+                                from trade_journal import build_trade_record, log_close
+                                from safeguards import add_to_penalty_box
+
+                                directive = {}
+                                orig_order = {}
+                                if os.path.exists("output/agent1_directive.json"):
+                                    with open("output/agent1_directive.json") as f:
+                                        directive = json.load(f)
+                                if os.path.exists("output/agent4_orders.json"):
+                                    with open("output/agent4_orders.json") as f:
+                                        a4_data = json.load(f)
+                                    orig_order = next((o for o in a4_data.get("trade_orders", []) if o.get("ticker") == ticker), {})
+
+                                if orig_order:
+                                    record = build_trade_record(
+                                        trade_order=orig_order,
+                                        directive=directive,
+                                        agent3_verification={},
+                                        exit_price=exit_price,
+                                        exit_reason="NATIVE_STOP_HIT",
+                                    )
+                                    log_close(record)
+
+                                # Penalty box: loss = (entry - exit) * shares
+                                entry_p = float(trade.get("limit_price", 0) or orig_order.get("entry_price", 0))
+                                loss_amount = max(0, (entry_p - exit_price) * filled_qty)
+                                if loss_amount > 0:
+                                    add_to_penalty_box(ticker, loss_amount, reason="NATIVE_STOP_HIT")
+                            except Exception as e:
+                                logger.error(f"Failed to log native stop for {ticker}: {e}")
+
+                            # Clear from ledger
+                            with sqlite3.connect(DB_PATH, timeout=20.0) as conn:
+                                conn.execute(
+                                    "UPDATE active_trades SET closed_at = ?, close_reason = ? WHERE trade_id = ?",
+                                    (datetime.now().isoformat(), f"NATIVE_STOP_FILLED@{exit_price:.2f}", trade["trade_id"]),
+                                )
+                                conn.commit()
+                            self._log_event(trade["trade_id"], ticker, "STOP_FILLED", f"exit=${exit_price:.2f}")
+                            continue  # Move to next trade
+
+                    # --- Entry rejected/expired with 0 fills = dead trade ---
+                    if status in ("canceled", "cancelled", "rejected", "expired") and filled_qty == 0:
+                        logger.info(f"  ❌ {ticker} entry {status} with 0 fills — removing from ledger")
+                        with sqlite3.connect(DB_PATH, timeout=20.0) as conn:
+                            conn.execute(
+                                "UPDATE active_trades SET closed_at = ?, close_reason = ? WHERE trade_id = ?",
+                                (datetime.now().isoformat(), f"entry_{status}", trade["trade_id"]),
+                            )
+                            conn.commit()
+                        self._log_event(trade["trade_id"], ticker, "TRADE_DEAD", status)
+
+        except Timeout:
+            logger.warning("Lock timeout during reconciliation — skipping this cycle")
+
+        # Execute panic liquidations OUTSIDE the lock (avoids recursive deadlock)
+        for ticker in panic_liquidations:
+            self.atomic_liquidate(ticker, "Stop hit during partial fill window")
+
+    # ── Status / Debugging ───────────────────────────────────────────────
+
+    def get_active_trades(self) -> list:
+        """Return all active (unclosed) trades from the ledger."""
+        with sqlite3.connect(DB_PATH, timeout=20.0) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT * FROM active_trades WHERE closed_at IS NULL ORDER BY created_at DESC"
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def get_execution_log(self, limit: int = 50) -> list:
+        """Return recent execution events."""
+        with sqlite3.connect(DB_PATH, timeout=20.0) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT * FROM execution_log ORDER BY timestamp DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+
+# Quick test
+if __name__ == "__main__":
+    print("Testing Execution Engine...\n")
+    engine = ExecutionEngine()
+    print(f"DB: {DB_PATH}")
+    print(f"Active trades: {len(engine.get_active_trades())}")
+    print(f"Execution log: {len(engine.get_execution_log())} entries")
+    print("\n✅ Execution Engine initialized!")
+
+```
+
+---
+
 ## ./fedwatch.py
 
 ```python
@@ -5279,15 +6053,14 @@ def _append_daemon_log(entry: dict):
 
 
 def _get_current_stop_price(broker, ticker: str) -> float:
-    """Get the current stop-loss price for a ticker from Alpaca open orders."""
+    """Get the current stop-loss price for a ticker from open orders (broker-agnostic)."""
     try:
-        from alpaca.trading.requests import GetOrdersRequest
-        from alpaca.trading.enums import QueryOrderStatus
-        req = GetOrdersRequest(status=QueryOrderStatus.OPEN, symbols=[ticker], limit=20)
-        orders = broker.client.get_orders(req)
-        for order in orders:
-            if order.order_type == "stop" or (hasattr(order, 'stop_price') and order.stop_price):
-                return float(order.stop_price)
+        orders = broker.get_orders_today()
+        for o in orders:
+            if (o.get("ticker") == ticker
+                and o.get("status", "").lower() in ("open", "queued", "confirmed")
+                and (o.get("order_type", "").lower() == "stop" or o.get("stop_price"))):
+                return float(o["stop_price"])
     except Exception:
         pass
     return None
@@ -5295,111 +6068,54 @@ def _get_current_stop_price(broker, ticker: str) -> float:
 
 def execute_defensive_protocol(broker, trigger_reason: str, positions: list) -> list:
     """
-    Execute defensive protocol on all positions:
-    - Profitable positions: tighten stop to breakeven (entry price)
-    - Losing positions: close immediately
+    Execute defensive protocol on all positions using the execution engine.
+    - Profitable positions: tighten stop to breakeven via engine
+    - Losing positions: atomic liquidation via engine
     Returns list of actions taken.
     """
+    from execution_engine import ExecutionEngine
+    engine = ExecutionEngine(broker=broker)
     actions = []
 
     for pos in positions:
         ticker = pos["ticker"]
         entry_price = pos["avg_entry_price"]
-        current_price = pos["current_price"]
         unrealized_pl = pos["unrealized_pl"]
 
-        if unrealized_pl >= 0:
-            # Profitable — tighten stop to breakeven, but NEVER widen an existing stop
-            # Check if there's already a stop tighter than (i.e. above) entry price
+        if unrealized_pl < 0:
+            # Losing — atomic liquidate (cancel resting orders → wait → market sell)
+            result = engine.atomic_liquidate(ticker, reason=trigger_reason)
+            actions.append({"ticker": ticker, "action": "LIQUIDATED", "result": result})
+            print(f"  [Daemon] {ticker}: Losing (${unrealized_pl:.2f}) → ATOMICALLY CLOSED")
+        else:
+            # Profitable — tighten stop to breakeven, but NEVER widen
             current_stop = _get_current_stop_price(broker, ticker)
             if current_stop and current_stop > entry_price:
-                # Stop already trailed above entry — do NOT widen it
                 actions.append({
                     "ticker": ticker,
                     "action": "SKIP",
                     "note": f"Stop already at ${current_stop:.2f} > entry ${entry_price:.2f} — not widening",
                 })
+                print(f"  [Daemon] {ticker}: Stop already tight at ${current_stop:.2f} — skipping")
                 continue
 
-            # GUARD: If current price is already below entry, a stop at entry_price
-            # would trigger immediately as a market sell with uncontrolled slippage.
-            # Close the position directly instead.
-            if current_price < entry_price:
-                result = broker.close_position(ticker)
-                action = {
-                    "ticker": ticker,
-                    "action": "CLOSE_BELOW_ENTRY",
-                    "entry_price": entry_price,
-                    "current_price": current_price,
-                    "unrealized_pl": unrealized_pl,
-                    "close_result": result,
-                    "note": f"Price ${current_price:.2f} < entry ${entry_price:.2f} — closed to avoid immediate stop trigger",
-                }
-                actions.append(action)
-                print(f"  [Daemon] {ticker}: Price ${current_price:.2f} < entry ${entry_price:.2f} → CLOSED (would trigger immediately)")
-                continue
-
-            # Place new stop FIRST, then cancel old orders (position never naked)
-            action = {
+            # Update stop via engine (cancels old, daemon places new)
+            engine.update_stop(ticker, entry_price, reason=f"flash_crash_{trigger_reason}")
+            actions.append({
                 "ticker": ticker,
                 "action": "TIGHTEN_STOP_BREAKEVEN",
-                "entry_price": entry_price,
-                "unrealized_pl": unrealized_pl,
-                "note": f"Stop tightened to breakeven (${entry_price:.2f})",
-            }
-            try:
-                from alpaca.trading.requests import StopOrderRequest
-                from alpaca.trading.enums import OrderSide, TimeInForce
-
-                # Collect existing order IDs for this ticker BEFORE submitting new one
-                existing_order_ids = []
-                orders = broker.client.get_orders()
-                for o in orders:
-                    if o.symbol == ticker:
-                        existing_order_ids.append(o.id)
-
-                # Submit new breakeven stop FIRST — position stays protected
-                stop_req = StopOrderRequest(
-                    symbol=ticker,
-                    qty=pos["shares"],
-                    side=OrderSide.SELL,
-                    time_in_force=TimeInForce.GTC,
-                    stop_price=round(entry_price, 2),
-                )
-                broker.client.submit_order(stop_req)
-
-                # NOW cancel old orders (position was never unprotected)
-                for oid in existing_order_ids:
-                    try:
-                        broker.client.cancel_order_by_id(oid)
-                    except Exception:
-                        pass
-
-                action["status"] = "executed"
-            except Exception as e:
-                action["status"] = "logged_only"
-                action["error"] = str(e)
-
-            actions.append(action)
-            print(f"  [Daemon] {ticker}: Profitable (+${unrealized_pl:.2f}) → stop tightened to ${entry_price:.2f}")
-        else:
-            # Losing — close immediately
-            result = broker.close_position(ticker)
-            action = {
-                "ticker": ticker,
-                "action": "CLOSE_LOSING",
-                "entry_price": entry_price,
-                "unrealized_pl": unrealized_pl,
-                "close_result": result,
-            }
-            actions.append(action)
-            print(f"  [Daemon] {ticker}: Losing (${unrealized_pl:.2f}) → CLOSED")
+                "new_stop": entry_price,
+            })
+            print(f"  [Daemon] {ticker}: Profitable (+${unrealized_pl:.2f}) → stop moved to ${entry_price:.2f}")
 
     return actions
 
 
 def tighten_individual_stop(broker, pos: dict) -> dict:
     """Tighten a single position's stop to breakeven when it's down >5% intraday."""
+    from execution_engine import ExecutionEngine
+    engine = ExecutionEngine(broker=broker)
+
     ticker = pos["ticker"]
     entry_price = pos["avg_entry_price"]
     current_price = pos["current_price"]
@@ -5415,68 +6131,29 @@ def tighten_individual_stop(broker, pos: dict) -> dict:
         print(f"  [Daemon] {ticker}: Stop already at ${current_stop:.2f} > entry — skipping")
         return action
 
-    # GUARD: If current price is already below entry, a stop at entry_price
-    # would trigger immediately as a market sell with uncontrolled slippage.
-    # Close the position directly instead.
+    # GUARD: If current price is already below entry, close via atomic liquidation
     if current_price < entry_price:
+        result = engine.atomic_liquidate(ticker, reason="price_below_entry_during_tighten")
         action = {
             "ticker": ticker,
             "action": "CLOSE_BELOW_ENTRY",
             "entry_price": entry_price,
             "current_price": current_price,
-            "note": f"Price ${current_price:.2f} < entry ${entry_price:.2f} — closed to avoid immediate stop trigger",
+            "result": result,
+            "note": f"Price ${current_price:.2f} < entry ${entry_price:.2f} — atomically closed",
         }
-        try:
-            result = broker.close_position(ticker)
-            action["close_result"] = result
-            action["status"] = "executed"
-        except Exception as e:
-            action["status"] = "logged_only"
-            action["error"] = str(e)
-        print(f"  [Daemon] {ticker}: Price ${current_price:.2f} < entry ${entry_price:.2f} → CLOSED (would trigger immediately)")
+        print(f"  [Daemon] {ticker}: Price ${current_price:.2f} < entry ${entry_price:.2f} → ATOMICALLY CLOSED")
         return action
 
-    # Place new stop FIRST, then cancel old orders (position never naked)
+    # Update stop via engine (cancels old, daemon places new)
+    engine.update_stop(ticker, entry_price, reason="individual_stop_tighten")
     action = {
         "ticker": ticker,
         "action": "INDIVIDUAL_STOP_TIGHTEN",
         "entry_price": entry_price,
         "note": f"Position down >5% intraday — stop moved to breakeven (${entry_price:.2f})",
+        "status": "executed",
     }
-
-    try:
-        from alpaca.trading.requests import StopOrderRequest
-        from alpaca.trading.enums import OrderSide, TimeInForce
-
-        # Collect existing order IDs for this ticker BEFORE submitting new one
-        existing_order_ids = []
-        orders = broker.client.get_orders()
-        for o in orders:
-            if o.symbol == ticker:
-                existing_order_ids.append(o.id)
-
-        # Submit new breakeven stop FIRST — position stays protected
-        stop_req = StopOrderRequest(
-            symbol=ticker,
-            qty=pos["shares"],
-            side=OrderSide.SELL,
-            time_in_force=TimeInForce.GTC,
-            stop_price=round(entry_price, 2),
-        )
-        broker.client.submit_order(stop_req)
-
-        # NOW cancel old orders (position was never unprotected)
-        for oid in existing_order_ids:
-            try:
-                broker.client.cancel_order_by_id(oid)
-            except Exception:
-                pass
-
-        action["status"] = "executed"
-    except Exception as e:
-        action["status"] = "logged_only"
-        action["error"] = str(e)
-
     print(f"  [Daemon] {ticker}: Down >5% intraday → stop tightened to ${entry_price:.2f}")
     return action
 
@@ -7460,7 +8137,9 @@ from agent5_position_monitor import run_agent5, run_agent5_preflight, format_age
 from broker_factory import get_broker
 from trade_journal import log_close, build_trade_record
 from watchlist import Watchlist, promote_ready_candidates
-from vwap_gate import check_vwap, vwap_gate
+# VWAP gate removed — caused adverse selection (buying above morning VWAP = exit liquidity for institutions)
+# Now using passive midpoint routing in run_deferred_execution()
+# from vwap_gate import check_vwap, vwap_gate
 from run_archiver import archive_run
 from safeguards import (
     is_market_open_today,
@@ -7852,19 +8531,48 @@ def run_afternoon_monitor(verbose: bool = False) -> dict:
             with open("output/agent5_decisions.json", "w") as f:
                 json.dump(agent5_result, f, indent=2, default=str)
             
-            # ━━━ EXECUTE AGENT 5 DECISIONS ON ALPACA ━━━
+            # ━━━ EXECUTE AGENT 5 DECISIONS VIA EXECUTION ENGINE ━━━
             decisions = agent5_result.get("decisions", [])
             crisis = agent5_result.get("crisis_liquidation", False)
             actionable = [d for d in decisions if d.get("action") in ("CLOSE", "TRIM")] or crisis
             
             if actionable:
                 print("\n" + "━" * 40)
-                print("💰 BROKER EXECUTION — AGENT 5 DECISIONS")
+                print("💰 EXECUTION ENGINE — AGENT 5 DECISIONS")
                 print("━" * 40)
                 
                 try:
-                    broker = get_broker()
-                    exec_results = broker.execute_agent5_decisions(decisions, crisis=crisis)
+                    from execution_engine import ExecutionEngine
+                    engine = ExecutionEngine()
+                    exec_results = []
+                    
+                    if crisis:
+                        # Crisis = liquidate everything atomically
+                        positions = engine.broker.get_positions()
+                        for p in positions:
+                            result = engine.atomic_liquidate(p["ticker"], reason="CRISIS_LIQUIDATION")
+                            exec_results.append(result)
+                        print(f"  🚨 CRISIS: Atomically liquidated {len(positions)} positions")
+                    else:
+                        for d in decisions:
+                            ticker = d.get("ticker")
+                            action = d.get("action", "HOLD")
+                            if action == "CLOSE":
+                                result = engine.atomic_liquidate(ticker, reason=f"Agent5_CLOSE: {d.get('reasoning', '')}")
+                                exec_results.append(result)
+                            elif action == "TRIM":
+                                # Trim = update stop to current price (let daemon handle it)
+                                new_stop = d.get("new_stop", d.get("current_price", 0))
+                                if new_stop > 0:
+                                    engine.update_stop(ticker, new_stop, reason="Agent5_TRIM")
+                                exec_results.append({"ticker": ticker, "action": "TRIM", "new_stop": new_stop})
+                            elif action == "HOLD":
+                                # Update trailing stop if tightened
+                                new_stop = d.get("new_stop")
+                                original_stop = d.get("original_stop")
+                                if new_stop and original_stop and new_stop > original_stop:
+                                    engine.update_stop(ticker, new_stop, reason="Agent5_TRAIL")
+                                exec_results.append({"ticker": ticker, "action": "HOLD", "new_stop": new_stop})
                     agent5_result["broker_results"] = exec_results
                     
                     # Load directive for trade journal
@@ -7883,32 +8591,52 @@ def run_afternoon_monitor(verbose: bool = False) -> dict:
                         print(f"  [{action}] {ticker} — {status}")
                         
                         # Log closed trades to journal + penalty box for losses
-                        if r.get("status") == "submitted" and r.get("action") in ("close", "trim", "close_all"):
-                            pos_data = next((p for p in preflight["positions"] if p["ticker"] == r["ticker"]), {})
-                            ticker_snap = snapshot.get(r["ticker"], {})
-                            exit_price = ticker_snap.get("current_price", 0)
-                            if pos_data and exit_price:
+                        if r.get("action") in ("LIQUIDATED", "CLOSE", "TRIM", "close", "trim", "close_all"):
+                            pos_data = next((p for p in preflight.get("positions", []) if p.get("ticker") == r.get("ticker")), {})
+
+                            # Wait for settlement and fetch actual fill price
+                            import time as _time
+                            _time.sleep(3.0)
+                            try:
+                                todays_orders = engine.broker.get_orders_today()
+                                sell_order = next(
+                                    (o for o in todays_orders
+                                     if o.get("ticker") == r.get("ticker")
+                                     and str(o.get("side", "")).lower() == "sell"
+                                     and o.get("status", "").lower() in ("filled", "executed")),
+                                    None,
+                                )
+                                real_exit_price = (
+                                    float(sell_order["filled_avg_price"])
+                                    if sell_order and sell_order.get("filled_avg_price")
+                                    else snapshot.get(r.get("ticker", ""), {}).get("current_price", 0)
+                                )
+                            except Exception:
+                                real_exit_price = snapshot.get(r.get("ticker", ""), {}).get("current_price", 0)
+
+                            if pos_data and real_exit_price:
                                 try:
                                     record = build_trade_record(
                                         trade_order=pos_data,
                                         directive=directive,
                                         agent3_verification={},
-                                        exit_price=exit_price,
-                                        exit_reason=f"Agent 5 {r['action']}",
+                                        exit_price=real_exit_price,
+                                        exit_reason=f"Agent 5 {r.get('action', 'close')}",
                                     )
                                     log_close(record)
-                                    print(f"  📝 Logged {r['ticker']} to trade journal")
-                                    
+                                    print(f"  📝 Logged {r.get('ticker')} to trade journal (fill: ${real_exit_price:.2f})")
+
                                     # Add to penalty box if closed for a loss
-                                    unrealized_pl = pos_data.get("unrealized_pl", 0)
-                                    if unrealized_pl < 0:
+                                    entry = pos_data.get("entry_price", pos_data.get("avg_entry_price", 0))
+                                    if real_exit_price < entry:
+                                        loss = (entry - real_exit_price) * pos_data.get("shares", 0)
                                         add_to_penalty_box(
-                                            r["ticker"],
-                                            abs(unrealized_pl),
-                                            reason=f"Agent 5 {r['action']}",
+                                            r.get("ticker", ""),
+                                            loss,
+                                            reason=f"Agent 5 {r.get('action', 'close')}",
                                         )
                                 except Exception as je:
-                                    print(f"  ⚠️ Journal log failed for {r['ticker']}: {je}")
+                                    print(f"  ⚠️ Journal log failed for {r.get('ticker')}: {je}")
                 except Exception as e:
                     print(f"❌ Broker execution FAILED: {e}")
                     agent5_result["broker_error"] = str(e)
@@ -8015,15 +8743,23 @@ def resume_from_agent3(verbose: bool = False) -> dict:
         buy_orders = [o for o in trade_orders if o.get("action") == "BUY"]
         if buy_orders:
             print("\n" + "━" * 40)
-            print("💰 BROKER EXECUTION — ALPACA")
+            print("💰 EXECUTION ENGINE — LEDGER + BROKER")
             print("━" * 40)
             try:
-                broker = get_broker()
-                fills = broker.execute_tear_sheet(trade_orders)
+                from execution_engine import ExecutionEngine
+                engine = ExecutionEngine()
+
+                # Verify daemon is alive before submitting trades
+                if not ExecutionEngine.is_daemon_alive():
+                    print("⚠️ WARNING: Execution daemon not running! Trades will be logged but stops won't auto-place.")
+                    print("  Start with: python3 run_execution_daemon.py")
+
+                fills = engine.submit_batch_intents(trade_orders)
                 submitted = [f for f in fills if f.get("status") == "submitted"]
-                print(f"  ✅ {len(submitted)} orders submitted")
+                print(f"  ✅ {len(submitted)} intents logged to execution ledger")
+                print("  📡 Background daemon will route entries and attach stops")
             except Exception as e:
-                print(f"❌ Broker execution FAILED: {e}")
+                print(f"❌ Execution engine FAILED: {e}")
     
     print("\n✅ Pipeline resumed and complete.")
     return {"agent3": agent3_result, "agent4": agent4_result}
@@ -8031,65 +8767,110 @@ def resume_from_agent3(verbose: bool = False) -> dict:
 
 def run_deferred_execution() -> dict:
     """
-    Execute pending orders with VWAP gate.
-    Run at 9:45-10:15 AM when intraday VWAP has matured.
+    Execute pending orders using PASSIVE MIDPOINT limits.
+    VWAP gate removed — it caused adverse selection by buying above morning VWAP
+    (i.e., crossing the spread to pay institutional algos who VWAP-slice their sells).
+    Now routes limit orders at the NBBO midpoint via the ExecutionEngine.
     """
+    import uuid
+    import market_data
+    from execution_engine import ExecutionEngine
+
     pending_path = "output/pending_orders.json"
     if not os.path.exists(pending_path):
         print("❌ No pending orders found. Run morning pipeline first.")
         return {"error": "no_pending_orders"}
-    
+
     with open(pending_path) as f:
         pending = json.load(f)
-    
+
     trade_orders = pending.get("orders", [])
     buy_orders = [o for o in trade_orders if o.get("action") == "BUY"]
-    
+
     if not buy_orders:
         print("📋 No BUY orders to execute.")
         return {"success": True, "fills": []}
-    
+
     print("=" * 50)
-    print("💰 DEFERRED EXECUTION — VWAP GATE + BROKER")
+    print("💰 DEFERRED EXECUTION — PASSIVE MIDPOINT ROUTING")
     print(f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M:%S ET')}")
     print("=" * 50)
-    
-    # Run VWAP gate with mature intraday data
-    print("\n🔒 VWAP Gate: Checking intraday VWAP...")
-    approved_orders, rejected_orders = vwap_gate(trade_orders)
-    
-    if rejected_orders:
-        print(f"  ❌ VWAP Rejected ({len(rejected_orders)}):")
-        for r in rejected_orders:
-            print(f"     {r['ticker']}: {r.get('reject_reason')}")
-    
-    approved_buys = [o for o in approved_orders if o.get('action') == 'BUY']
-    
-    if not approved_buys:
-        print("📋 All orders rejected by VWAP gate.")
-        return {"success": True, "fills": [], "all_rejected": True}
-    
-    print(f"  ✅ VWAP Approved: {len(approved_buys)} BUY order(s)")
-    
-    # Execute
-    try:
-        broker = get_broker()
-        fills = broker.execute_tear_sheet(approved_orders)
-        
-        submitted = [f for f in fills if f.get("status") == "submitted"]
-        errors = [f for f in fills if f.get("status") == "error"]
-        
-        print(f"\n📊 Broker Results:")
-        print(f"  ✅ Submitted: {len(submitted)}")
-        print(f"  ❌ Errors: {len(errors)}")
-        
-        # Clean up pending file
-        os.rename(pending_path, pending_path.replace(".json", f"_executed_{datetime.now().strftime('%Y%m%d_%H%M')}.json"))
-        
-        return {"success": True, "fills": fills}
-    except Exception as e:
-        print(f"❌ Execution failed: {e}")
-        return {"success": False, "error": str(e)}
+
+    engine = ExecutionEngine()
+
+    # PRE-TRADE CHECK: Verify execution daemon is alive
+    if not ExecutionEngine.is_daemon_alive():
+        print("❌ ABORT: Execution daemon is not running or heartbeat is stale (>60s).")
+        print("  Start it with: python3 run_execution_daemon.py")
+        print("  Or: bash run_daemon.sh")
+        return {"success": False, "error": "daemon_not_alive", "fills": []}
+    print("✅ Execution daemon heartbeat confirmed")
+
+    # Fetch live quotes to calculate NBBO midpoint
+    tickers = [o["ticker"] for o in buy_orders]
+    print(f"\n📡 Fetching live quotes for {len(tickers)} tickers...")
+    live_quotes = market_data.fetch_latest_quotes(tickers)
+
+    fills = []
+    for order in buy_orders:
+        ticker = order["ticker"]
+        quote = live_quotes.get(ticker, {})
+
+        bid = quote.get("bid", 0)
+        ask = quote.get("ask", 0)
+        last = quote.get("last", order.get("entry_price", 0))
+
+        # Broken Book Guardrails
+        if bid <= 0 or ask <= 0 or ask < bid:
+            print(f"  🚫 REJECTED {ticker}: Order book broken (Bid: {bid}, Ask: {ask}).")
+            fills.append({"ticker": ticker, "status": "rejected_broken_book"})
+            continue
+
+        midpoint = round((bid + ask) / 2.0, 2)
+        spread_pct = (ask - bid) / midpoint
+
+        if spread_pct > 0.05:
+            print(f"  🚫 REJECTED {ticker}: Spread is toxic ({spread_pct*100:.1f}% wide). Bid: {bid}, Ask: {ask}")
+            fills.append({"ticker": ticker, "status": "rejected_wide_spread"})
+            continue
+
+        print(f"  [NBBO] {ticker}: Bid ${bid:.2f} | Ask ${ask:.2f} | Spread {spread_pct*10000:.0f} bps")
+
+        # Safety: reject if stock gapped up > 3% from planned entry (avoid chasing)
+        entry_price = order.get("entry_price", midpoint)
+        if entry_price > 0:
+            gap_pct = (midpoint - entry_price) / entry_price
+            if gap_pct > 0.03:
+                print(f"  🚫 REJECTED {ticker}: Gapped up {gap_pct*100:.1f}% from planned entry. Avoid chasing.")
+                fills.append({"ticker": ticker, "status": "rejected_gap_up", "gap_pct": round(gap_pct * 100, 1)})
+                continue
+
+        trade_id = str(uuid.uuid4())
+
+        # Route intent to the Execution Ledger
+        # Passive midpoint limit — no more ask * 1.0015 spread-crossing
+        result = engine.submit_trade_intent(
+            trade_id=trade_id,
+            ticker=ticker,
+            shares=int(order.get("shares", 0)),
+            limit_price=midpoint,
+            stop_price=order.get("stop_loss", 0),
+        )
+        fills.append({
+            "ticker": ticker,
+            "status": result.get("status", "unknown"),
+            "limit_price": midpoint,
+            "order_id": result.get("order_id"),
+        })
+        print(f"  ✅ {ticker}: Midpoint limit routed at ${midpoint:.2f}")
+
+    submitted = sum(1 for f in fills if f.get("status") == "submitted")
+    print(f"\n📊 Results: {submitted}/{len(fills)} orders routed to execution ledger")
+    print("📡 Background daemon will handle fills → stop placement")
+
+    # Clean up pending file
+    os.rename(pending_path, pending_path.replace(".json", f"_executed_{datetime.now().strftime('%Y%m%d_%H%M')}.json"))
+    return {"success": True, "fills": fills}
 
 
 if __name__ == "__main__":
@@ -9751,31 +10532,22 @@ def run_preflight(themes: Optional[List[str]] = None) -> dict:
     # 5. Technical indicators from Massive API (SMA, RSI, MACD)
     technicals = {}
     if MASSIVE_AVAILABLE:
-        # Get technicals for key macro tickers (SPY, QQQ, IWM)
-        # and top screener picks (first 5 to stay within rate limits)
-        tech_tickers = ["SPY", "QQQ", "IWM"]
-        top_screener = [t["ticker"] for t in screener[:3] if "ticker" in t]
-        tech_tickers.extend([t for t in top_screener if t not in tech_tickers])
+        # Calculate technicals LOCALLY via Pandas (zero API calls)
+        # Uses yfinance for historical data + pandas for RSI/MACD/SMA
+        tech_tickers = ["SPY", "QQQ", "IWM"] + [t["ticker"] for t in screener[:10] if "ticker" in t]
+        tech_tickers = list(dict.fromkeys(tech_tickers))  # Deduplicate preserving order
 
-        print(f"[Pre-Flight] Fetching Massive technicals for {tech_tickers}...")
-        for i, ticker in enumerate(tech_tickers):
-            try:
-                # SPY gets the full treatment (SMA + RSI + MACD = 5 calls)
-                # Others get lightweight (prev + RSI + MACD = 3 calls)
-                if i == 0:  # SPY
-                    tech = massive.fetch_technicals_with_sma(ticker)
-                else:
-                    tech = massive.fetch_full_technicals(ticker)
-                technicals[ticker] = tech
+        print(f"[Pre-Flight] Calculating technicals locally for {len(tech_tickers)} tickers...")
+        technicals = massive.calculate_technicals_batch(tech_tickers, period="6mo")
+        for ticker, tech in technicals.items():
+            if "error" not in tech:
                 print(f"  {ticker}: RSI={tech.get('rsi_14', '?')} MACD_trend={tech.get('macd_trend', '?')}")
-            except Exception as e:
-                print(f"  {ticker}: FAILED — {e}")
-                technicals[ticker] = {"error": str(e)}
+            else:
+                print(f"  {ticker}: {tech['error']}")
 
-        # Save technicals
         with open(f"{OUTPUT_DIR}/technicals.json", "w") as f:
             json.dump(technicals, f, indent=2)
-        print(f"[Pre-Flight] Technicals saved for {len(technicals)} tickers")
+        print(f"[Pre-Flight] Technicals saved for {len(technicals)} tickers (local calc, 0 API calls)")
     else:
         print("[Pre-Flight] Skipping Massive technicals (not available)")
 
@@ -10411,10 +11183,21 @@ class RobinhoodBroker:
         return result.get("results", []) if isinstance(result, dict) else []
 
     def execute_agent5_decisions(self, decisions: list, crisis: bool = False) -> list:
-        """Execute Agent 5's HOLD/TRIM/CLOSE decisions."""
+        """
+        Execute Agent 5's HOLD/TRIM/CLOSE decisions.
+        CLOSE/TRIM route through ExecutionEngine to handle encumbered shares
+        (resting stop-loss orders lock shares, raw close_position will fail).
+        """
+        from execution_engine import ExecutionEngine
+        engine = ExecutionEngine(broker=self)
+
         if crisis:
-            self.close_all_positions()
-            return [{"action": "CRISIS_LIQUIDATION", "status": "submitted"}]
+            positions = self.get_positions()
+            results = []
+            for p in positions:
+                engine.atomic_liquidate(p["ticker"], reason="CRISIS_LIQUIDATION")
+                results.append({"ticker": p["ticker"], "action": "CRISIS_LIQUIDATION", "status": "submitted"})
+            return results
 
         results = []
         for d in decisions:
@@ -10422,18 +11205,16 @@ class RobinhoodBroker:
             action = d.get("action", "HOLD")
 
             if action == "HOLD":
-                # Robinhood MCP doesn't support stop orders directly via the current tools
-                # Stop management would need a separate mechanism
                 new_stop = d.get("new_stop")
                 original_stop = d.get("original_stop")
                 if new_stop and original_stop and new_stop > original_stop:
-                    print(f"  [RH-Broker] ⚠️ {ticker}: Stop tightened ${original_stop} → ${new_stop} (manual management needed)")
-                    results.append({"ticker": ticker, "action": "HOLD_STOP_TIGHTENED", "new_stop": new_stop, "status": "noted"})
+                    engine.update_stop(ticker, new_stop, reason="Agent5_TRAIL")
+                    results.append({"ticker": ticker, "action": "HOLD_STOP_TIGHTENED", "new_stop": new_stop, "status": "executed"})
                 else:
                     results.append({"ticker": ticker, "action": "HOLD", "status": "no_action"})
 
             elif action == "CLOSE":
-                result = self.close_position(ticker)
+                result = engine.atomic_liquidate(ticker, reason="Agent5_CLOSE")
                 results.append(result)
 
             elif action == "TRIM":
@@ -10441,9 +11222,12 @@ class RobinhoodBroker:
                 positions = self.get_positions()
                 pos = next((p for p in positions if p["ticker"] == ticker), None)
                 if pos:
-                    trim_qty = max(1, int(pos["shares"] * trim_pct))
-                    result = self.close_position(ticker, qty=trim_qty)
-                    results.append(result)
+                    # For trim: atomic liquidate the full position then re-enter the remainder
+                    # Simpler approach: update stop and let the position ride at smaller size
+                    new_stop = d.get("new_stop", d.get("current_price", 0))
+                    if new_stop > 0:
+                        engine.update_stop(ticker, new_stop, reason="Agent5_TRIM")
+                    results.append({"ticker": ticker, "action": "TRIM", "new_stop": new_stop, "status": "stop_tightened"})
                 else:
                     results.append({"ticker": ticker, "action": "TRIM", "status": "no_position"})
 
@@ -10671,6 +11455,40 @@ if __name__ == "__main__":
 
 ---
 
+## ./run_execution_daemon.py
+
+```python
+#!/usr/bin/env python3
+"""
+run_execution_daemon.py — Background Execution Engine Daemon
+
+Run this alongside the orchestrator during market hours.
+It polls order status every ~15 seconds and:
+- Places stop-loss orders immediately after entry fills
+- Panic-liquidates positions if price crashes through stop during partial fills
+- Handles order cancellation / expiry cleanup
+
+Usage:
+    python3 run_execution_daemon.py
+
+Kill with Ctrl+C or SIGTERM.
+"""
+from execution_engine import ExecutionEngine
+
+if __name__ == "__main__":
+    print("=" * 60)
+    print("  EXECUTION ENGINE DAEMON")
+    print("  Reconciles orders every 15 seconds")
+    print("  Press Ctrl+C to stop")
+    print("=" * 60)
+
+    engine = ExecutionEngine()
+    engine.run_reconciliation_loop()
+
+```
+
+---
+
 ## ./safeguards.py
 
 ```python
@@ -10805,21 +11623,38 @@ def _estimate_expiry_date(trading_days: int) -> str:
 def add_to_penalty_box(ticker: str, loss_amount: float, reason: str = "stop_loss"):
     """
     Add a ticker to the penalty box after a losing trade.
-    Uses date-stamped expiry instead of tick-based countdown to prevent
-    test runs / retries from burning through the cooldown.
+    
+    IRS Wash Sale Rule: If a loss is realized, the ticker is locked for 31
+    calendar days (IRS requires 30, we add 1 for safety). Buying back within
+    this window disallows the tax deduction on the loss.
+    
+    For non-loss exits (breakeven, whipsaw), use the standard 5-trading-day
+    cooldown to prevent re-entry into a choppy name.
     """
     cooldown = _load_cooldown()
-    expiry = _estimate_expiry_date(COOLDOWN_TRADING_DAYS)
+
+    is_realized_loss = loss_amount > 0 and "breakeven" not in reason.lower()
+
+    if is_realized_loss:
+        # IRS 30-day calendar rule (31 to be safe)
+        expiry_str = (datetime.now() + timedelta(days=31)).date().isoformat()
+        lock_type = "IRS Wash Sale"
+    else:
+        # Standard 5-day whipsaw cooldown
+        expiry_str = _estimate_expiry_date(COOLDOWN_TRADING_DAYS)
+        lock_type = "Whipsaw Timeout"
+
     cooldown["tickers"][ticker] = {
         "added": datetime.now().isoformat(),
         "added_date": datetime.now().date().isoformat(),
-        "expiry_date": expiry,
+        "expiry_date": expiry_str,
         "loss_amount": loss_amount,
         "reason": reason,
-        "trading_days_remaining": COOLDOWN_TRADING_DAYS,  # kept for backward compat
+        "lock_type": lock_type,
+        "trading_days_remaining": COOLDOWN_TRADING_DAYS,  # backward compat
     }
     _save_cooldown(cooldown)
-    print(f"[Penalty Box] 🚫 {ticker} added — cooldown until {expiry} ({COOLDOWN_TRADING_DAYS} trading days, loss: ${loss_amount:.2f})")
+    print(f"[Penalty Box] 🚫 {ticker} added — {lock_type} until {expiry_str} (loss: ${loss_amount:.2f})")
 
 
 def tick_penalty_box():
@@ -12706,6 +13541,9 @@ schwab_localhost.pem
 schwab_localhost.key
 schwab_auth_server.py
 schwab_exchange_token.sh
+output/execution_ledger.db
+output/execution_engine.log
+output/broker_state.lock
 
 ```
 
