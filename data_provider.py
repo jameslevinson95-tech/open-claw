@@ -192,6 +192,39 @@ class DataProvider:
         logger.warning(f"[DataProvider] No corporate action data available for {ticker}")
         return []
 
+    def get_news(self, ticker: str, limit: int = 5) -> list:
+        """
+        Recent news headlines for a ticker.
+        Fallback: Massive -> yfinance -> [].
+        Returns list of dicts with 'title', 'publisher', 'published'.
+        """
+        # 1. Massive news endpoint
+        if self._massive_key:
+            try:
+                articles = self._massive_news(ticker, limit)
+                if articles:
+                    return articles
+            except Exception as e:
+                logger.warning(f"Massive news failed for {ticker}: {e}")
+
+        # 2. yfinance fallback
+        try:
+            import yfinance as yf
+            stock = yf.Ticker(ticker)
+            news_items = stock.news or []
+            return [
+                {
+                    "title": n.get("title", ""),
+                    "publisher": n.get("publisher", ""),
+                    "published": n.get("providerPublishTime", ""),
+                }
+                for n in news_items[:limit]
+            ]
+        except Exception as e:
+            logger.warning(f"yfinance news failed for {ticker}: {e}")
+
+        return []
+
     # ── Massive (Polygon) Internals ──────────────────────────────────
 
     def _massive_get(self, endpoint: str, params: dict = None) -> dict:
@@ -274,6 +307,25 @@ class DataProvider:
                 })
         return recent
 
+    def _massive_news(self, ticker: str, limit: int = 5) -> list:
+        """Fetch news articles from Massive/Polygon reference endpoint."""
+        data = self._massive_get("/v2/reference/news", params={
+            "ticker": ticker,
+            "limit": limit,
+            "sort": "published_utc",
+            "order": "desc",
+        })
+
+        results = data.get("results", [])
+        return [
+            {
+                "title": article.get("title", ""),
+                "publisher": article.get("publisher", {}).get("name", "") if isinstance(article.get("publisher"), dict) else str(article.get("publisher", "")),
+                "published": article.get("published_utc", ""),
+            }
+            for article in results
+        ]
+
     # ── Schwab Internals ─────────────────────────────────────────────
 
     def _schwab_quotes(self, tickers: list) -> dict:
@@ -322,11 +374,12 @@ class MockDataProvider(DataProvider):
         dp = MockDataProvider(bars={"AAPL": bars}, indices={"VIX": 18.5})
     """
 
-    def __init__(self, bars: dict = None, quotes: dict = None, indices: dict = None, splits: dict = None):
+    def __init__(self, bars: dict = None, quotes: dict = None, indices: dict = None, splits: dict = None, news: dict = None):
         self._canned_bars = bars or {}
         self._canned_quotes = quotes or {}
         self._canned_indices = indices or {}
         self._canned_splits = splits or {}
+        self._canned_news = news or {}
 
     def get_bars(self, ticker: str, lookback_days: int = 60, timespan: str = "day") -> pd.DataFrame:
         if ticker in self._canned_bars:
@@ -346,6 +399,9 @@ class MockDataProvider(DataProvider):
 
     def get_corporate_actions(self, ticker: str, since_days: int = 7) -> list:
         return self._canned_splits.get(ticker, [])
+
+    def get_news(self, ticker: str, limit: int = 5) -> list:
+        return self._canned_news.get(ticker, [])
 
 
 # ── Singleton ────────────────────────────────────────────────────────

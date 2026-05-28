@@ -128,14 +128,20 @@ def prefetch_qualitative_context(candidates: list) -> dict:
 
     def fetch_single(ticker):
         try:
-            stock = yf.Ticker(ticker)
+            # 1. News Headlines — via DataProvider (Massive → yfinance fallback)
+            from data_provider import get_provider
+            dp = get_provider()
+            news_articles = dp.get_news(ticker, limit=5)
+            if news_articles:
+                headlines = [
+                    f"- {n.get('published', '')}: {n.get('title', '')} [{n.get('publisher', '')}]"
+                    for n in news_articles
+                ]
+            else:
+                headlines = ["- No recent news available"]
 
-            # 1. News Headlines
-            news_items = stock.news
-            headlines = [
-                f"- {n.get('providerPublishTime', '')}: {n.get('title', '')} [{n.get('publisher', '')}]"
-                for n in (news_items[:5] if news_items else [])
-            ] or ["- No recent news available"]
+            # Options OI and Short Interest stay on yfinance (Massive paywalled / unavailable)
+            stock = yf.Ticker(ticker)
 
             # 2. Options Flow (Put/Call OI Ratio for nearest expiration)
             options_context = "No options data available"
