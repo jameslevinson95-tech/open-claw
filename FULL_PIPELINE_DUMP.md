@@ -1,39 +1,39 @@
 # OPEN CLAW TRADING PIPELINE — FULL CODEBASE DUMP
 
-Generated: 2026-05-27 23:30:15 ET
+Generated: 2026-05-28 00:17:39 ET
 
 Repo: https://github.com/jameslevinson95-tech/open-claw
 
 Files included:
-- ./agent1_macro_director.py (298 lines)
+- ./agent1_macro_director.py (294 lines)
 - ./agent2_fundamental_screener.py (689 lines)
-- ./agent3_synthesizer.py (554 lines)
+- ./agent3_synthesizer.py (562 lines)
 - ./agent4_risk_manager.py (842 lines)
-- ./agent5_position_monitor.py (763 lines)
+- ./agent5_position_monitor.py (758 lines)
 - ./alpaca_data.py (352 lines)
 - ./assembly_scraper.py (217 lines)
-- ./broker.py (545 lines)
+- ./broker.py (505 lines)
 - ./broker_factory.py (67 lines)
 - ./config.py (165 lines)
 - ./data_fetcher_v1_deprecated.py (100 lines)
 - ./discord_fetch.py (293 lines)
-- ./execution_engine.py (605 lines)
+- ./execution_engine.py (723 lines)
 - ./fedwatch.py (294 lines)
-- ./flash_crash_daemon.py (343 lines)
+- ./flash_crash_daemon.py (360 lines)
 - ./itc_data.py (394 lines)
 - ./market_data.py (354 lines)
 - ./massive_data.py (1034 lines)
-- ./orchestrator.py (794 lines)
+- ./orchestrator.py (797 lines)
 - ./performance_review.py (534 lines)
-- ./preflight.py (1169 lines)
+- ./preflight.py (1201 lines)
 - ./robinhood_broker.py (646 lines)
 - ./run_archiver.py (175 lines)
 - ./run_execution_daemon.py (26 lines)
-- ./safeguards.py (578 lines)
+- ./safeguards.py (625 lines)
 - ./schwab_auth_server.py (106 lines)
 - ./schwab_data.py (162 lines)
 - ./schwab_reauth.py (151 lines)
-- ./trade_journal.py (137 lines)
+- ./trade_journal.py (161 lines)
 - ./vwap_gate.py (108 lines)
 - ./watchlist.py (260 lines)
 - ./weekly_review.py (125 lines)
@@ -244,18 +244,14 @@ Current date/time: {datetime.now().isoformat()}
 Respond with ONLY the JSON directive, no other text."""
 
         response = client.messages.create(
-            model="claude-opus-4-7",
+            model="claude-3-5-sonnet-latest",
             max_tokens=16000,
-            thinking={
-                "type": "enabled",
-                "budget_tokens": 10000,
-            },
+            temperature=0.0,
             system=SYSTEM_PROMPT,
             messages=[{"role": "user", "content": user_message}],
         )
 
-        # With extended thinking, content has thinking + text blocks
-        raw_text = next(b.text for b in response.content if b.type == "text").strip()
+        raw_text = response.content[0].text.strip()
     except RuntimeError:
         # No API key — return the prompt for subagent execution
         return {
@@ -437,10 +433,10 @@ CRITICAL RULES:
 
 ANALYSIS PROTOCOL:
 Step 1: Inventory the exact numerical data and fundamentals injected by Python.
-Step 2: Verify the asset passes the >$5 price and >$100M market cap constraints.
-Step 3: Argue the downside. Why might this setup fail? (Play Devil's Advocate).
-Step 4: Brutally interrogate the fundamentals to assign a CONVICTION_TIER (PASS, STRONG, or EXCEPTIONAL).
-Step 5: Ensure the THEME_MATCH is a verbatim, character-for-character echo of Agent 1's theme.
+Step 2: Argue the downside. Why might this setup fail? (Play Devil's Advocate).
+Step 3: Brutally interrogate the fundamentals to assign a CONVICTION_TIER (PASS, STRONG, or EXCEPTIONAL).
+Step 4: Ensure the THEME_MATCH is a verbatim, character-for-character echo of Agent 1's theme.
+(Note: Price and market cap constraints are already enforced by Python — do not re-check.)
 
 OUTPUT FORMAT:
 Respond with ONLY the JSON object. No preamble, no scratchpad, no explanation.
@@ -1081,7 +1077,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Claude Opus 4.7 with adaptive thinking
+# Opus for synthesis — nuanced judgment on qualitative signals
 MODEL = "claude-opus-4-7"
 MAX_RETRIES = 3
 RETRY_DELAY = 5
@@ -1167,66 +1163,50 @@ OUTPUT FORMAT — respond with ONLY this JSON:
 
 def prefetch_qualitative_context(candidates: list) -> dict:
     """
-    Pre-fetch ALL qualitative data for candidates in Python:
+    Pre-fetch ALL qualitative data for candidates concurrently:
       - News headlines (yfinance)
       - Options flow / Put-Call ratio (yfinance)
       - Short interest (yfinance)
     Returns a dict keyed by ticker.
     """
-    context = {}
-    print(f"  [Agent 3] Pre-fetching qualitative context for {len(candidates)} candidates...")
+    import concurrent.futures
 
-    for c in candidates:
-        ticker = c["ticker"]
+    context = {}
+    print(f"  [Agent 3] Pre-fetching qualitative context concurrently for {len(candidates)} candidates...")
+
+    def fetch_single(ticker):
         try:
             stock = yf.Ticker(ticker)
 
             # 1. News Headlines
             news_items = stock.news
-            headlines = []
-            if news_items:
-                for n in news_items[:5]:
-                    pub_time = n.get("providerPublishTime", "")
-                    title = n.get("title", "")
-                    publisher = n.get("publisher", "")
-                    headlines.append(f"- {pub_time}: {title} [{publisher}]")
-            if not headlines:
-                headlines = ["- No recent news available"]
+            headlines = [
+                f"- {n.get('providerPublishTime', '')}: {n.get('title', '')} [{n.get('publisher', '')}]"
+                for n in (news_items[:5] if news_items else [])
+            ] or ["- No recent news available"]
 
             # 2. Options Flow (Put/Call OI Ratio for nearest expiration)
             options_context = "No options data available"
-            pc_ratio = None
-            puts_oi = 0
-            calls_oi = 0
+            pc_ratio, puts_oi, calls_oi = None, 0, 0
             try:
                 expirations = stock.options
                 if expirations:
-                    # Filter out near-term expirations (< 7 DTE) to avoid
-                    # gamma noise from retail speculation and MM hedging.
-                    min_dte = 7
-                    target_date = (datetime.now() + timedelta(days=min_dte)).strftime("%Y-%m-%d")
+                    target_date = (datetime.now() + timedelta(days=7)).strftime("%Y-%m-%d")
                     valid_exps = [e for e in expirations if e >= target_date]
-                    if valid_exps:
-                        nearest_exp = valid_exps[0]  # nearest that's >= 7 days out
-                    else:
-                        nearest_exp = expirations[-1]  # fallback to farthest available
+                    nearest_exp = valid_exps[0] if valid_exps else expirations[-1]
                     chain = stock.option_chain(nearest_exp)
                     puts_oi = int(chain.puts["openInterest"].fillna(0).sum()) if not chain.puts.empty else 0
                     calls_oi = int(chain.calls["openInterest"].fillna(0).sum()) if not chain.calls.empty else 0
                     pc_ratio = round(puts_oi / calls_oi, 2) if calls_oi > 0 else 0
-                    options_context = (
-                        f"Nearest Expiration ({nearest_exp}): "
-                        f"Put OI = {puts_oi}, Call OI = {calls_oi}, P/C Ratio = {pc_ratio}"
-                    )
+                    options_context = f"Nearest Expiration ({nearest_exp}): Put OI = {puts_oi}, Call OI = {calls_oi}, P/C Ratio = {pc_ratio}"
             except Exception:
                 pass
 
             # 3. Short Interest
-            info = stock.info
-            short_pct_raw = info.get("shortPercentOfFloat")
+            short_pct_raw = stock.info.get("shortPercentOfFloat")
             short_pct = f"{round(short_pct_raw * 100, 2)}%" if short_pct_raw else "N/A"
 
-            context[ticker] = {
+            return ticker, {
                 "recent_headlines": headlines,
                 "options_flow": options_context,
                 "put_call_ratio": pc_ratio,
@@ -1236,7 +1216,15 @@ def prefetch_qualitative_context(candidates: list) -> dict:
                 "short_interest_raw": short_pct_raw,
             }
         except Exception as e:
-            context[ticker] = {"error": str(e)}
+            return ticker, {"error": str(e)}
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+        future_to_ticker = {
+            executor.submit(fetch_single, c["ticker"]): c["ticker"] for c in candidates
+        }
+        for future in concurrent.futures.as_completed(future_to_ticker):
+            ticker, data = future.result()
+            context[ticker] = data
 
     return context
 
@@ -1286,8 +1274,24 @@ def call_synthesis(candidates: list, qual_context: dict, x_mentions: dict) -> di
         qc = qual_context.get(ticker, {})
         mentions = x_mentions.get(ticker, [])
 
-        mention_count = len(mentions) if isinstance(mentions, list) else 0
-        mention_text = json.dumps(mentions, indent=2) if mentions else "No mentions from curated accounts"
+        # Token diet: plaintext instead of raw JSON, top 10 by engagement
+        if mentions and isinstance(mentions, list):
+            def _engagement(m):
+                metrics = m.get("metrics", {})
+                return metrics.get("like_count", 0) + metrics.get("retweet_count", 0)
+            try:
+                mentions.sort(key=_engagement, reverse=True)
+            except Exception:
+                pass
+            top_mentions = mentions[:10]
+            mention_text = "\n".join(
+                f"    @{m.get('username', 'UNK')}: {m.get('text', '')}"
+                for m in top_mentions
+            )
+            mention_count = len(mentions)  # Original count
+        else:
+            mention_count = 0
+            mention_text = "    No mentions from curated accounts"
 
         # DOUBLE-BLIND: Do NOT show Agent 2's thesis, conviction tier, or theme
         # to Agent 3. This prevents sycophantic agreement with upstream analysis.
@@ -1327,7 +1331,7 @@ Perform your synthesis and respond with ONLY the JSON output."""
             response = client.messages.create(
                 model=MODEL,
                 max_tokens=16000,
-                temperature=1,  # Required when using extended thinking
+                temperature=1,  # Required for extended thinking
                 thinking={
                     "type": "enabled",
                     "budget_tokens": 10000,
@@ -2486,8 +2490,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Claude Opus 4.7 with adaptive thinking — thesis drift ONLY
-MODEL = "claude-opus-4-7"
+# Haiku for fast thesis drift classification — no extended thinking needed
+MODEL = "claude-3-5-haiku-latest"
 MAX_RETRIES = 3
 RETRY_DELAY = 5
 
@@ -2922,17 +2926,12 @@ Respond with ONLY the JSON output."""
             response = client.messages.create(
                 model=MODEL,
                 max_tokens=16000,
-                temperature=1,  # Required when using extended thinking
-                thinking={
-                    "type": "enabled",
-                    "budget_tokens": 10000,
-                },
+                temperature=0.0,
                 system=SYSTEM_PROMPT,
                 messages=[{"role": "user", "content": user_message}],
             )
 
-            # With extended thinking, content has thinking + text blocks
-            raw_text = next(b.text for b in response.content if b.type == "text").strip()
+            raw_text = response.content[0].text.strip()
             # Strip scratchpad if present
             if "</research_scratchpad>" in raw_text:
                 raw_text = raw_text.split("</research_scratchpad>", 1)[1].strip()
@@ -3855,80 +3854,40 @@ from alpaca.trading.enums import OrderSide, TimeInForce, OrderStatus, QueryOrder
 
 def _cross_reference_price(ticker: str, prior_close: float, suspect_price: float):
     """
-    Cross-reference a suspect broker quote against yfinance and Massive.
-    Returns a trusted price if one source agrees with prior close (within 5%),
-    or None if no reliable price can be found.
-
-    Priority: Schwab quote > Massive previous day bar > yfinance regularMarketPrice > None
+    Cross-reference a suspect broker quote against today's actual opening print or live tape.
+    If the stock legitimately gapped up on news, today's tape will verify the live quote is real.
+    Returns a trusted price, or None if no reliable price can be found.
     """
+    import yfinance as yf
+
     trusted = None
-
-    # 0. Try Schwab API (independent real-time data feed)
     try:
-        from schwab_data import fetch_schwab_quotes
-        schwab_quotes = fetch_schwab_quotes([ticker])
-        if ticker in schwab_quotes:
-            sq = schwab_quotes[ticker]
-            schwab_price = sq.get("ask") or sq.get("last") or sq.get("mid") or 0
-            if schwab_price > 0:
-                schwab_dev = abs(schwab_price - prior_close) / prior_close
-                if schwab_dev < 0.05:
-                    trusted = schwab_price
-                    print(f"  [CrossRef] Schwab quote ${schwab_price:.2f} (dev {schwab_dev*100:.1f}%) — TRUSTED")
-                else:
-                    # Schwab also disagrees with prior close — check if Schwab agrees with Alpaca
-                    schwab_alpaca_dev = abs(schwab_price - suspect_price) / suspect_price if suspect_price > 0 else 999
-                    if schwab_alpaca_dev < 0.03:
-                        print(f"  [CrossRef] Schwab ${schwab_price:.2f} agrees with Alpaca ${suspect_price:.2f} — real price move, using Schwab")
-                        trusted = schwab_price
-                    else:
-                        print(f"  [CrossRef] Schwab ${schwab_price:.2f} diverges from both prior close and Alpaca — no consensus yet")
-    except Exception as e:
-        print(f"  [CrossRef] Schwab lookup failed: {e}")
-
-    # 1. Try Massive API (prior day close — most reliable, no rate-limit issues)
-    if trusted is not None:
-        return trusted
-    try:
-        from massive_data import fetch_previous_day
-        massive_prev = fetch_previous_day(ticker)
-        if "error" not in massive_prev and massive_prev.get("close"):
-            massive_close = massive_prev["close"]
-            massive_dev = abs(massive_close - prior_close) / prior_close
-            if massive_dev < 0.05:  # Massive agrees with our prior close
-                trusted = massive_close
-                print(f"  [CrossRef] Massive prior close ${massive_close:.2f} (dev {massive_dev*100:.1f}% from planned) — TRUSTED")
+        # Fetch today's 1-minute intraday tape
+        today_data = yf.download(ticker, period="1d", interval="1m", progress=False)
+        if not today_data.empty:
+            # Handle pandas multi-index if necessary
+            if hasattr(today_data.columns, 'levels') and len(today_data.columns.levels) > 1:
+                today_open = float(today_data["Open"][ticker].iloc[0])
+                current_tape = float(today_data["Close"][ticker].iloc[-1])
             else:
-                print(f"  [CrossRef] Massive prior close ${massive_close:.2f} also diverges ({massive_dev*100:.1f}%) — possible real split/event")
-    except Exception as e:
-        print(f"  [CrossRef] Massive lookup failed: {e}")
+                today_open = float(today_data["Open"].iloc[0])
+                current_tape = float(today_data["Close"].iloc[-1])
 
-    # 2. Try yfinance as backup
-    if trusted is not None:
-        return trusted
-    if True:
-        try:
-            import yfinance as yf
-            info = yf.Ticker(ticker).info
-            yf_price = info.get("regularMarketPrice") or info.get("previousClose")
-            if yf_price:
-                yf_dev = abs(yf_price - prior_close) / prior_close
-                if yf_dev < 0.05:
-                    trusted = yf_price
-                    print(f"  [CrossRef] yfinance price ${yf_price:.2f} (dev {yf_dev*100:.1f}%) — TRUSTED")
-                else:
-                    # Both Alpaca and yfinance disagree with prior close — might be a real event
-                    # Check if yfinance and Alpaca agree with each other
-                    alpaca_yf_dev = abs(suspect_price - yf_price) / yf_price if yf_price > 0 else 999
-                    if alpaca_yf_dev < 0.05:
-                        # Alpaca and yfinance agree — this is a real price move (split, etc.)
-                        # Use yfinance price but log the event
-                        print(f"  [CrossRef] yfinance ${yf_price:.2f} agrees with Alpaca ${suspect_price:.2f} — real price event (split?), using yfinance")
-                        trusted = yf_price
-                    else:
-                        print(f"  [CrossRef] yfinance ${yf_price:.2f} also diverges ({yf_dev*100:.1f}%) and doesn't match Alpaca — no consensus")
-        except Exception as e:
-            print(f"  [CrossRef] yfinance lookup failed: {e}")
+            # If the suspect broker price is within 1.5% of today's actual open or current tape,
+            # it is a legitimate gap/breakout quote, not an anomaly.
+            dev_from_open = abs(suspect_price - today_open) / today_open if today_open > 0 else 999
+            dev_from_current = abs(suspect_price - current_tape) / current_tape if current_tape > 0 else 999
+
+            if dev_from_open < 0.015 or dev_from_current < 0.015:
+                print(f"  [CrossRef] \u2705 Real Breakout: Broker quote ${suspect_price:.2f} verified by today's tape (Open: ${today_open:.2f}, Live: ${current_tape:.2f}).")
+                trusted = suspect_price
+            else:
+                print(f"  [CrossRef] \ud83d\udeab Anomaly Confirmed: Broker quote ${suspect_price:.2f} diverges wildly from today's tape (Open: ${today_open:.2f}, Live: ${current_tape:.2f}).")
+                trusted = current_tape  # Fallback to the live yfinance tape
+        else:
+            print(f"  [CrossRef] No intraday tape available to verify {ticker}.")
+    except Exception as e:
+        print(f"  [CrossRef] yfinance tape verification failed: {e}")
 
     return trusted
 
@@ -5379,6 +5338,101 @@ class ExecutionEngine:
         except Timeout:
             logger.error(f"Lock timeout updating stop for {ticker}")
 
+    def update_trailing_stop(self, ticker: str, new_stop_price: float) -> bool:
+        """
+        Safely tightens a stop loss. Atomic: cancel old → WAIT for clearinghouse → place new.
+        Unlike update_stop() which delegates to the daemon, this method blocks until
+        the new stop is confirmed placed. Use for time-critical trailing (flash crash, etc.).
+        """
+        try:
+            lock = FileLock(LOCK_PATH, timeout=15)
+            with lock:
+                with sqlite3.connect(DB_PATH, timeout=20.0) as conn:
+                    conn.row_factory = sqlite3.Row
+                    trade = conn.execute(
+                        "SELECT * FROM active_trades WHERE ticker = ? AND stop_order_id IS NOT NULL AND closed_at IS NULL",
+                        (ticker,),
+                    ).fetchone()
+
+                    if not trade:
+                        logger.warning(f"No active stop found for {ticker} to trail.")
+                        return False
+
+                    trade = dict(trade)
+                    old_stop_id = trade["stop_order_id"]
+                    filled_shares = trade["filled_shares"]
+
+                # 1. Cancel old stop
+                try:
+                    self.broker.cancel_order(old_stop_id)
+                    logger.info(f"Canceled old stop {old_stop_id} for {ticker}")
+                except Exception as e:
+                    logger.error(f"Failed to cancel old stop {old_stop_id} for {ticker}: {e}")
+
+            # 2. Blocking wait for shares to unencumber (OUTSIDE lock to avoid deadlock)
+            timeout_at = time.time() + 10
+            unencumbered = False
+            while time.time() < timeout_at:
+                try:
+                    open_orders = self.broker.get_orders_today()
+                    if not any(
+                        str(o.get("id") or o.get("order_id")) == old_stop_id
+                        and o.get("status", "").lower() in ("open", "pending_cancel", "queued", "new")
+                        for o in open_orders
+                    ):
+                        unencumbered = True
+                        break
+                except Exception:
+                    pass
+                time.sleep(1.0)
+
+            if not unencumbered:
+                logger.error(f"Timeout waiting for old stop {old_stop_id} to clear for {ticker}. Position temporarily naked.")
+                # Re-register with daemon so it can recover
+                with sqlite3.connect(DB_PATH, timeout=20.0) as conn:
+                    conn.execute(
+                        "UPDATE active_trades SET target_stop_price = ?, stop_order_id = NULL, stop_status = NULL, last_updated = ? WHERE trade_id = ?",
+                        (new_stop_price, datetime.now().isoformat(), trade["trade_id"]),
+                    )
+                    conn.commit()
+                return False
+
+            # 3. Place new stop
+            stop_res = self.broker.place_order(
+                ticker=ticker,
+                side="sell",
+                order_type="stop",
+                quantity=str(filled_shares),
+                stop_price=str(round(new_stop_price, 2)),
+                time_in_force="gtc",
+            )
+            new_stop_id = stop_res.get("order_id") or stop_res.get("id")
+
+            if new_stop_id:
+                with sqlite3.connect(DB_PATH, timeout=20.0) as conn:
+                    conn.execute(
+                        "UPDATE active_trades SET target_stop_price = ?, stop_order_id = ?, stop_status = 'open', last_updated = ? WHERE trade_id = ?",
+                        (new_stop_price, new_stop_id, datetime.now().isoformat(), trade["trade_id"]),
+                    )
+                    conn.commit()
+                self._log_event(trade["trade_id"], ticker, "TRAILING_STOP_PLACED", f"new_stop=${new_stop_price:.2f} id={new_stop_id}")
+                logger.info(f"✅ Successfully trailed stop for {ticker} to ${new_stop_price:.2f}")
+                return True
+            else:
+                logger.critical(f"Failed to place new stop for {ticker} after canceling old stop! Position is naked.")
+                # Fallback: let daemon recover
+                with sqlite3.connect(DB_PATH, timeout=20.0) as conn:
+                    conn.execute(
+                        "UPDATE active_trades SET target_stop_price = ?, stop_order_id = NULL, stop_status = NULL, last_updated = ? WHERE trade_id = ?",
+                        (new_stop_price, datetime.now().isoformat(), trade["trade_id"]),
+                    )
+                    conn.commit()
+                return False
+
+        except Timeout:
+            logger.error(f"Lock timeout during trailing stop update for {ticker}")
+            return False
+
     # ── Background Reconciliation Daemon ─────────────────────────────────
 
     @staticmethod
@@ -5474,6 +5528,29 @@ class ExecutionEngine:
                             (status, filled_qty, avg_price, datetime.now().isoformat(), trade["trade_id"]),
                         )
                         conn.commit()
+
+                    # --- Sweep Stale Dangling Limits ---
+                    # If entry order has been open > 45 minutes, cancel unfilled remainder
+                    # Prevents accidental fills on a 2 PM flash crash
+                    if status in ("open", "partially_filled"):
+                        try:
+                            last_up_str = trade["last_updated"].replace("Z", "+00:00")
+                            last_up = datetime.fromisoformat(last_up_str)
+                            age_seconds = (datetime.now() - last_up.replace(tzinfo=None)).total_seconds()
+                            if age_seconds > 2700:  # 45 minutes
+                                logger.warning(
+                                    f"  \U0001f9f9 Sweeping stale limit order for {ticker} "
+                                    f"(Order {trade['entry_order_id']} open for > 45 mins)."
+                                )
+                                self.broker.cancel_order(trade["entry_order_id"])
+                                self._log_event(
+                                    trade["trade_id"], ticker, "STALE_LIMIT_SWEPT",
+                                    f"age={age_seconds:.0f}s filled={filled_qty}",
+                                )
+                                # Don't mark canceled in DB yet — next loop iteration will
+                                # see broker status='canceled' and route stop for what DID fill
+                        except Exception as e:
+                            logger.error(f"Error checking order age for {ticker}: {e}")
 
                     # --- Partial Fill Protection ---
                     if status in ("open", "partially_filled") and filled_qty > 0:
@@ -6099,14 +6176,19 @@ def execute_defensive_protocol(broker, trigger_reason: str, positions: list) -> 
                 print(f"  [Daemon] {ticker}: Stop already tight at ${current_stop:.2f} — skipping")
                 continue
 
-            # Update stop via engine (cancels old, daemon places new)
-            engine.update_stop(ticker, entry_price, reason=f"flash_crash_{trigger_reason}")
-            actions.append({
-                "ticker": ticker,
-                "action": "TIGHTEN_STOP_BREAKEVEN",
-                "new_stop": entry_price,
-            })
-            print(f"  [Daemon] {ticker}: Profitable (+${unrealized_pl:.2f}) → stop moved to ${entry_price:.2f}")
+            # Atomic trailing stop: cancel old → wait for clearinghouse → place new
+            success = engine.update_trailing_stop(ticker, entry_price)
+            if success:
+                actions.append({
+                    "ticker": ticker,
+                    "action": "TIGHTEN_STOP_BREAKEVEN",
+                    "new_stop": entry_price,
+                })
+                print(f"  [Daemon] {ticker}: Profitable (+${unrealized_pl:.2f}) \u2192 stop moved to ${entry_price:.2f}")
+            else:
+                actions.append({"ticker": ticker, "action": "TIGHTEN_STOP_FAILED"})
+                print(f"  [Daemon] {ticker}: TIGHTEN FAILED \u2014 daemon will retry via update_stop fallback")
+                engine.update_stop(ticker, entry_price, reason=f"flash_crash_{trigger_reason}_fallback")
 
     return actions
 
@@ -6145,16 +6227,28 @@ def tighten_individual_stop(broker, pos: dict) -> dict:
         print(f"  [Daemon] {ticker}: Price ${current_price:.2f} < entry ${entry_price:.2f} → ATOMICALLY CLOSED")
         return action
 
-    # Update stop via engine (cancels old, daemon places new)
-    engine.update_stop(ticker, entry_price, reason="individual_stop_tighten")
-    action = {
-        "ticker": ticker,
-        "action": "INDIVIDUAL_STOP_TIGHTEN",
-        "entry_price": entry_price,
-        "note": f"Position down >5% intraday — stop moved to breakeven (${entry_price:.2f})",
-        "status": "executed",
-    }
-    print(f"  [Daemon] {ticker}: Down >5% intraday → stop tightened to ${entry_price:.2f}")
+    # Atomic trailing stop: cancel old → wait for clearinghouse → place new
+    success = engine.update_trailing_stop(ticker, entry_price)
+    if success:
+        action = {
+            "ticker": ticker,
+            "action": "INDIVIDUAL_STOP_TIGHTEN",
+            "entry_price": entry_price,
+            "note": f"Position down >5% intraday — stop moved to breakeven (${entry_price:.2f})",
+            "status": "executed",
+        }
+        print(f"  [Daemon] {ticker}: Down >5% intraday \u2192 stop tightened to ${entry_price:.2f}")
+    else:
+        # Fallback to async update_stop (daemon will place when it can)
+        engine.update_stop(ticker, entry_price, reason="individual_stop_tighten_fallback")
+        action = {
+            "ticker": ticker,
+            "action": "INDIVIDUAL_STOP_TIGHTEN",
+            "entry_price": entry_price,
+            "note": f"Atomic tighten failed \u2014 daemon will retry",
+            "status": "deferred",
+        }
+        print(f"  [Daemon] {ticker}: Atomic tighten failed \u2014 deferred to daemon")
     return action
 
 
@@ -8571,7 +8665,10 @@ def run_afternoon_monitor(verbose: bool = False) -> dict:
                                 new_stop = d.get("new_stop")
                                 original_stop = d.get("original_stop")
                                 if new_stop and original_stop and new_stop > original_stop:
-                                    engine.update_stop(ticker, new_stop, reason="Agent5_TRAIL")
+                                    # Atomic trailing: cancel → wait → place (synchronous)
+                                    if not engine.update_trailing_stop(ticker, new_stop):
+                                        # Fallback to async daemon-based update
+                                        engine.update_stop(ticker, new_stop, reason="Agent5_TRAIL_fallback")
                                 exec_results.append({"ticker": ticker, "action": "HOLD", "new_stop": new_stop})
                     agent5_result["broker_results"] = exec_results
                     
@@ -9614,7 +9711,19 @@ def fetch_macro_data() -> dict:
                 macro[name] = {"error": f"No data for {ticker}"}
                 continue
 
-            current = float(data["Close"].iloc[-1].item())
+            # VIX pre-market noise filter: before 9:30 ET, use prior day's close
+            # to avoid illiquid option book spreads causing fake spikes
+            import pytz
+            now_et = datetime.now(pytz.timezone('US/Eastern'))
+            if name == "VIX" and now_et.hour < 9 or (now_et.hour == 9 and now_et.minute < 30):
+                if len(data) >= 2 and str(data.index[-1].date()) == str(now_et.date()):
+                    current = float(data["Close"].iloc[-2].item())
+                    print(f"[Pre-Flight] \U0001f6e1 VIX Guard: Using prior close {current} to avoid pre-market noise.")
+                else:
+                    current = float(data["Close"].iloc[-1].item())
+            else:
+                current = float(data["Close"].iloc[-1].item())
+
             prev_5d = float(data["Close"].iloc[-5].item()) if len(data) >= 5 else current
             prev_20d = float(data["Close"].iloc[-20].item()) if len(data) >= 20 else current
 
@@ -9673,7 +9782,17 @@ def fetch_move_index() -> dict:
         start = end - timedelta(days=30)
         data = yf.download("^MOVE", start=start, end=end, progress=False)
         if not data.empty and len(data) >= 5:
-            current = float(data["Close"].iloc[-1].item())
+            # MOVE pre-market noise filter (same as VIX)
+            import pytz
+            now_et = datetime.now(pytz.timezone('US/Eastern'))
+            if now_et.hour < 9 or (now_et.hour == 9 and now_et.minute < 30):
+                if len(data) >= 2 and str(data.index[-1].date()) == str(now_et.date()):
+                    current = float(data["Close"].iloc[-2].item())
+                    print(f"[Pre-Flight] \U0001f6e1 MOVE Guard: Using prior close {current} to avoid pre-market noise.")
+                else:
+                    current = float(data["Close"].iloc[-1].item())
+            else:
+                current = float(data["Close"].iloc[-1].item())
             prev_5d = float(data["Close"].iloc[-5].item())
             prev_20d = float(data["Close"].iloc[-20].item()) if len(data) >= 20 else current
             return {
@@ -10477,13 +10596,32 @@ def run_preflight(themes: Optional[List[str]] = None) -> dict:
     if themes:
         print(f"[Pre-Flight] Theme filters: {themes}")
 
-    # 1. Macro data
-    print("[Pre-Flight] Fetching macro data...")
-    macro = fetch_macro_data()
+    # 1+2+6. Parallel fetch: macro, screener, fedwatch
+    import concurrent.futures
+    print("[Pre-Flight] Starting parallel data fetch (macro + screener + fedwatch)...")
+    macro, screener, fedwatch_data = {}, [], {}
 
-    # 2. Screener universe (dynamic via Finviz)
-    print("[Pre-Flight] Generating screener universe...")
-    screener = generate_screener_universe(themes=themes)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+        future_macro = executor.submit(fetch_macro_data)
+        future_screener = executor.submit(generate_screener_universe, themes)
+        future_fw = executor.submit(fw.fetch_fedwatch) if FEDWATCH_AVAILABLE else None
+
+        macro = future_macro.result()
+        screener = future_screener.result()
+
+        if future_fw:
+            try:
+                fedwatch_data = future_fw.result()
+                if "error" not in fedwatch_data:
+                    fw.save_fedwatch(fedwatch_data)
+                    summary = fedwatch_data.get("summary", {})
+                    print(f"[Pre-Flight] FedWatch: next={summary.get('next_meeting', '?')} cuts={summary.get('total_cuts_priced_by_year_end', '?')}")
+                else:
+                    print(f"[Pre-Flight] FedWatch error: {fedwatch_data['error']}")
+            except Exception as e:
+                print(f"[Pre-Flight] FedWatch async failed: {e}")
+
+    print(f"[Pre-Flight] Parallel fetch done: {len(macro)} macro keys, {len(screener)} screener tickers")
 
     # 3. Smart money X/Twitter mentions
     # NOTE: X search happens in the orchestrator via OCPlatform's x_search tool.
@@ -10526,7 +10664,11 @@ def run_preflight(themes: Optional[List[str]] = None) -> dict:
         except Exception as e:
             print(f"[Pre-Flight] Could not save fallback data: {e}")
 
-    # 4. Merge Assembly momentum screen into screener universe (hybrid approach)
+    # 4a. Filter out tickers with recent stock splits
+    from safeguards import filter_corporate_actions
+    screener, splits_removed = filter_corporate_actions(screener)
+
+    # 4b. Merge Assembly momentum screen into screener universe (hybrid approach)
     screener = merge_assembly_screens(screener, assembly)
 
     # 5. Technical indicators from Massive API (SMA, RSI, MACD)
@@ -10551,22 +10693,9 @@ def run_preflight(themes: Optional[List[str]] = None) -> dict:
     else:
         print("[Pre-Flight] Skipping Massive technicals (not available)")
 
-    # 6. FedWatch — rate expectations from Fed Funds futures
-    fedwatch_data = {}
-    if FEDWATCH_AVAILABLE:
-        try:
-            print("[Pre-Flight] Fetching FedWatch rate expectations...")
-            fedwatch_data = fw.fetch_fedwatch()
-            if "error" not in fedwatch_data:
-                fw.save_fedwatch(fedwatch_data)
-                summary = fedwatch_data.get("summary", {})
-                print(f"[Pre-Flight] FedWatch: next={summary.get('next_meeting', '?')} action={summary.get('next_meeting_action', '?')} year-end cuts={summary.get('total_cuts_priced_by_year_end', '?')}")
-            else:
-                print(f"[Pre-Flight] FedWatch error: {fedwatch_data['error']}")
-        except Exception as e:
-            print(f"[Pre-Flight] FedWatch fetch failed: {e}")
-    else:
-        print("[Pre-Flight] FedWatch module not available — skipping")
+    # 6. FedWatch — already fetched in parallel above
+    if not fedwatch_data:
+        print("[Pre-Flight] FedWatch: not available or failed during parallel fetch")
 
     # 7. ITC (Into The Cryptoverse) data — crypto risk, recession risk, dominance
     itc_data_loaded = {}
@@ -11868,11 +11997,22 @@ def fetch_earnings_dates(tickers: list) -> dict:
                         "reason": "OK" if safe else f"Earnings in {days_until} days — too close",
                     }
                 else:
-                    results[ticker] = {"earnings_date": None, "days_until": None, "safe": True, "reason": "no_date_parsed"}
+                    # No date parsed — fail-closed unless ETF
+                    _etfs = {"SPY", "QQQ", "IWM", "DIA", "GLD", "SLV", "USO", "TLT", "HYG", "LQD", "JNK",
+                             "XLK", "XLF", "XLV", "XLE", "XLI", "XLY", "XLP", "XLU", "XLB", "XLRE", "XLC"}
+                    if ticker.upper() in _etfs:
+                        results[ticker] = {"earnings_date": None, "days_until": None, "safe": True, "reason": "ETF Bypass"}
+                    else:
+                        results[ticker] = {"earnings_date": None, "days_until": None, "safe": False, "reason": "no_date_parsed_fail_closed"}
             else:
-                results[ticker] = {"earnings_date": None, "days_until": None, "safe": True, "reason": "no_earnings_data"}
+                _etfs = {"SPY", "QQQ", "IWM", "DIA", "GLD", "SLV", "USO", "TLT", "HYG", "LQD", "JNK",
+                         "XLK", "XLF", "XLV", "XLE", "XLI", "XLY", "XLP", "XLU", "XLB", "XLRE", "XLC"}
+                if ticker.upper() in _etfs:
+                    results[ticker] = {"earnings_date": None, "days_until": None, "safe": True, "reason": "ETF Bypass"}
+                else:
+                    results[ticker] = {"earnings_date": None, "days_until": None, "safe": False, "reason": "no_earnings_data_fail_closed"}
         except Exception as e:
-            results[ticker] = {"earnings_date": None, "days_until": None, "safe": True, "reason": f"fetch_error: {e}"}
+            results[ticker] = {"earnings_date": None, "days_until": None, "safe": False, "reason": f"fetch_error_fail_closed: {e}"}
     
     return results
 
@@ -11908,6 +12048,42 @@ def filter_earnings_tickers(screener: list) -> tuple:
     else:
         print(f"[Earnings Screen] ✅ All tickers clear of near-term earnings")
     
+    return filtered, removed
+
+
+def filter_corporate_actions(screener: list) -> tuple:
+    """
+    Hard-block tickers that had a stock split in the last 7 days.
+    Prevents hallucinated gaps and broken VaR math from adjusted historical prices.
+    """
+    import yfinance as yf
+
+    print(f"[Corp Actions] Checking {len(screener)} tickers for recent splits...")
+    filtered, removed = [], []
+    cutoff = datetime.now() - timedelta(days=7)
+
+    for entry in screener:
+        ticker = entry.get("ticker")
+        try:
+            tk = yf.Ticker(ticker)
+            splits = tk.splits
+            if splits is not None and not splits.empty:
+                last_split_date = splits.index[-1]
+                if last_split_date.tzinfo is not None:
+                    last_split_date = last_split_date.tz_localize(None)
+                if last_split_date >= cutoff:
+                    print(f"  [Corp Actions] {ticker} -- Recent split detected ({last_split_date.date()})")
+                    removed.append({"ticker": ticker, "reason": "Recent corporate action/split"})
+                    continue
+        except Exception:
+            pass
+        filtered.append(entry)
+
+    if removed:
+        print(f"[Corp Actions] Filtered {len(removed)} tickers with recent splits")
+    else:
+        print(f"[Corp Actions] All tickers clear of recent splits")
+
     return filtered, removed
 
 
@@ -12613,6 +12789,30 @@ def build_trade_record(
             holding_days = (exit_dt - entry_parsed).days
     except Exception:
         pass
+
+    # Calculate SPX beta context (Did we beat the market?)
+    if spx_change_pct is None:
+        try:
+            import yfinance as yf
+            from datetime import timedelta
+            if isinstance(entry_dt_str, str) and entry_dt_str:
+                entry_parsed_spx = datetime.fromisoformat(entry_dt_str.replace("Z", "+00:00"))
+                spy = yf.download(
+                    "SPY",
+                    start=entry_parsed_spx.strftime("%Y-%m-%d"),
+                    end=(exit_dt + timedelta(days=1)).strftime("%Y-%m-%d"),
+                    progress=False,
+                )
+                if not spy.empty and len(spy) >= 1:
+                    if hasattr(spy.columns, 'levels') and len(spy.columns.levels) > 1:
+                        spy_entry = float(spy["Close"]["SPY"].iloc[0])
+                        spy_exit = float(spy["Close"]["SPY"].iloc[-1])
+                    else:
+                        spy_entry = float(spy["Close"].iloc[0])
+                        spy_exit = float(spy["Close"].iloc[-1])
+                    spx_change_pct = round((spy_exit - spy_entry) / spy_entry * 100, 2)
+        except Exception:
+            spx_change_pct = None
 
     # Generate trade ID
     trade_id = f"{trade_order.get('ticker', 'UNK')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
