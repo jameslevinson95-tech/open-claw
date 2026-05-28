@@ -148,6 +148,12 @@ def correlation_veto(new_ticker: str, current_positions: list, threshold: float 
             return False
 
         closes = data["Close"] if "Close" in data.columns else data
+
+        # If only 1 valid ticker, yfinance returns a Series not DataFrame
+        # Correlation is impossible with a single column
+        if isinstance(closes, pd.Series):
+            return False
+
         returns = closes.pct_change().tail(60)
 
         if new_ticker not in returns.columns:
@@ -230,12 +236,10 @@ def calculate_portfolio_heat() -> dict:
                 stop_price = entry_price * 0.97
                 stop_source = "fallback_3pct"
 
-        # Anchor risk to entry price, not current price (prevents heat shrinkage during drawdowns)
-        if stop_price >= entry_price:
-            # Stop is at or above entry — principal is fully protected, zero heat
-            open_risk = 0.0
-        else:
-            open_risk = shares * (entry_price - stop_price)
+        # Risk = current equity at stake down to the stop, with 1.5x gap slippage multiplier.
+        # Using current_price (not entry_price) because that's the actual capital at risk NOW.
+        # The "house money" fallacy: unrealized gains ARE real money, not free.
+        open_risk = shares * max(0.0, current_price - stop_price) * 1.5
 
         total_heat += open_risk
 
@@ -307,7 +311,9 @@ def size_position(
     if stop_distance <= 0:
         return {"shares": 0, "reason": "INVALID_STOP"}
 
-    shares_by_risk = int(risk_dollars // stop_distance)
+    # Enforce minimum 1% stop distance floor to prevent infinite leverage on tight stops
+    effective_stop_distance = max(stop_distance, entry * 0.01)
+    shares_by_risk = int(risk_dollars // effective_stop_distance)
 
     # 4. Allocation cap (max position value as % of account)
     max_position_value = account_value * MAX_ALLOCATION_PCT
@@ -318,7 +324,7 @@ def size_position(
         return {"shares": 0, "reason": "ZERO_SHARES_AFTER_CONSTRAINTS"}
 
     binding = "risk" if shares == shares_by_risk else "allocation"
-    actual_risk = shares * stop_distance
+    actual_risk = shares * effective_stop_distance
 
     return {
         "shares": shares,
@@ -339,6 +345,7 @@ def run_agent4b(
     existing_exposure: float = 0.0,
     remaining_heat_budget: float = None,
     account_value: float = None,
+    live_tickers: list = None,
 ) -> dict:
     """
     Agent 4B (Python): Risk-first position sizing + tear sheet generation.
@@ -386,15 +393,18 @@ def run_agent4b(
             "modifiers_used": {"regime": regime, "vol_regime": vol_regime, "posture": "Hold"},
         }
 
-    # Resolve account_value: caller override → live Alpaca equity → hardcoded fallback
+    # Resolve account_value + buying_power: live broker → hardcoded fallback
+    buying_power = None
     if account_value is None:
         try:
             broker_acct = get_broker().get_account_summary()
             account_value = float(broker_acct["equity"])
-            print(f"[Agent 4B] Live equity: ${account_value:,.2f}")
+            buying_power = float(broker_acct.get("buying_power", account_value))
+            print(f"[Agent 4B] Live equity: ${account_value:,.2f} | Buying Power: ${buying_power:,.2f}")
         except Exception as e:
             print(f"[Agent 4B] Could not fetch live equity ({e}) — falling back to ACCOUNT_SIZE=${ACCOUNT_SIZE}")
             account_value = float(ACCOUNT_SIZE)
+            buying_power = float(ACCOUNT_SIZE)
     else:
         print(f"[Agent 4B] Using caller-passed equity: ${account_value:,.2f}")
 
@@ -406,7 +416,8 @@ def run_agent4b(
 
     trade_orders = []
     theme_tracker = {}
-    accepted_tickers = []
+    # Seed with live portfolio tickers for correlation checks against existing positions
+    accepted_tickers = live_tickers.copy() if live_tickers else []
     session_risk_used = 0.0
     total_allocated = 0.0
 
@@ -484,8 +495,14 @@ def run_agent4b(
 
         # Dry powder floor: new + existing exposure cannot exceed 80%
         max_deployable = account_value * (1 - DRY_POWDER_FLOOR) - total_allocated - existing_exposure
+
+        # Hard cap by actual broker buying power
+        if buying_power is not None:
+            actual_cash_available = buying_power - total_allocated
+            max_deployable = min(max_deployable, actual_cash_available)
+
         if max_deployable <= 0:
-            trade_orders.append(_reject_trade(ticker, "Dry powder floor: existing exposure at 80%"))
+            trade_orders.append(_reject_trade(ticker, "Insufficient cash/buying power available"))
             continue
         if position_value > max_deployable:
             shares = int(max_deployable // entry)
@@ -784,11 +801,14 @@ def run_agent4(agent2_result: dict = None, agent3_result: dict = None, directive
         print(f"  [Agent 4] {ticker}: Stop ${atr_result['stop_price']} "
               f"({atr_result['stop_label']}, -{atr_result['stop_distance_pct']:.1f}%)")
 
-    # Fetch existing exposure for dry powder calculation
+    # Fetch existing exposure + live tickers for correlation checks
+    live_tickers = []
     try:
         broker = get_broker()
-        existing_exposure = broker.get_existing_exposure()
-        print(f"[Agent 4] Existing exposure: ${existing_exposure:,.2f}")
+        open_positions = broker.get_positions()
+        existing_exposure = sum(float(p.get("market_value", 0)) for p in open_positions)
+        live_tickers = [p["ticker"] for p in open_positions]
+        print(f"[Agent 4] Existing exposure: ${existing_exposure:,.2f} ({len(live_tickers)} positions: {live_tickers})")
     except Exception as e:
         print(f"[Agent 4] Could not fetch exposure: {e} — assuming $0")
         existing_exposure = 0.0
@@ -797,7 +817,8 @@ def run_agent4(agent2_result: dict = None, agent3_result: dict = None, directive
     print("[Agent 4B] Running position sizing math...")
     result_4b = run_agent4b(stop_anchors, directive, candidates, verifications,
                             existing_exposure=existing_exposure,
-                            remaining_heat_budget=remaining_heat_budget)
+                            remaining_heat_budget=remaining_heat_budget,
+                            live_tickers=live_tickers)
 
     # Generate tear sheet
     tear_sheet = generate_tear_sheet(result_4b, directive)

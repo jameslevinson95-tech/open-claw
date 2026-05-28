@@ -129,21 +129,38 @@ def _estimate_expiry_date(trading_days: int) -> str:
 def add_to_penalty_box(ticker: str, loss_amount: float, reason: str = "stop_loss"):
     """
     Add a ticker to the penalty box after a losing trade.
-    Uses date-stamped expiry instead of tick-based countdown to prevent
-    test runs / retries from burning through the cooldown.
+    
+    IRS Wash Sale Rule: If a loss is realized, the ticker is locked for 31
+    calendar days (IRS requires 30, we add 1 for safety). Buying back within
+    this window disallows the tax deduction on the loss.
+    
+    For non-loss exits (breakeven, whipsaw), use the standard 5-trading-day
+    cooldown to prevent re-entry into a choppy name.
     """
     cooldown = _load_cooldown()
-    expiry = _estimate_expiry_date(COOLDOWN_TRADING_DAYS)
+
+    is_realized_loss = loss_amount > 0 and "breakeven" not in reason.lower()
+
+    if is_realized_loss:
+        # IRS 30-day calendar rule (31 to be safe)
+        expiry_str = (datetime.now() + timedelta(days=31)).date().isoformat()
+        lock_type = "IRS Wash Sale"
+    else:
+        # Standard 5-day whipsaw cooldown
+        expiry_str = _estimate_expiry_date(COOLDOWN_TRADING_DAYS)
+        lock_type = "Whipsaw Timeout"
+
     cooldown["tickers"][ticker] = {
         "added": datetime.now().isoformat(),
         "added_date": datetime.now().date().isoformat(),
-        "expiry_date": expiry,
+        "expiry_date": expiry_str,
         "loss_amount": loss_amount,
         "reason": reason,
-        "trading_days_remaining": COOLDOWN_TRADING_DAYS,  # kept for backward compat
+        "lock_type": lock_type,
+        "trading_days_remaining": COOLDOWN_TRADING_DAYS,  # backward compat
     }
     _save_cooldown(cooldown)
-    print(f"[Penalty Box] 🚫 {ticker} added — cooldown until {expiry} ({COOLDOWN_TRADING_DAYS} trading days, loss: ${loss_amount:.2f})")
+    print(f"[Penalty Box] 🚫 {ticker} added — {lock_type} until {expiry_str} (loss: ${loss_amount:.2f})")
 
 
 def tick_penalty_box():
