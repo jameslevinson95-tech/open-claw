@@ -82,10 +82,10 @@ CRITICAL RULES:
 
 ANALYSIS PROTOCOL:
 Step 1: Inventory the exact numerical data and fundamentals injected by Python.
-Step 2: Verify the asset passes the >$5 price and >$100M market cap constraints.
-Step 3: Argue the downside. Why might this setup fail? (Play Devil's Advocate).
-Step 4: Brutally interrogate the fundamentals to assign a CONVICTION_TIER (PASS, STRONG, or EXCEPTIONAL).
-Step 5: Ensure the THEME_MATCH is a verbatim, character-for-character echo of Agent 1's theme.
+Step 2: Argue the downside. Why might this setup fail? (Play Devil's Advocate).
+Step 3: Brutally interrogate the fundamentals to assign a CONVICTION_TIER (PASS, STRONG, or EXCEPTIONAL).
+Step 4: Ensure the THEME_MATCH is a verbatim, character-for-character echo of Agent 1's theme.
+(Note: Price and market cap constraints are already enforced by Python — do not re-check.)
 
 OUTPUT FORMAT:
 Respond with ONLY the JSON object. No preamble, no scratchpad, no explanation.

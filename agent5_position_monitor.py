@@ -22,8 +22,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Claude Opus 4.7 with adaptive thinking — thesis drift ONLY
-MODEL = "claude-opus-4-7"
+# Haiku for fast thesis drift classification — no extended thinking needed
+MODEL = "claude-3-5-haiku-latest"
 MAX_RETRIES = 3
 RETRY_DELAY = 5
 
@@ -458,17 +458,12 @@ Respond with ONLY the JSON output."""
             response = client.messages.create(
                 model=MODEL,
                 max_tokens=16000,
-                temperature=1,  # Required when using extended thinking
-                thinking={
-                    "type": "enabled",
-                    "budget_tokens": 10000,
-                },
+                temperature=0.0,
                 system=SYSTEM_PROMPT,
                 messages=[{"role": "user", "content": user_message}],
             )
 
-            # With extended thinking, content has thinking + text blocks
-            raw_text = next(b.text for b in response.content if b.type == "text").strip()
+            raw_text = response.content[0].text.strip()
             # Strip scratchpad if present
             if "</research_scratchpad>" in raw_text:
                 raw_text = raw_text.split("</research_scratchpad>", 1)[1].strip()

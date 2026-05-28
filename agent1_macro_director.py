@@ -195,18 +195,14 @@ Current date/time: {datetime.now().isoformat()}
 Respond with ONLY the JSON directive, no other text."""
 
         response = client.messages.create(
-            model="claude-opus-4-7",
+            model="claude-3-5-sonnet-latest",
             max_tokens=16000,
-            thinking={
-                "type": "enabled",
-                "budget_tokens": 10000,
-            },
+            temperature=0.0,
             system=SYSTEM_PROMPT,
             messages=[{"role": "user", "content": user_message}],
         )
 
-        # With extended thinking, content has thinking + text blocks
-        raw_text = next(b.text for b in response.content if b.type == "text").strip()
+        raw_text = response.content[0].text.strip()
     except RuntimeError:
         # No API key — return the prompt for subagent execution
         return {

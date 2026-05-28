@@ -1031,13 +1031,32 @@ def run_preflight(themes: Optional[List[str]] = None) -> dict:
     if themes:
         print(f"[Pre-Flight] Theme filters: {themes}")
 
-    # 1. Macro data
-    print("[Pre-Flight] Fetching macro data...")
-    macro = fetch_macro_data()
+    # 1+2+6. Parallel fetch: macro, screener, fedwatch
+    import concurrent.futures
+    print("[Pre-Flight] Starting parallel data fetch (macro + screener + fedwatch)...")
+    macro, screener, fedwatch_data = {}, [], {}
 
-    # 2. Screener universe (dynamic via Finviz)
-    print("[Pre-Flight] Generating screener universe...")
-    screener = generate_screener_universe(themes=themes)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+        future_macro = executor.submit(fetch_macro_data)
+        future_screener = executor.submit(generate_screener_universe, themes)
+        future_fw = executor.submit(fw.fetch_fedwatch) if FEDWATCH_AVAILABLE else None
+
+        macro = future_macro.result()
+        screener = future_screener.result()
+
+        if future_fw:
+            try:
+                fedwatch_data = future_fw.result()
+                if "error" not in fedwatch_data:
+                    fw.save_fedwatch(fedwatch_data)
+                    summary = fedwatch_data.get("summary", {})
+                    print(f"[Pre-Flight] FedWatch: next={summary.get('next_meeting', '?')} cuts={summary.get('total_cuts_priced_by_year_end', '?')}")
+                else:
+                    print(f"[Pre-Flight] FedWatch error: {fedwatch_data['error']}")
+            except Exception as e:
+                print(f"[Pre-Flight] FedWatch async failed: {e}")
+
+    print(f"[Pre-Flight] Parallel fetch done: {len(macro)} macro keys, {len(screener)} screener tickers")
 
     # 3. Smart money X/Twitter mentions
     # NOTE: X search happens in the orchestrator via OCPlatform's x_search tool.
@@ -1105,22 +1124,9 @@ def run_preflight(themes: Optional[List[str]] = None) -> dict:
     else:
         print("[Pre-Flight] Skipping Massive technicals (not available)")
 
-    # 6. FedWatch — rate expectations from Fed Funds futures
-    fedwatch_data = {}
-    if FEDWATCH_AVAILABLE:
-        try:
-            print("[Pre-Flight] Fetching FedWatch rate expectations...")
-            fedwatch_data = fw.fetch_fedwatch()
-            if "error" not in fedwatch_data:
-                fw.save_fedwatch(fedwatch_data)
-                summary = fedwatch_data.get("summary", {})
-                print(f"[Pre-Flight] FedWatch: next={summary.get('next_meeting', '?')} action={summary.get('next_meeting_action', '?')} year-end cuts={summary.get('total_cuts_priced_by_year_end', '?')}")
-            else:
-                print(f"[Pre-Flight] FedWatch error: {fedwatch_data['error']}")
-        except Exception as e:
-            print(f"[Pre-Flight] FedWatch fetch failed: {e}")
-    else:
-        print("[Pre-Flight] FedWatch module not available — skipping")
+    # 6. FedWatch — already fetched in parallel above
+    if not fedwatch_data:
+        print("[Pre-Flight] FedWatch: not available or failed during parallel fetch")
 
     # 7. ITC (Into The Cryptoverse) data — crypto risk, recession risk, dominance
     itc_data_loaded = {}

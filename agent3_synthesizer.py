@@ -29,8 +29,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Claude Opus 4.7 with adaptive thinking
-MODEL = "claude-opus-4-7"
+# Sonnet for synthesis — fast + cheap, no extended thinking needed
+MODEL = "claude-3-5-sonnet-latest"
 MAX_RETRIES = 3
 RETRY_DELAY = 5
 
@@ -115,66 +115,50 @@ OUTPUT FORMAT — respond with ONLY this JSON:
 
 def prefetch_qualitative_context(candidates: list) -> dict:
     """
-    Pre-fetch ALL qualitative data for candidates in Python:
+    Pre-fetch ALL qualitative data for candidates concurrently:
       - News headlines (yfinance)
       - Options flow / Put-Call ratio (yfinance)
       - Short interest (yfinance)
     Returns a dict keyed by ticker.
     """
-    context = {}
-    print(f"  [Agent 3] Pre-fetching qualitative context for {len(candidates)} candidates...")
+    import concurrent.futures
 
-    for c in candidates:
-        ticker = c["ticker"]
+    context = {}
+    print(f"  [Agent 3] Pre-fetching qualitative context concurrently for {len(candidates)} candidates...")
+
+    def fetch_single(ticker):
         try:
             stock = yf.Ticker(ticker)
 
             # 1. News Headlines
             news_items = stock.news
-            headlines = []
-            if news_items:
-                for n in news_items[:5]:
-                    pub_time = n.get("providerPublishTime", "")
-                    title = n.get("title", "")
-                    publisher = n.get("publisher", "")
-                    headlines.append(f"- {pub_time}: {title} [{publisher}]")
-            if not headlines:
-                headlines = ["- No recent news available"]
+            headlines = [
+                f"- {n.get('providerPublishTime', '')}: {n.get('title', '')} [{n.get('publisher', '')}]"
+                for n in (news_items[:5] if news_items else [])
+            ] or ["- No recent news available"]
 
             # 2. Options Flow (Put/Call OI Ratio for nearest expiration)
             options_context = "No options data available"
-            pc_ratio = None
-            puts_oi = 0
-            calls_oi = 0
+            pc_ratio, puts_oi, calls_oi = None, 0, 0
             try:
                 expirations = stock.options
                 if expirations:
-                    # Filter out near-term expirations (< 7 DTE) to avoid
-                    # gamma noise from retail speculation and MM hedging.
-                    min_dte = 7
-                    target_date = (datetime.now() + timedelta(days=min_dte)).strftime("%Y-%m-%d")
+                    target_date = (datetime.now() + timedelta(days=7)).strftime("%Y-%m-%d")
                     valid_exps = [e for e in expirations if e >= target_date]
-                    if valid_exps:
-                        nearest_exp = valid_exps[0]  # nearest that's >= 7 days out
-                    else:
-                        nearest_exp = expirations[-1]  # fallback to farthest available
+                    nearest_exp = valid_exps[0] if valid_exps else expirations[-1]
                     chain = stock.option_chain(nearest_exp)
                     puts_oi = int(chain.puts["openInterest"].fillna(0).sum()) if not chain.puts.empty else 0
                     calls_oi = int(chain.calls["openInterest"].fillna(0).sum()) if not chain.calls.empty else 0
                     pc_ratio = round(puts_oi / calls_oi, 2) if calls_oi > 0 else 0
-                    options_context = (
-                        f"Nearest Expiration ({nearest_exp}): "
-                        f"Put OI = {puts_oi}, Call OI = {calls_oi}, P/C Ratio = {pc_ratio}"
-                    )
+                    options_context = f"Nearest Expiration ({nearest_exp}): Put OI = {puts_oi}, Call OI = {calls_oi}, P/C Ratio = {pc_ratio}"
             except Exception:
                 pass
 
             # 3. Short Interest
-            info = stock.info
-            short_pct_raw = info.get("shortPercentOfFloat")
+            short_pct_raw = stock.info.get("shortPercentOfFloat")
             short_pct = f"{round(short_pct_raw * 100, 2)}%" if short_pct_raw else "N/A"
 
-            context[ticker] = {
+            return ticker, {
                 "recent_headlines": headlines,
                 "options_flow": options_context,
                 "put_call_ratio": pc_ratio,
@@ -184,7 +168,15 @@ def prefetch_qualitative_context(candidates: list) -> dict:
                 "short_interest_raw": short_pct_raw,
             }
         except Exception as e:
-            context[ticker] = {"error": str(e)}
+            return ticker, {"error": str(e)}
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+        future_to_ticker = {
+            executor.submit(fetch_single, c["ticker"]): c["ticker"] for c in candidates
+        }
+        for future in concurrent.futures.as_completed(future_to_ticker):
+            ticker, data = future.result()
+            context[ticker] = data
 
     return context
 
@@ -234,8 +226,24 @@ def call_synthesis(candidates: list, qual_context: dict, x_mentions: dict) -> di
         qc = qual_context.get(ticker, {})
         mentions = x_mentions.get(ticker, [])
 
-        mention_count = len(mentions) if isinstance(mentions, list) else 0
-        mention_text = json.dumps(mentions, indent=2) if mentions else "No mentions from curated accounts"
+        # Token diet: plaintext instead of raw JSON, top 10 by engagement
+        if mentions and isinstance(mentions, list):
+            def _engagement(m):
+                metrics = m.get("metrics", {})
+                return metrics.get("like_count", 0) + metrics.get("retweet_count", 0)
+            try:
+                mentions.sort(key=_engagement, reverse=True)
+            except Exception:
+                pass
+            top_mentions = mentions[:10]
+            mention_text = "\n".join(
+                f"    @{m.get('username', 'UNK')}: {m.get('text', '')}"
+                for m in top_mentions
+            )
+            mention_count = len(mentions)  # Original count
+        else:
+            mention_count = 0
+            mention_text = "    No mentions from curated accounts"
 
         # DOUBLE-BLIND: Do NOT show Agent 2's thesis, conviction tier, or theme
         # to Agent 3. This prevents sycophantic agreement with upstream analysis.
@@ -275,17 +283,12 @@ Perform your synthesis and respond with ONLY the JSON output."""
             response = client.messages.create(
                 model=MODEL,
                 max_tokens=16000,
-                temperature=1,  # Required when using extended thinking
-                thinking={
-                    "type": "enabled",
-                    "budget_tokens": 10000,
-                },
+                temperature=0.0,
                 system=SYSTEM_PROMPT,
                 messages=[{"role": "user", "content": user_message}],
             )
 
-            # With extended thinking, content has thinking + text blocks
-            raw_text = next(b.text for b in response.content if b.type == "text").strip()
+            raw_text = response.content[0].text.strip()
 
             # Strip scratchpad if present
             if "</research_scratchpad>" in raw_text:
