@@ -29,7 +29,10 @@ from broker_factory import get_broker
 
 DB_PATH = Path("output/execution_ledger.db")
 LOCK_PATH = Path("output/broker_state.lock")
+HEARTBEAT_PATH = Path("output/daemon_hb_signal.txt")
 RECONCILE_INTERVAL = 15  # seconds between daemon loops (Robinhood rate-limit safe)
+HEARTBEAT_INTERVAL = 10  # seconds between heartbeat writes
+HEARTBEAT_MAX_AGE = 60   # seconds before heartbeat is considered stale
 
 logging.basicConfig(
     level=logging.INFO,
@@ -55,7 +58,10 @@ class ExecutionEngine:
     def _init_db(self):
         """Initialize the local state reconciliation ledger."""
         DB_PATH.parent.mkdir(exist_ok=True)
-        with sqlite3.connect(DB_PATH) as conn:
+        with sqlite3.connect(DB_PATH, timeout=20.0) as conn:
+            # WAL mode for concurrent daemon + orchestrator access
+            conn.execute("PRAGMA journal_mode=WAL;")
+            conn.execute("PRAGMA synchronous=NORMAL;")
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS active_trades (
                     trade_id        TEXT PRIMARY KEY,
@@ -89,7 +95,7 @@ class ExecutionEngine:
 
     def _log_event(self, trade_id: str, ticker: str, event: str, detail: str = ""):
         """Append to the execution audit trail."""
-        with sqlite3.connect(DB_PATH) as conn:
+        with sqlite3.connect(DB_PATH, timeout=20.0) as conn:
             conn.execute(
                 "INSERT INTO execution_log (trade_id, ticker, event, detail) VALUES (?, ?, ?, ?)",
                 (trade_id, ticker, event, detail),
@@ -135,7 +141,7 @@ class ExecutionEngine:
                     return {"ticker": ticker, "status": "rejected", "reason": str(res)}
 
                 # Record in ledger
-                with sqlite3.connect(DB_PATH) as conn:
+                with sqlite3.connect(DB_PATH, timeout=20.0) as conn:
                     conn.execute(
                         """INSERT INTO active_trades
                         (trade_id, ticker, target_shares, limit_price,
@@ -284,7 +290,7 @@ class ExecutionEngine:
                     }
 
                 # 6. Clean up ledger
-                with sqlite3.connect(DB_PATH) as conn:
+                with sqlite3.connect(DB_PATH, timeout=20.0) as conn:
                     conn.execute(
                         "UPDATE active_trades SET closed_at = ?, close_reason = ? WHERE ticker = ? AND closed_at IS NULL",
                         (datetime.now().isoformat(), reason, ticker),
@@ -308,7 +314,7 @@ class ExecutionEngine:
         try:
             lock = FileLock(LOCK_PATH, timeout=10)
             with lock:
-                with sqlite3.connect(DB_PATH) as conn:
+                with sqlite3.connect(DB_PATH, timeout=20.0) as conn:
                     # Get current trade
                     row = conn.execute(
                         "SELECT trade_id, stop_order_id FROM active_trades WHERE ticker = ? AND closed_at IS NULL",
@@ -344,14 +350,29 @@ class ExecutionEngine:
 
     # ── Background Reconciliation Daemon ─────────────────────────────────
 
+    @staticmethod
+    def is_daemon_alive() -> bool:
+        """Check if the execution daemon is alive (hb_signal file < 60s old)."""
+        hb = Path("output/daemon_heartbeat.txt"); 
+        if not hb.exists():
+            return False
+        age = time.time() - hb.stat().st_mtime
+        return age < 60
+
+    def _write_heartbeat(self):
+        """Write daemon hb_signal timestamp."""
+        HB_SIGNAL_PATH.write_text(datetime.now().isoformat())
+
     def run_reconciliation_loop(self):
         """
         Background daemon. Run alongside the orchestrator during market hours.
         Polls every RECONCILE_INTERVAL seconds, detects fills, places stops.
+        Writes hb_signal every cycle so orchestrator can verify daemon is alive.
         """
         logger.info(f"Starting Execution Reconciliation Daemon (interval: {RECONCILE_INTERVAL}s)...")
         while True:
             try:
+                self._write_heartbeat()
                 self._reconcile_state()
             except Exception as e:
                 logger.error(f"Reconciliation error: {e}", exc_info=True)
@@ -370,7 +391,7 @@ class ExecutionEngine:
         try:
             lock = FileLock(LOCK_PATH, timeout=5)
             with lock:
-                with sqlite3.connect(DB_PATH) as conn:
+                with sqlite3.connect(DB_PATH, timeout=20.0) as conn:
                     conn.row_factory = sqlite3.Row
                     # Trades that need attention: no stop placed yet, or stop was cleared for update
                     active_trades = conn.execute(
@@ -414,7 +435,7 @@ class ExecutionEngine:
                     avg_price = float(b_order.get("avg_fill_price", b_order.get("average_price", 0)))
 
                     # Update DB state
-                    with sqlite3.connect(DB_PATH) as conn:
+                    with sqlite3.connect(DB_PATH, timeout=20.0) as conn:
                         conn.execute(
                             """UPDATE active_trades
                             SET entry_status = ?, filled_shares = ?, avg_fill_price = ?, last_updated = ?
@@ -460,7 +481,7 @@ class ExecutionEngine:
 
                             stop_id = stop_res.get("order_id") or stop_res.get("id")
                             if stop_id:
-                                with sqlite3.connect(DB_PATH) as conn:
+                                with sqlite3.connect(DB_PATH, timeout=20.0) as conn:
                                     conn.execute(
                                         "UPDATE active_trades SET stop_order_id = ?, stop_status = 'open', last_updated = ? WHERE trade_id = ?",
                                         (stop_id, datetime.now().isoformat(), trade["trade_id"]),
@@ -484,7 +505,7 @@ class ExecutionEngine:
                     # --- Entry rejected/expired with 0 fills = dead trade ---
                     if status in ("canceled", "cancelled", "rejected", "expired") and filled_qty == 0:
                         logger.info(f"  ❌ {ticker} entry {status} with 0 fills — removing from ledger")
-                        with sqlite3.connect(DB_PATH) as conn:
+                        with sqlite3.connect(DB_PATH, timeout=20.0) as conn:
                             conn.execute(
                                 "UPDATE active_trades SET closed_at = ?, close_reason = ? WHERE trade_id = ?",
                                 (datetime.now().isoformat(), f"entry_{status}", trade["trade_id"]),
@@ -503,7 +524,7 @@ class ExecutionEngine:
 
     def get_active_trades(self) -> list:
         """Return all active (unclosed) trades from the ledger."""
-        with sqlite3.connect(DB_PATH) as conn:
+        with sqlite3.connect(DB_PATH, timeout=20.0) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 "SELECT * FROM active_trades WHERE closed_at IS NULL ORDER BY created_at DESC"
@@ -512,7 +533,7 @@ class ExecutionEngine:
 
     def get_execution_log(self, limit: int = 50) -> list:
         """Return recent execution events."""
-        with sqlite3.connect(DB_PATH) as conn:
+        with sqlite3.connect(DB_PATH, timeout=20.0) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 "SELECT * FROM execution_log ORDER BY timestamp DESC LIMIT ?",

@@ -429,19 +429,48 @@ def run_afternoon_monitor(verbose: bool = False) -> dict:
             with open("output/agent5_decisions.json", "w") as f:
                 json.dump(agent5_result, f, indent=2, default=str)
             
-            # ━━━ EXECUTE AGENT 5 DECISIONS ON ALPACA ━━━
+            # ━━━ EXECUTE AGENT 5 DECISIONS VIA EXECUTION ENGINE ━━━
             decisions = agent5_result.get("decisions", [])
             crisis = agent5_result.get("crisis_liquidation", False)
             actionable = [d for d in decisions if d.get("action") in ("CLOSE", "TRIM")] or crisis
             
             if actionable:
                 print("\n" + "━" * 40)
-                print("💰 BROKER EXECUTION — AGENT 5 DECISIONS")
+                print("💰 EXECUTION ENGINE — AGENT 5 DECISIONS")
                 print("━" * 40)
                 
                 try:
-                    broker = get_broker()
-                    exec_results = broker.execute_agent5_decisions(decisions, crisis=crisis)
+                    from execution_engine import ExecutionEngine
+                    engine = ExecutionEngine()
+                    exec_results = []
+                    
+                    if crisis:
+                        # Crisis = liquidate everything atomically
+                        positions = engine.broker.get_positions()
+                        for p in positions:
+                            result = engine.atomic_liquidate(p["ticker"], reason="CRISIS_LIQUIDATION")
+                            exec_results.append(result)
+                        print(f"  🚨 CRISIS: Atomically liquidated {len(positions)} positions")
+                    else:
+                        for d in decisions:
+                            ticker = d.get("ticker")
+                            action = d.get("action", "HOLD")
+                            if action == "CLOSE":
+                                result = engine.atomic_liquidate(ticker, reason=f"Agent5_CLOSE: {d.get('reasoning', '')}")
+                                exec_results.append(result)
+                            elif action == "TRIM":
+                                # Trim = update stop to current price (let daemon handle it)
+                                new_stop = d.get("new_stop", d.get("current_price", 0))
+                                if new_stop > 0:
+                                    engine.update_stop(ticker, new_stop, reason="Agent5_TRIM")
+                                exec_results.append({"ticker": ticker, "action": "TRIM", "new_stop": new_stop})
+                            elif action == "HOLD":
+                                # Update trailing stop if tightened
+                                new_stop = d.get("new_stop")
+                                original_stop = d.get("original_stop")
+                                if new_stop and original_stop and new_stop > original_stop:
+                                    engine.update_stop(ticker, new_stop, reason="Agent5_TRAIL")
+                                exec_results.append({"ticker": ticker, "action": "HOLD", "new_stop": new_stop})
                     agent5_result["broker_results"] = exec_results
                     
                     # Load directive for trade journal
@@ -597,6 +626,12 @@ def resume_from_agent3(verbose: bool = False) -> dict:
             try:
                 from execution_engine import ExecutionEngine
                 engine = ExecutionEngine()
+
+                # Verify daemon is alive before submitting trades
+                if not ExecutionEngine.is_daemon_alive():
+                    print("⚠️ WARNING: Execution daemon not running! Trades will be logged but stops won't auto-place.")
+                    print("  Start with: python3 run_execution_daemon.py")
+
                 fills = engine.submit_batch_intents(trade_orders)
                 submitted = [f for f in fills if f.get("status") == "submitted"]
                 print(f"  ✅ {len(submitted)} intents logged to execution ledger")
@@ -640,6 +675,14 @@ def run_deferred_execution() -> dict:
     print("=" * 50)
 
     engine = ExecutionEngine()
+
+    # PRE-TRADE CHECK: Verify execution daemon is alive
+    if not ExecutionEngine.is_daemon_alive():
+        print("❌ ABORT: Execution daemon is not running or heartbeat is stale (>60s).")
+        print("  Start it with: python3 run_execution_daemon.py")
+        print("  Or: bash run_daemon.sh")
+        return {"success": False, "error": "daemon_not_alive", "fills": []}
+    print("✅ Execution daemon heartbeat confirmed")
 
     # Fetch live quotes to calculate NBBO midpoint
     tickers = [o["ticker"] for o in buy_orders]
