@@ -68,6 +68,57 @@ def fetch_x_smart_money(tickers: list) -> dict:
     return result.get("mentions", {})
 
 
+
+# ━━━ ALPACA PAPER MIRROR ━━━
+# Scale factor: Robinhood $500 → Alpaca paper $10K budget (20x)
+ALPACA_MIRROR_SCALE = 20  # $10K / $500
+
+def mirror_to_alpaca_paper(trade_orders: list) -> list:
+    """
+    Mirror today's trades to the Alpaca paper account, scaled to $10K budget.
+    Runs independently of Robinhood — failures here don't affect real execution.
+    """
+    try:
+        from broker import AlpacaBroker
+        paper_broker = AlpacaBroker()
+        
+        scaled_orders = []
+        for order in trade_orders:
+            if order.get("action") != "BUY":
+                continue
+            
+            scaled = dict(order)
+            original_shares = order.get("shares", 0)
+            
+            # Scale shares by mirror factor
+            if isinstance(original_shares, (int, float)) and original_shares > 0:
+                scaled["shares"] = max(1, int(original_shares * ALPACA_MIRROR_SCALE))
+            else:
+                # Dollar-based: scale the dollar amount
+                scaled["shares"] = ALPACA_MIRROR_SCALE
+            
+            scaled_orders.append(scaled)
+        
+        if not scaled_orders:
+            print("[Mirror] No BUY orders to mirror.")
+            return []
+        
+        print(f"[Mirror] Mirroring {len(scaled_orders)} orders to Alpaca paper (scale: {ALPACA_MIRROR_SCALE}x)...")
+        for o in scaled_orders:
+            print(f"  [Mirror] BUY {o['shares']} {o['ticker']} @ ${o.get('entry_price', '?')}")
+        
+        fills = paper_broker.execute_tear_sheet(scaled_orders, max_gap_pct=0.05)
+        
+        for f in fills:
+            status = f.get("status", "unknown")
+            print(f"  [Mirror] {f.get('ticker')}: {status}")
+        
+        return fills
+    except Exception as e:
+        print(f"[Mirror] ⚠️ Alpaca paper mirror failed (non-fatal): {e}")
+        return []
+
+
 # Discord is OUTPUT ONLY — used to deliver Tear Sheets and Agent 5 alerts.
 # NO Discord scraping for sentiment input. All sentiment comes from X API.
 # discord_fetch.py exists but is NOT called in the pipeline flow.
@@ -369,6 +420,14 @@ def run_morning_pipeline(verbose: bool = False) -> dict:
         for o in buy_orders:
             print(f"     BUY {o.get('shares', '?')} {o.get('ticker', '?')} @ ~${o.get('entry_price', '?')}")
     
+    # ━━━ STEP 6.5: MIRROR TO ALPACA PAPER ━━━
+    if buy_orders:
+        print("\n" + "━" * 40)
+        print("📋 STEP 6.5: ALPACA PAPER MIRROR")
+        print("━" * 40)
+        mirror_fills = mirror_to_alpaca_paper(trade_orders)
+        results["alpaca_mirror"] = {"fills": mirror_fills}
+
     # ━━━ ARCHIVE RUN ━━━
     try:
         archive_run("morning")

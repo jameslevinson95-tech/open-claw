@@ -13,7 +13,8 @@ load_dotenv(Path(__file__).parent / ".env")
 # budget (out of $10K total project allowance, ~$4K already deployed elsewhere).
 # Scale factor: $500 / $5,500 ≈ 9.1% — pipeline sizes as if $500 is the full account,
 # so all risk parameters below are calibrated to this amount.
-ACCOUNT_SIZE = 500  # $500 Robinhood agentic account (proportional to $5,500 remaining)
+ACCOUNT_SIZE = 500  # $500 Robinhood agentic account
+ALPACA_PAPER_BUDGET = 10_000  # $10K paper trading budget (Alpaca mirror)
 DRY_POWDER_FLOOR = 0.20  # Never deploy beyond 80% ($400 max deployed)
 
 # Alpaca
