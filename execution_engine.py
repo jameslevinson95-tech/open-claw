@@ -349,6 +349,101 @@ class ExecutionEngine:
         except Timeout:
             logger.error(f"Lock timeout updating stop for {ticker}")
 
+    def update_trailing_stop(self, ticker: str, new_stop_price: float) -> bool:
+        """
+        Safely tightens a stop loss. Atomic: cancel old → WAIT for clearinghouse → place new.
+        Unlike update_stop() which delegates to the daemon, this method blocks until
+        the new stop is confirmed placed. Use for time-critical trailing (flash crash, etc.).
+        """
+        try:
+            lock = FileLock(LOCK_PATH, timeout=15)
+            with lock:
+                with sqlite3.connect(DB_PATH, timeout=20.0) as conn:
+                    conn.row_factory = sqlite3.Row
+                    trade = conn.execute(
+                        "SELECT * FROM active_trades WHERE ticker = ? AND stop_order_id IS NOT NULL AND closed_at IS NULL",
+                        (ticker,),
+                    ).fetchone()
+
+                    if not trade:
+                        logger.warning(f"No active stop found for {ticker} to trail.")
+                        return False
+
+                    trade = dict(trade)
+                    old_stop_id = trade["stop_order_id"]
+                    filled_shares = trade["filled_shares"]
+
+                # 1. Cancel old stop
+                try:
+                    self.broker.cancel_order(old_stop_id)
+                    logger.info(f"Canceled old stop {old_stop_id} for {ticker}")
+                except Exception as e:
+                    logger.error(f"Failed to cancel old stop {old_stop_id} for {ticker}: {e}")
+
+            # 2. Blocking wait for shares to unencumber (OUTSIDE lock to avoid deadlock)
+            timeout_at = time.time() + 10
+            unencumbered = False
+            while time.time() < timeout_at:
+                try:
+                    open_orders = self.broker.get_orders_today()
+                    if not any(
+                        str(o.get("id") or o.get("order_id")) == old_stop_id
+                        and o.get("status", "").lower() in ("open", "pending_cancel", "queued", "new")
+                        for o in open_orders
+                    ):
+                        unencumbered = True
+                        break
+                except Exception:
+                    pass
+                time.sleep(1.0)
+
+            if not unencumbered:
+                logger.error(f"Timeout waiting for old stop {old_stop_id} to clear for {ticker}. Position temporarily naked.")
+                # Re-register with daemon so it can recover
+                with sqlite3.connect(DB_PATH, timeout=20.0) as conn:
+                    conn.execute(
+                        "UPDATE active_trades SET target_stop_price = ?, stop_order_id = NULL, stop_status = NULL, last_updated = ? WHERE trade_id = ?",
+                        (new_stop_price, datetime.now().isoformat(), trade["trade_id"]),
+                    )
+                    conn.commit()
+                return False
+
+            # 3. Place new stop
+            stop_res = self.broker.place_order(
+                ticker=ticker,
+                side="sell",
+                order_type="stop",
+                quantity=str(filled_shares),
+                stop_price=str(round(new_stop_price, 2)),
+                time_in_force="gtc",
+            )
+            new_stop_id = stop_res.get("order_id") or stop_res.get("id")
+
+            if new_stop_id:
+                with sqlite3.connect(DB_PATH, timeout=20.0) as conn:
+                    conn.execute(
+                        "UPDATE active_trades SET target_stop_price = ?, stop_order_id = ?, stop_status = 'open', last_updated = ? WHERE trade_id = ?",
+                        (new_stop_price, new_stop_id, datetime.now().isoformat(), trade["trade_id"]),
+                    )
+                    conn.commit()
+                self._log_event(trade["trade_id"], ticker, "TRAILING_STOP_PLACED", f"new_stop=${new_stop_price:.2f} id={new_stop_id}")
+                logger.info(f"✅ Successfully trailed stop for {ticker} to ${new_stop_price:.2f}")
+                return True
+            else:
+                logger.critical(f"Failed to place new stop for {ticker} after canceling old stop! Position is naked.")
+                # Fallback: let daemon recover
+                with sqlite3.connect(DB_PATH, timeout=20.0) as conn:
+                    conn.execute(
+                        "UPDATE active_trades SET target_stop_price = ?, stop_order_id = NULL, stop_status = NULL, last_updated = ? WHERE trade_id = ?",
+                        (new_stop_price, datetime.now().isoformat(), trade["trade_id"]),
+                    )
+                    conn.commit()
+                return False
+
+        except Timeout:
+            logger.error(f"Lock timeout during trailing stop update for {ticker}")
+            return False
+
     # ── Background Reconciliation Daemon ─────────────────────────────────
 
     @staticmethod

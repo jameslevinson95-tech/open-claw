@@ -469,7 +469,10 @@ def run_afternoon_monitor(verbose: bool = False) -> dict:
                                 new_stop = d.get("new_stop")
                                 original_stop = d.get("original_stop")
                                 if new_stop and original_stop and new_stop > original_stop:
-                                    engine.update_stop(ticker, new_stop, reason="Agent5_TRAIL")
+                                    # Atomic trailing: cancel → wait → place (synchronous)
+                                    if not engine.update_trailing_stop(ticker, new_stop):
+                                        # Fallback to async daemon-based update
+                                        engine.update_stop(ticker, new_stop, reason="Agent5_TRAIL_fallback")
                                 exec_results.append({"ticker": ticker, "action": "HOLD", "new_stop": new_stop})
                     agent5_result["broker_results"] = exec_results
                     

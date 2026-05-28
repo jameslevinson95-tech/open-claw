@@ -35,80 +35,40 @@ from alpaca.trading.enums import OrderSide, TimeInForce, OrderStatus, QueryOrder
 
 def _cross_reference_price(ticker: str, prior_close: float, suspect_price: float):
     """
-    Cross-reference a suspect broker quote against yfinance and Massive.
-    Returns a trusted price if one source agrees with prior close (within 5%),
-    or None if no reliable price can be found.
-
-    Priority: Schwab quote > Massive previous day bar > yfinance regularMarketPrice > None
+    Cross-reference a suspect broker quote against today's actual opening print or live tape.
+    If the stock legitimately gapped up on news, today's tape will verify the live quote is real.
+    Returns a trusted price, or None if no reliable price can be found.
     """
+    import yfinance as yf
+
     trusted = None
-
-    # 0. Try Schwab API (independent real-time data feed)
     try:
-        from schwab_data import fetch_schwab_quotes
-        schwab_quotes = fetch_schwab_quotes([ticker])
-        if ticker in schwab_quotes:
-            sq = schwab_quotes[ticker]
-            schwab_price = sq.get("ask") or sq.get("last") or sq.get("mid") or 0
-            if schwab_price > 0:
-                schwab_dev = abs(schwab_price - prior_close) / prior_close
-                if schwab_dev < 0.05:
-                    trusted = schwab_price
-                    print(f"  [CrossRef] Schwab quote ${schwab_price:.2f} (dev {schwab_dev*100:.1f}%) — TRUSTED")
-                else:
-                    # Schwab also disagrees with prior close — check if Schwab agrees with Alpaca
-                    schwab_alpaca_dev = abs(schwab_price - suspect_price) / suspect_price if suspect_price > 0 else 999
-                    if schwab_alpaca_dev < 0.03:
-                        print(f"  [CrossRef] Schwab ${schwab_price:.2f} agrees with Alpaca ${suspect_price:.2f} — real price move, using Schwab")
-                        trusted = schwab_price
-                    else:
-                        print(f"  [CrossRef] Schwab ${schwab_price:.2f} diverges from both prior close and Alpaca — no consensus yet")
-    except Exception as e:
-        print(f"  [CrossRef] Schwab lookup failed: {e}")
-
-    # 1. Try Massive API (prior day close — most reliable, no rate-limit issues)
-    if trusted is not None:
-        return trusted
-    try:
-        from massive_data import fetch_previous_day
-        massive_prev = fetch_previous_day(ticker)
-        if "error" not in massive_prev and massive_prev.get("close"):
-            massive_close = massive_prev["close"]
-            massive_dev = abs(massive_close - prior_close) / prior_close
-            if massive_dev < 0.05:  # Massive agrees with our prior close
-                trusted = massive_close
-                print(f"  [CrossRef] Massive prior close ${massive_close:.2f} (dev {massive_dev*100:.1f}% from planned) — TRUSTED")
+        # Fetch today's 1-minute intraday tape
+        today_data = yf.download(ticker, period="1d", interval="1m", progress=False)
+        if not today_data.empty:
+            # Handle pandas multi-index if necessary
+            if hasattr(today_data.columns, 'levels') and len(today_data.columns.levels) > 1:
+                today_open = float(today_data["Open"][ticker].iloc[0])
+                current_tape = float(today_data["Close"][ticker].iloc[-1])
             else:
-                print(f"  [CrossRef] Massive prior close ${massive_close:.2f} also diverges ({massive_dev*100:.1f}%) — possible real split/event")
-    except Exception as e:
-        print(f"  [CrossRef] Massive lookup failed: {e}")
+                today_open = float(today_data["Open"].iloc[0])
+                current_tape = float(today_data["Close"].iloc[-1])
 
-    # 2. Try yfinance as backup
-    if trusted is not None:
-        return trusted
-    if True:
-        try:
-            import yfinance as yf
-            info = yf.Ticker(ticker).info
-            yf_price = info.get("regularMarketPrice") or info.get("previousClose")
-            if yf_price:
-                yf_dev = abs(yf_price - prior_close) / prior_close
-                if yf_dev < 0.05:
-                    trusted = yf_price
-                    print(f"  [CrossRef] yfinance price ${yf_price:.2f} (dev {yf_dev*100:.1f}%) — TRUSTED")
-                else:
-                    # Both Alpaca and yfinance disagree with prior close — might be a real event
-                    # Check if yfinance and Alpaca agree with each other
-                    alpaca_yf_dev = abs(suspect_price - yf_price) / yf_price if yf_price > 0 else 999
-                    if alpaca_yf_dev < 0.05:
-                        # Alpaca and yfinance agree — this is a real price move (split, etc.)
-                        # Use yfinance price but log the event
-                        print(f"  [CrossRef] yfinance ${yf_price:.2f} agrees with Alpaca ${suspect_price:.2f} — real price event (split?), using yfinance")
-                        trusted = yf_price
-                    else:
-                        print(f"  [CrossRef] yfinance ${yf_price:.2f} also diverges ({yf_dev*100:.1f}%) and doesn't match Alpaca — no consensus")
-        except Exception as e:
-            print(f"  [CrossRef] yfinance lookup failed: {e}")
+            # If the suspect broker price is within 1.5% of today's actual open or current tape,
+            # it is a legitimate gap/breakout quote, not an anomaly.
+            dev_from_open = abs(suspect_price - today_open) / today_open if today_open > 0 else 999
+            dev_from_current = abs(suspect_price - current_tape) / current_tape if current_tape > 0 else 999
+
+            if dev_from_open < 0.015 or dev_from_current < 0.015:
+                print(f"  [CrossRef] \u2705 Real Breakout: Broker quote ${suspect_price:.2f} verified by today's tape (Open: ${today_open:.2f}, Live: ${current_tape:.2f}).")
+                trusted = suspect_price
+            else:
+                print(f"  [CrossRef] \ud83d\udeab Anomaly Confirmed: Broker quote ${suspect_price:.2f} diverges wildly from today's tape (Open: ${today_open:.2f}, Live: ${current_tape:.2f}).")
+                trusted = current_tape  # Fallback to the live yfinance tape
+        else:
+            print(f"  [CrossRef] No intraday tape available to verify {ticker}.")
+    except Exception as e:
+        print(f"  [CrossRef] yfinance tape verification failed: {e}")
 
     return trusted
 

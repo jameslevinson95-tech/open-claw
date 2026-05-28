@@ -154,14 +154,19 @@ def execute_defensive_protocol(broker, trigger_reason: str, positions: list) -> 
                 print(f"  [Daemon] {ticker}: Stop already tight at ${current_stop:.2f} — skipping")
                 continue
 
-            # Update stop via engine (cancels old, daemon places new)
-            engine.update_stop(ticker, entry_price, reason=f"flash_crash_{trigger_reason}")
-            actions.append({
-                "ticker": ticker,
-                "action": "TIGHTEN_STOP_BREAKEVEN",
-                "new_stop": entry_price,
-            })
-            print(f"  [Daemon] {ticker}: Profitable (+${unrealized_pl:.2f}) → stop moved to ${entry_price:.2f}")
+            # Atomic trailing stop: cancel old → wait for clearinghouse → place new
+            success = engine.update_trailing_stop(ticker, entry_price)
+            if success:
+                actions.append({
+                    "ticker": ticker,
+                    "action": "TIGHTEN_STOP_BREAKEVEN",
+                    "new_stop": entry_price,
+                })
+                print(f"  [Daemon] {ticker}: Profitable (+${unrealized_pl:.2f}) \u2192 stop moved to ${entry_price:.2f}")
+            else:
+                actions.append({"ticker": ticker, "action": "TIGHTEN_STOP_FAILED"})
+                print(f"  [Daemon] {ticker}: TIGHTEN FAILED \u2014 daemon will retry via update_stop fallback")
+                engine.update_stop(ticker, entry_price, reason=f"flash_crash_{trigger_reason}_fallback")
 
     return actions
 
@@ -200,16 +205,28 @@ def tighten_individual_stop(broker, pos: dict) -> dict:
         print(f"  [Daemon] {ticker}: Price ${current_price:.2f} < entry ${entry_price:.2f} → ATOMICALLY CLOSED")
         return action
 
-    # Update stop via engine (cancels old, daemon places new)
-    engine.update_stop(ticker, entry_price, reason="individual_stop_tighten")
-    action = {
-        "ticker": ticker,
-        "action": "INDIVIDUAL_STOP_TIGHTEN",
-        "entry_price": entry_price,
-        "note": f"Position down >5% intraday — stop moved to breakeven (${entry_price:.2f})",
-        "status": "executed",
-    }
-    print(f"  [Daemon] {ticker}: Down >5% intraday → stop tightened to ${entry_price:.2f}")
+    # Atomic trailing stop: cancel old → wait for clearinghouse → place new
+    success = engine.update_trailing_stop(ticker, entry_price)
+    if success:
+        action = {
+            "ticker": ticker,
+            "action": "INDIVIDUAL_STOP_TIGHTEN",
+            "entry_price": entry_price,
+            "note": f"Position down >5% intraday — stop moved to breakeven (${entry_price:.2f})",
+            "status": "executed",
+        }
+        print(f"  [Daemon] {ticker}: Down >5% intraday \u2192 stop tightened to ${entry_price:.2f}")
+    else:
+        # Fallback to async update_stop (daemon will place when it can)
+        engine.update_stop(ticker, entry_price, reason="individual_stop_tighten_fallback")
+        action = {
+            "ticker": ticker,
+            "action": "INDIVIDUAL_STOP_TIGHTEN",
+            "entry_price": entry_price,
+            "note": f"Atomic tighten failed \u2014 daemon will retry",
+            "status": "deferred",
+        }
+        print(f"  [Daemon] {ticker}: Atomic tighten failed \u2014 deferred to daemon")
     return action
 
 
