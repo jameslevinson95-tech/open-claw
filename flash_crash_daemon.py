@@ -108,15 +108,14 @@ def _append_daemon_log(entry: dict):
 
 
 def _get_current_stop_price(broker, ticker: str) -> float:
-    """Get the current stop-loss price for a ticker from Alpaca open orders."""
+    """Get the current stop-loss price for a ticker from open orders (broker-agnostic)."""
     try:
-        from alpaca.trading.requests import GetOrdersRequest
-        from alpaca.trading.enums import QueryOrderStatus
-        req = GetOrdersRequest(status=QueryOrderStatus.OPEN, symbols=[ticker], limit=20)
-        orders = broker.client.get_orders(req)
-        for order in orders:
-            if order.order_type == "stop" or (hasattr(order, 'stop_price') and order.stop_price):
-                return float(order.stop_price)
+        orders = broker.get_orders_today()
+        for o in orders:
+            if (o.get("ticker") == ticker
+                and o.get("status", "").lower() in ("open", "queued", "confirmed")
+                and (o.get("order_type", "").lower() == "stop" or o.get("stop_price"))):
+                return float(o["stop_price"])
     except Exception:
         pass
     return None
@@ -124,111 +123,54 @@ def _get_current_stop_price(broker, ticker: str) -> float:
 
 def execute_defensive_protocol(broker, trigger_reason: str, positions: list) -> list:
     """
-    Execute defensive protocol on all positions:
-    - Profitable positions: tighten stop to breakeven (entry price)
-    - Losing positions: close immediately
+    Execute defensive protocol on all positions using the execution engine.
+    - Profitable positions: tighten stop to breakeven via engine
+    - Losing positions: atomic liquidation via engine
     Returns list of actions taken.
     """
+    from execution_engine import ExecutionEngine
+    engine = ExecutionEngine(broker=broker)
     actions = []
 
     for pos in positions:
         ticker = pos["ticker"]
         entry_price = pos["avg_entry_price"]
-        current_price = pos["current_price"]
         unrealized_pl = pos["unrealized_pl"]
 
-        if unrealized_pl >= 0:
-            # Profitable — tighten stop to breakeven, but NEVER widen an existing stop
-            # Check if there's already a stop tighter than (i.e. above) entry price
+        if unrealized_pl < 0:
+            # Losing — atomic liquidate (cancel resting orders → wait → market sell)
+            result = engine.atomic_liquidate(ticker, reason=trigger_reason)
+            actions.append({"ticker": ticker, "action": "LIQUIDATED", "result": result})
+            print(f"  [Daemon] {ticker}: Losing (${unrealized_pl:.2f}) → ATOMICALLY CLOSED")
+        else:
+            # Profitable — tighten stop to breakeven, but NEVER widen
             current_stop = _get_current_stop_price(broker, ticker)
             if current_stop and current_stop > entry_price:
-                # Stop already trailed above entry — do NOT widen it
                 actions.append({
                     "ticker": ticker,
                     "action": "SKIP",
                     "note": f"Stop already at ${current_stop:.2f} > entry ${entry_price:.2f} — not widening",
                 })
+                print(f"  [Daemon] {ticker}: Stop already tight at ${current_stop:.2f} — skipping")
                 continue
 
-            # GUARD: If current price is already below entry, a stop at entry_price
-            # would trigger immediately as a market sell with uncontrolled slippage.
-            # Close the position directly instead.
-            if current_price < entry_price:
-                result = broker.close_position(ticker)
-                action = {
-                    "ticker": ticker,
-                    "action": "CLOSE_BELOW_ENTRY",
-                    "entry_price": entry_price,
-                    "current_price": current_price,
-                    "unrealized_pl": unrealized_pl,
-                    "close_result": result,
-                    "note": f"Price ${current_price:.2f} < entry ${entry_price:.2f} — closed to avoid immediate stop trigger",
-                }
-                actions.append(action)
-                print(f"  [Daemon] {ticker}: Price ${current_price:.2f} < entry ${entry_price:.2f} → CLOSED (would trigger immediately)")
-                continue
-
-            # Place new stop FIRST, then cancel old orders (position never naked)
-            action = {
+            # Update stop via engine (cancels old, daemon places new)
+            engine.update_stop(ticker, entry_price, reason=f"flash_crash_{trigger_reason}")
+            actions.append({
                 "ticker": ticker,
                 "action": "TIGHTEN_STOP_BREAKEVEN",
-                "entry_price": entry_price,
-                "unrealized_pl": unrealized_pl,
-                "note": f"Stop tightened to breakeven (${entry_price:.2f})",
-            }
-            try:
-                from alpaca.trading.requests import StopOrderRequest
-                from alpaca.trading.enums import OrderSide, TimeInForce
-
-                # Collect existing order IDs for this ticker BEFORE submitting new one
-                existing_order_ids = []
-                orders = broker.client.get_orders()
-                for o in orders:
-                    if o.symbol == ticker:
-                        existing_order_ids.append(o.id)
-
-                # Submit new breakeven stop FIRST — position stays protected
-                stop_req = StopOrderRequest(
-                    symbol=ticker,
-                    qty=pos["shares"],
-                    side=OrderSide.SELL,
-                    time_in_force=TimeInForce.GTC,
-                    stop_price=round(entry_price, 2),
-                )
-                broker.client.submit_order(stop_req)
-
-                # NOW cancel old orders (position was never unprotected)
-                for oid in existing_order_ids:
-                    try:
-                        broker.client.cancel_order_by_id(oid)
-                    except Exception:
-                        pass
-
-                action["status"] = "executed"
-            except Exception as e:
-                action["status"] = "logged_only"
-                action["error"] = str(e)
-
-            actions.append(action)
-            print(f"  [Daemon] {ticker}: Profitable (+${unrealized_pl:.2f}) → stop tightened to ${entry_price:.2f}")
-        else:
-            # Losing — close immediately
-            result = broker.close_position(ticker)
-            action = {
-                "ticker": ticker,
-                "action": "CLOSE_LOSING",
-                "entry_price": entry_price,
-                "unrealized_pl": unrealized_pl,
-                "close_result": result,
-            }
-            actions.append(action)
-            print(f"  [Daemon] {ticker}: Losing (${unrealized_pl:.2f}) → CLOSED")
+                "new_stop": entry_price,
+            })
+            print(f"  [Daemon] {ticker}: Profitable (+${unrealized_pl:.2f}) → stop moved to ${entry_price:.2f}")
 
     return actions
 
 
 def tighten_individual_stop(broker, pos: dict) -> dict:
     """Tighten a single position's stop to breakeven when it's down >5% intraday."""
+    from execution_engine import ExecutionEngine
+    engine = ExecutionEngine(broker=broker)
+
     ticker = pos["ticker"]
     entry_price = pos["avg_entry_price"]
     current_price = pos["current_price"]
@@ -244,68 +186,29 @@ def tighten_individual_stop(broker, pos: dict) -> dict:
         print(f"  [Daemon] {ticker}: Stop already at ${current_stop:.2f} > entry — skipping")
         return action
 
-    # GUARD: If current price is already below entry, a stop at entry_price
-    # would trigger immediately as a market sell with uncontrolled slippage.
-    # Close the position directly instead.
+    # GUARD: If current price is already below entry, close via atomic liquidation
     if current_price < entry_price:
+        result = engine.atomic_liquidate(ticker, reason="price_below_entry_during_tighten")
         action = {
             "ticker": ticker,
             "action": "CLOSE_BELOW_ENTRY",
             "entry_price": entry_price,
             "current_price": current_price,
-            "note": f"Price ${current_price:.2f} < entry ${entry_price:.2f} — closed to avoid immediate stop trigger",
+            "result": result,
+            "note": f"Price ${current_price:.2f} < entry ${entry_price:.2f} — atomically closed",
         }
-        try:
-            result = broker.close_position(ticker)
-            action["close_result"] = result
-            action["status"] = "executed"
-        except Exception as e:
-            action["status"] = "logged_only"
-            action["error"] = str(e)
-        print(f"  [Daemon] {ticker}: Price ${current_price:.2f} < entry ${entry_price:.2f} → CLOSED (would trigger immediately)")
+        print(f"  [Daemon] {ticker}: Price ${current_price:.2f} < entry ${entry_price:.2f} → ATOMICALLY CLOSED")
         return action
 
-    # Place new stop FIRST, then cancel old orders (position never naked)
+    # Update stop via engine (cancels old, daemon places new)
+    engine.update_stop(ticker, entry_price, reason="individual_stop_tighten")
     action = {
         "ticker": ticker,
         "action": "INDIVIDUAL_STOP_TIGHTEN",
         "entry_price": entry_price,
         "note": f"Position down >5% intraday — stop moved to breakeven (${entry_price:.2f})",
+        "status": "executed",
     }
-
-    try:
-        from alpaca.trading.requests import StopOrderRequest
-        from alpaca.trading.enums import OrderSide, TimeInForce
-
-        # Collect existing order IDs for this ticker BEFORE submitting new one
-        existing_order_ids = []
-        orders = broker.client.get_orders()
-        for o in orders:
-            if o.symbol == ticker:
-                existing_order_ids.append(o.id)
-
-        # Submit new breakeven stop FIRST — position stays protected
-        stop_req = StopOrderRequest(
-            symbol=ticker,
-            qty=pos["shares"],
-            side=OrderSide.SELL,
-            time_in_force=TimeInForce.GTC,
-            stop_price=round(entry_price, 2),
-        )
-        broker.client.submit_order(stop_req)
-
-        # NOW cancel old orders (position was never unprotected)
-        for oid in existing_order_ids:
-            try:
-                broker.client.cancel_order_by_id(oid)
-            except Exception:
-                pass
-
-        action["status"] = "executed"
-    except Exception as e:
-        action["status"] = "logged_only"
-        action["error"] = str(e)
-
     print(f"  [Daemon] {ticker}: Down >5% intraday → stop tightened to ${entry_price:.2f}")
     return action
 

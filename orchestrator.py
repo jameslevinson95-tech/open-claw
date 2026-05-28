@@ -590,15 +590,17 @@ def resume_from_agent3(verbose: bool = False) -> dict:
         buy_orders = [o for o in trade_orders if o.get("action") == "BUY"]
         if buy_orders:
             print("\n" + "━" * 40)
-            print("💰 BROKER EXECUTION — ALPACA")
+            print("💰 EXECUTION ENGINE — LEDGER + BROKER")
             print("━" * 40)
             try:
-                broker = get_broker()
-                fills = broker.execute_tear_sheet(trade_orders)
+                from execution_engine import ExecutionEngine
+                engine = ExecutionEngine()
+                fills = engine.submit_batch_intents(trade_orders)
                 submitted = [f for f in fills if f.get("status") == "submitted"]
-                print(f"  ✅ {len(submitted)} orders submitted")
+                print(f"  ✅ {len(submitted)} intents logged to execution ledger")
+                print("  📡 Background daemon will route entries and attach stops")
             except Exception as e:
-                print(f"❌ Broker execution FAILED: {e}")
+                print(f"❌ Execution engine FAILED: {e}")
     
     print("\n✅ Pipeline resumed and complete.")
     return {"agent3": agent3_result, "agent4": agent4_result}
@@ -646,17 +648,19 @@ def run_deferred_execution() -> dict:
     
     print(f"  ✅ VWAP Approved: {len(approved_buys)} BUY order(s)")
     
-    # Execute
+    # Execute via execution engine (stateful ledger + daemon)
     try:
-        broker = get_broker()
-        fills = broker.execute_tear_sheet(approved_orders)
+        from execution_engine import ExecutionEngine
+        engine = ExecutionEngine()
+        fills = engine.submit_batch_intents(approved_orders)
         
         submitted = [f for f in fills if f.get("status") == "submitted"]
-        errors = [f for f in fills if f.get("status") == "error"]
+        errors = [f for f in fills if f.get("status") in ("error", "rejected")]
         
-        print(f"\n📊 Broker Results:")
-        print(f"  ✅ Submitted: {len(submitted)}")
+        print(f"\n📊 Execution Engine Results:")
+        print(f"  ✅ Submitted to ledger: {len(submitted)}")
         print(f"  ❌ Errors: {len(errors)}")
+        print(f"  📡 Background daemon will handle fills → stop placement")
         
         # Clean up pending file
         os.rename(pending_path, pending_path.replace(".json", f"_executed_{datetime.now().strftime('%Y%m%d_%H%M')}.json"))

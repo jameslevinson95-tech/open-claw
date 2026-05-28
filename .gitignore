@@ -16,3 +16,6 @@ schwab_localhost.pem
 schwab_localhost.key
 schwab_auth_server.py
 schwab_exchange_token.sh
+output/execution_ledger.db
+output/execution_engine.log
+output/broker_state.lock
