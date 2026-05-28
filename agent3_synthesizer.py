@@ -29,8 +29,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Sonnet for synthesis — fast + cheap, no extended thinking needed
-MODEL = "claude-3-5-sonnet-latest"
+# Opus for synthesis — nuanced judgment on qualitative signals
+MODEL = "claude-opus-4-7"
 MAX_RETRIES = 3
 RETRY_DELAY = 5
 
@@ -283,12 +283,17 @@ Perform your synthesis and respond with ONLY the JSON output."""
             response = client.messages.create(
                 model=MODEL,
                 max_tokens=16000,
-                temperature=0.0,
+                temperature=1,  # Required for extended thinking
+                thinking={
+                    "type": "enabled",
+                    "budget_tokens": 10000,
+                },
                 system=SYSTEM_PROMPT,
                 messages=[{"role": "user", "content": user_message}],
             )
 
-            raw_text = response.content[0].text.strip()
+            # With extended thinking, content has thinking + text blocks
+            raw_text = next(b.text for b in response.content if b.type == "text").strip()
 
             # Strip scratchpad if present
             if "</research_scratchpad>" in raw_text:
