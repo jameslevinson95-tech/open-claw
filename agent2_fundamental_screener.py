@@ -28,7 +28,7 @@ load_dotenv()
 # Deep Research is kept as fallback (set AGENT2_USE_DEEP_RESEARCH=true in .env).
 USE_DEEP_RESEARCH = os.environ.get("AGENT2_USE_DEEP_RESEARCH", "false").lower() == "true"
 
-MODEL = "deep-research-preview-04-2026" if USE_DEEP_RESEARCH else "gemini-3.1-pro"
+MODEL = "deep-research-preview-04-2026" if USE_DEEP_RESEARCH else "gemini-3.1-pro-preview"
 MODEL_DISPLAY = "Gemini Deep Research" if USE_DEEP_RESEARCH else "Gemini 3.1 Pro"
 GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
 MAX_RETRIES = 3

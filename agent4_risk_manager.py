@@ -334,14 +334,18 @@ def size_position(
 
     # Enforce minimum 1% stop distance floor to prevent infinite leverage on tight stops
     effective_stop_distance = max(stop_distance, entry * 0.01)
-    shares_by_risk = int(risk_dollars // effective_stop_distance)
+    shares_by_risk = risk_dollars / effective_stop_distance
 
     # 4. Allocation cap (max position value as % of account)
     max_position_value = account_value * MAX_ALLOCATION_PCT
-    shares_by_alloc = int(max_position_value // entry)
+    shares_by_alloc = max_position_value / entry
 
-    shares = min(shares_by_risk, shares_by_alloc)
-    if shares == 0:
+    shares_raw = min(shares_by_risk, shares_by_alloc)
+
+    # Allow fractional shares (Robinhood supports them).
+    # Round to 6 decimal places (Robinhood precision), enforce a minimum of 0.001 shares.
+    shares = round(shares_raw, 6)
+    if shares < 0.001:
         return {"shares": 0, "reason": "ZERO_SHARES_AFTER_CONSTRAINTS"}
 
     binding = "risk" if shares == shares_by_risk else "allocation"
@@ -526,8 +530,8 @@ def run_agent4b(
             trade_orders.append(_reject_trade(ticker, "Insufficient cash/buying power available"))
             continue
         if position_value > max_deployable:
-            shares = int(max_deployable // entry)
-            if shares <= 0:
+            shares = round(max_deployable / entry, 6)
+            if shares < 0.001:
                 trade_orders.append(_reject_trade(ticker, "Dry powder floor (existing + new > 80%)"))
                 continue
             position_value = round(shares * entry, 2)

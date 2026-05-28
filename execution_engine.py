@@ -196,7 +196,7 @@ class ExecutionEngine:
             result = self.submit_trade_intent(
                 trade_id=trade_id,
                 ticker=order["ticker"],
-                shares=int(shares),
+                shares=shares,  # Allow fractional shares (Robinhood supports them)
                 limit_price=limit_price,
                 stop_price=stop_price,
             )

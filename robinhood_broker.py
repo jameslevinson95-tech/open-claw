@@ -427,8 +427,8 @@ class RobinhoodBroker:
                         })
                         continue
 
-                    live_shares = int(risk_budget // live_risk_per_share)
-                    if live_shares <= 0:
+                    live_shares = round(risk_budget / live_risk_per_share, 6)
+                    if live_shares < 0.001:
                         fills.append({"ticker": ticker, "status": "rejected", "reason": "Zero shares after re-sizing"})
                         continue
 
