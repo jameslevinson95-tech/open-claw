@@ -1,46 +1,155 @@
 # OPEN CLAW TRADING PIPELINE — FULL CODEBASE DUMP
 
-Generated: 2026-05-28 00:17:39 ET
+Generated: 2026-05-28 11:25:08 ET
 
 Repo: https://github.com/jameslevinson95-tech/open-claw
 
-Files included:
-- ./agent1_macro_director.py (294 lines)
+
+Files included (47):
+- ./.env.example (11 lines)
+- ./.gitignore (21 lines)
+- ./DATA_PARITY.md (41 lines)
+- ./agent1_macro_director.py (321 lines)
 - ./agent2_fundamental_screener.py (689 lines)
-- ./agent3_synthesizer.py (562 lines)
-- ./agent4_risk_manager.py (842 lines)
+- ./agent3_synthesizer.py (595 lines)
+- ./agent4_risk_manager.py (867 lines)
 - ./agent5_position_monitor.py (758 lines)
 - ./alpaca_data.py (352 lines)
 - ./assembly_scraper.py (217 lines)
 - ./broker.py (505 lines)
 - ./broker_factory.py (67 lines)
-- ./config.py (165 lines)
+- ./config.py (166 lines)
 - ./data_fetcher_v1_deprecated.py (100 lines)
+- ./data_provider.py (423 lines)
 - ./discord_fetch.py (293 lines)
 - ./execution_engine.py (723 lines)
 - ./fedwatch.py (294 lines)
-- ./flash_crash_daemon.py (360 lines)
+- ./flash_crash_daemon.py (405 lines)
 - ./itc_data.py (394 lines)
 - ./market_data.py (354 lines)
-- ./massive_data.py (1034 lines)
-- ./orchestrator.py (797 lines)
+- ./massive_data.py (1039 lines)
+- ./orchestrator.py (852 lines)
 - ./performance_review.py (534 lines)
 - ./preflight.py (1201 lines)
 - ./robinhood_broker.py (646 lines)
 - ./run_archiver.py (175 lines)
+- ./run_daemon.sh (26 lines)
 - ./run_execution_daemon.py (26 lines)
-- ./safeguards.py (625 lines)
+- ./run_monitor.sh (19 lines)
+- ./run_morning.sh (19 lines)
+- ./run_pipeline_auto.sh (51 lines)
+- ./run_reviews.sh (27 lines)
+- ./safeguards.py (622 lines)
 - ./schwab_auth_server.py (106 lines)
 - ./schwab_data.py (162 lines)
+- ./schwab_exchange_token.sh (43 lines)
 - ./schwab_reauth.py (151 lines)
+- ./test_data_provider.py (227 lines)
 - ./trade_journal.py (161 lines)
 - ./vwap_gate.py (108 lines)
 - ./watchlist.py (260 lines)
 - ./weekly_review.py (125 lines)
 - ./x_fetch.py (313 lines)
-- ./.env.example (11 lines)
-- ./.gitignore (21 lines)
-- ./robinhood-mcp/auth_and_discover.py (268 lines)
+- ./deprecated/agent2b_deep_research.py (303 lines)
+- ./deprecated/agent3_signal_verifier.py (255 lines)
+- robinhood-mcp/auth_and_discover.py (268 lines)
+
+---
+
+## ./.env.example
+
+```python
+# Alpaca (get API keys from https://app.alpaca.markets)
+ALPACA_API_KEY=
+ALPACA_SECRET_KEY=
+
+# LLMs
+ANTHROPIC_API_KEY=
+GOOGLE_API_KEY=
+
+# Telegram
+TELEGRAM_BOT_TOKEN=
+TELEGRAM_CHAT_ID=-5238217629
+
+```
+
+---
+
+## ./.gitignore
+
+```python
+__pycache__/
+*.pyc
+.env
+output/archive/
+output/reviews/
+output/*.json
+output/*.txt
+output/*.pdf
+output/*.md
+output/*.html
+journal/trades.csv
+*.egg-info/
+.DS_Store
+schwab_token.json
+schwab_localhost.pem
+schwab_localhost.key
+schwab_auth_server.py
+schwab_exchange_token.sh
+output/execution_ledger.db
+output/execution_engine.log
+output/broker_state.lock
+
+```
+
+---
+
+## ./DATA_PARITY.md
+
+```python
+# Data Parity Matrix — yfinance Removal Status
+
+Last verified: 2026-05-28 01:52 ET
+
+## Current Vendor Coverage
+
+| Data Type | Massive (Free) | Schwab | yfinance | Status |
+|-----------|---------------|--------|----------|--------|
+| Daily OHLCV bars | ✅ 200 | ❌ Not impl | ✅ Fallback | **Routed via DataProvider** |
+| 1-min intraday bars | ✅ 200 (~6hr delay) | ❌ Not impl | ✅ Live | **yfinance required for live** |
+| News headlines | ✅ 200 | ❌ Not impl | ✅ Fallback | **Routed via DataProvider** |
+| Options OI / P-C ratio | ❌ 403 (paid) | ❌ Not impl | ✅ Only source | **yfinance required** |
+| Short interest % float | ❌ 404 (no endpoint) | ❌ Not impl | ✅ Only source | **yfinance required** |
+| Stock splits | ✅ 200 | ❌ Not impl | Removed | **Routed via DataProvider** |
+| Index VIX/SPX | ❌ 403 (paid) | ✅ $VIX/$SPX | ✅ ETF proxy | **DataProvider fallback chain** |
+| Live quotes (NBBO) | N/A | ✅ Primary | N/A | **Broker feed only** |
+| Earnings dates | N/A | N/A | ✅ Only source | **yfinance required** |
+
+## What Blocks PR3 (full yfinance removal)
+
+Before yfinance can be deleted, one of these must be implemented:
+
+1. **Options OI**: Upgrade to Massive paid tier for options snapshots, OR implement Schwab options chain endpoint
+2. **Short Interest**: Find alternative source (Massive doesn't have it, Schwab TBD)
+3. **Earnings Dates**: Alternative source needed (possibly Massive ticker events?)
+4. **Intraday 1-min bars**: Schwab historical bars endpoint, OR accept Massive's EOD delay
+5. **Historical bars fallback**: Without yfinance, Massive becomes SPOF for ATR/correlation
+
+## Current yfinance Usage (files that still import it)
+
+- `agent3_synthesizer.py` — Options OI, short interest (sandboxed in `fetch_single()`)
+- `broker.py` — 1-min intraday tape for cross-reference price
+- `preflight.py` — Macro data (VIX, MOVE, yield curve), technicals local calc
+- `safeguards.py` — Earnings dates
+- `trade_journal.py` — SPX benchmark calculation
+- `data_provider.py` — Deprecated fallback for EOD bars + news fallback
+
+## Files Fully Off yfinance
+
+- `agent4_risk_manager.py` ✅ — All via DataProvider
+- `flash_crash_daemon.py` ✅ — All via DataProvider
+
+```
 
 ---
 
@@ -223,17 +332,7 @@ def run_agent1(macro_data: dict = None) -> dict:
 
     print(f"[Agent 1] Macro data loaded from {macro_data.get('timestamp', 'unknown')}")
 
-    # Send to Claude
-    print("[Agent 1] Sending to Claude for regime classification...")
-
-    try:
-        import anthropic
-        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-        if not api_key:
-            raise RuntimeError("No ANTHROPIC_API_KEY — run as subagent via OCPlatform instead.")
-        client = anthropic.Anthropic(api_key=api_key)
-
-        user_message = f"""Here is today's macro data. Classify the regime and produce your directive.
+    user_message = f"""Here is today's macro data. Classify the regime and produce your directive.
 
 CRITICAL: If DIX, MOVE, or Credit data is marked as unavailable, you MUST output REGIME: DEFER.
 
@@ -243,17 +342,54 @@ Current date/time: {datetime.now().isoformat()}
 
 Respond with ONLY the JSON directive, no other text."""
 
-        response = client.messages.create(
-            model="claude-3-5-sonnet-latest",
-            max_tokens=16000,
-            temperature=0.0,
-            system=SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": user_message}],
-        )
+    # Try Claude first, fall back to Gemini for automated runs
+    raw_text = None
+    anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    google_key = os.environ.get("GOOGLE_API_KEY", "")
 
-        raw_text = response.content[0].text.strip()
-    except RuntimeError:
-        # No API key — return the prompt for subagent execution
+    if anthropic_key:
+        print("[Agent 1] Sending to Claude for regime classification...")
+        try:
+            import anthropic
+            client = anthropic.Anthropic(api_key=anthropic_key)
+            response = client.messages.create(
+                model="claude-3-5-sonnet-latest",
+                max_tokens=16000,
+                temperature=0.0,
+                system=SYSTEM_PROMPT,
+                messages=[{"role": "user", "content": user_message}],
+            )
+            raw_text = response.content[0].text.strip()
+        except Exception as e:
+            print(f"[Agent 1] Claude failed: {e}")
+
+    if raw_text is None and google_key:
+        print("[Agent 1] Falling back to Gemini 3.1 Pro Preview...")
+        try:
+            import requests as _requests
+            gemini_model = "gemini-3.1-pro-preview"
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{gemini_model}:generateContent?key={google_key}"
+            payload = {
+                "contents": [{"parts": [{"text": user_message}]}],
+                "systemInstruction": {"parts": [{"text": SYSTEM_PROMPT}]},
+                "generationConfig": {
+                    "temperature": 0.0,
+                    "responseMimeType": "application/json",
+                    "thinkingConfig": {"thinkingBudget": 2048},
+                },
+            }
+            resp = _requests.post(url, json=payload, timeout=120)
+            resp.raise_for_status()
+            data = resp.json()
+            parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [])
+            for p in parts:
+                if p.get("text"):
+                    raw_text = p["text"]
+            print("[Agent 1] Gemini response received")
+        except Exception as e:
+            print(f"[Agent 1] Gemini failed: {e}")
+
+    if raw_text is None:
         return {
             "success": False,
             "needs_subagent": True,
@@ -379,7 +515,7 @@ load_dotenv()
 # Deep Research is kept as fallback (set AGENT2_USE_DEEP_RESEARCH=true in .env).
 USE_DEEP_RESEARCH = os.environ.get("AGENT2_USE_DEEP_RESEARCH", "false").lower() == "true"
 
-MODEL = "deep-research-preview-04-2026" if USE_DEEP_RESEARCH else "gemini-3.1-pro"
+MODEL = "deep-research-preview-04-2026" if USE_DEEP_RESEARCH else "gemini-3.1-pro-preview"
 MODEL_DISPLAY = "Gemini Deep Research" if USE_DEEP_RESEARCH else "Gemini 3.1 Pro"
 GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
 MAX_RETRIES = 3
@@ -1176,14 +1312,20 @@ def prefetch_qualitative_context(candidates: list) -> dict:
 
     def fetch_single(ticker):
         try:
-            stock = yf.Ticker(ticker)
+            # 1. News Headlines — via DataProvider (Massive → yfinance fallback)
+            from data_provider import get_provider
+            dp = get_provider()
+            news_articles = dp.get_news(ticker, limit=5)
+            if news_articles:
+                headlines = [
+                    f"- {n.get('published', '')}: {n.get('title', '')} [{n.get('publisher', '')}]"
+                    for n in news_articles
+                ]
+            else:
+                headlines = ["- No recent news available"]
 
-            # 1. News Headlines
-            news_items = stock.news
-            headlines = [
-                f"- {n.get('providerPublishTime', '')}: {n.get('title', '')} [{n.get('publisher', '')}]"
-                for n in (news_items[:5] if news_items else [])
-            ] or ["- No recent news available"]
+            # Options OI and Short Interest stay on yfinance (Massive paywalled / unavailable)
+            stock = yf.Ticker(ticker)
 
             # 2. Options Flow (Put/Call OI Ratio for nearest expiration)
             options_context = "No options data available"
@@ -1245,12 +1387,9 @@ def _load_x_mentions(tickers: list) -> dict:
             result[ticker] = raw.get(ticker, raw.get(ticker.lower(), []))
         return result
 
-    # X research is mandatory — raise if missing
-    raise RuntimeError(
-        "No smart money X/Twitter data found at output/smart_money_mentions.json. "
-        "X research is MANDATORY — run x_fetch.py first. "
-        "The pipeline cannot proceed without smart money sentiment data."
-    )
+    # X data not available — return empty mentions, Agent 3 will work with news/options/SI
+    print("  [Agent 3] No X/Twitter data found — proceeding with news/options/SI only.")
+    return {t: [] for t in tickers}
 
 
 def call_synthesis(candidates: list, qual_context: dict, x_mentions: dict) -> dict:
@@ -1258,14 +1397,18 @@ def call_synthesis(candidates: list, qual_context: dict, x_mentions: dict) -> di
     Send the complete qualitative mosaic to Claude Opus 4.7 for unified synthesis.
     Uses adaptive thinking (extended thinking with budget_tokens).
     """
-    import anthropic
     import time
 
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if not api_key:
-        raise RuntimeError("No ANTHROPIC_API_KEY — run as subagent via OCPlatform.")
+    anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    google_key = os.environ.get("GOOGLE_API_KEY", "")
 
-    client = anthropic.Anthropic(api_key=api_key)
+    if not anthropic_key and not google_key:
+        raise RuntimeError("No ANTHROPIC_API_KEY or GOOGLE_API_KEY — cannot run Agent 3.")
+
+    client = None
+    if anthropic_key:
+        import anthropic
+        client = anthropic.Anthropic(api_key=anthropic_key)
 
     # Build the mosaic payload for each candidate
     mosaic_lines = []
@@ -1324,70 +1467,96 @@ Current date/time: {datetime.now().isoformat()}
 Perform your synthesis and respond with ONLY the JSON output."""
 
     last_error = None
-    for attempt in range(MAX_RETRIES):
+    raw_text = None
+
+    # Try Claude first
+    if client:
+        for attempt in range(MAX_RETRIES):
+            try:
+                print(f"  [Agent 3] Calling {MODEL} (attempt {attempt + 1}/{MAX_RETRIES})...")
+                response = client.messages.create(
+                    model=MODEL,
+                    max_tokens=16000,
+                    temperature=1,
+                    thinking={"type": "enabled", "budget_tokens": 10000},
+                    system=SYSTEM_PROMPT,
+                    messages=[{"role": "user", "content": user_message}],
+                )
+                raw_text = next(b.text for b in response.content if b.type == "text").strip()
+                break
+            except Exception as e:
+                last_error = e
+                print(f"  [Agent 3] Claude error: {e}. Retrying in {RETRY_DELAY}s...")
+                time.sleep(RETRY_DELAY)
+
+    # Fall back to Gemini if Claude unavailable or failed
+    if raw_text is None and google_key:
+        print("  [Agent 3] Falling back to Gemini 3.1 Pro Preview...")
         try:
-            print(f"  [Agent 3] Calling {MODEL} (attempt {attempt + 1}/{MAX_RETRIES})...")
-
-            response = client.messages.create(
-                model=MODEL,
-                max_tokens=16000,
-                temperature=1,  # Required for extended thinking
-                thinking={
-                    "type": "enabled",
-                    "budget_tokens": 10000,
+            import requests as _requests
+            gemini_model = "gemini-3.1-pro-preview"
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{gemini_model}:generateContent?key={google_key}"
+            payload = {
+                "contents": [{"parts": [{"text": user_message}]}],
+                "systemInstruction": {"parts": [{"text": SYSTEM_PROMPT}]},
+                "generationConfig": {
+                    "temperature": 0.0,
+                    "responseMimeType": "application/json",
+                    "thinkingConfig": {"thinkingBudget": 4096},
                 },
-                system=SYSTEM_PROMPT,
-                messages=[{"role": "user", "content": user_message}],
-            )
-
-            # With extended thinking, content has thinking + text blocks
-            raw_text = next(b.text for b in response.content if b.type == "text").strip()
-
-            # Strip scratchpad if present
-            if "</research_scratchpad>" in raw_text:
-                raw_text = raw_text.split("</research_scratchpad>", 1)[1].strip()
-
-            # Try code-fenced JSON first
-            json_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', raw_text, re.DOTALL)
-            if json_match:
-                json_str = json_match.group(1)
-            else:
-                # Find the outermost JSON object by matching balanced braces
-                brace_depth = 0
-                start = None
-                json_str = None
-                for i, ch in enumerate(raw_text):
-                    if ch == '{':
-                        if brace_depth == 0:
-                            start = i
-                        brace_depth += 1
-                    elif ch == '}':
-                        brace_depth -= 1
-                        if brace_depth == 0 and start is not None:
-                            candidate = raw_text[start:i+1]
-                            try:
-                                json.loads(candidate)
-                                json_str = candidate
-                                break
-                            except json.JSONDecodeError:
-                                start = None
-                                continue
-
-                if json_str is None:
-                    raise json.JSONDecodeError("No valid JSON object found in response", raw_text[:200], 0)
-
-            result = json.loads(json_str)
-            return result
-
-        except RuntimeError:
-            raise  # Re-raise missing API key
+            }
+            resp = _requests.post(url, json=payload, timeout=120)
+            resp.raise_for_status()
+            data = resp.json()
+            parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [])
+            for p in parts:
+                if p.get("text"):
+                    raw_text = p["text"]
+            print("  [Agent 3] Gemini response received")
         except Exception as e:
             last_error = e
-            print(f"  [Agent 3] Claude error: {e}. Retrying in {RETRY_DELAY}s...")
-            import time
-            time.sleep(RETRY_DELAY)
+            print(f"  [Agent 3] Gemini failed: {e}")
 
-    raise Exception(f"{MODEL} failed after {MAX_RETRIES} attempts. Last error: {last_error}")
+    if raw_text is None:
+        raise Exception(f"All models failed after retries. Last error: {last_error}")
+
+    # Strip scratchpad if present
+    if "</research_scratchpad>" in raw_text:
+        raw_text = raw_text.split("</research_scratchpad>", 1)[1].strip()
+
+    # Try code-fenced JSON first
+    json_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', raw_text, re.DOTALL)
+    if json_match:
+        json_str = json_match.group(1)
+    else:
+        # Find the outermost JSON object by matching balanced braces
+        brace_depth = 0
+        start = None
+        json_str = None
+        for i, ch in enumerate(raw_text):
+            if ch == '{':
+                if brace_depth == 0:
+                    start = i
+                brace_depth += 1
+            elif ch == '}':
+                brace_depth -= 1
+                if brace_depth == 0 and start is not None:
+                    candidate = raw_text[start:i+1]
+                    try:
+                        json.loads(candidate)
+                        json_str = candidate
+                        break
+                    except json.JSONDecodeError:
+                        start = None
+                        continue
+
+        if json_str is None:
+            raise json.JSONDecodeError("No valid JSON object found in response", raw_text[:200], 0)
+
+    result = json.loads(json_str)
+    return result
+
+
 
 
 def run_agent3(agent2_result: dict = None, x_mentions: dict = None) -> dict:
@@ -1635,7 +1804,7 @@ import os
 from datetime import datetime
 
 import pandas as pd
-import yfinance as yf
+# yfinance removed — all data routed through DataProvider
 from dotenv import load_dotenv
 
 from config import (
@@ -1680,10 +1849,11 @@ VOL_ATR_MODIFIERS = {
 
 
 def get_moving_averages(ticker: str) -> dict:
-    """Fetch prior close + moving averages for a ticker."""
+    """Fetch prior close + moving averages for a ticker via DataProvider."""
+    from data_provider import get_provider, DataUnavailable
     try:
-        stock = yf.Ticker(ticker)
-        hist = stock.history(period="6mo")
+        dp = get_provider()
+        hist = dp.get_bars(ticker, lookback_days=180)  # ~6 months
         if hist.empty or len(hist) < 50:
             return {"error": f"Insufficient data for {ticker}"}
 
@@ -1700,6 +1870,8 @@ def get_moving_averages(ticker: str) -> dict:
             "ma_50": round(ma_50, 2),
             "recent_low_20d": round(min(closes[-20:]), 2),
         }
+    except DataUnavailable as e:
+        return {"error": str(e)}
     except Exception as e:
         return {"error": str(e)}
 
@@ -1712,11 +1884,12 @@ def calculate_atr_stop(ticker: str, entry_price: float, conviction_tier: str, vo
     Wider stops in high-vol (negative GEX) environments avoid whipsaw stops
     while the dollar-VaR math upstream reduces share count to keep risk flat.
     """
+    from data_provider import get_provider, DataUnavailable
     try:
-        stock = yf.Ticker(ticker)
-        hist = stock.history(period="1mo")  # ~20 trading days
+        dp = get_provider()
+        hist = dp.get_bars(ticker, lookback_days=30)  # ~20 trading days
         if hist.empty or len(hist) < 14:
-            return {"error": f"Insufficient data for {ticker} ({len(hist) if not hist.empty else 0} bars)"}
+            return {"error": f"Insufficient data for {ticker} ({len(hist)} bars)"}
 
         # Calculate True Range for each bar
         high = hist["High"]
@@ -1759,32 +1932,49 @@ def correlation_veto(new_ticker: str, current_positions: list, threshold: float 
     if not current_positions:
         return False
 
+    from data_provider import get_provider, DataUnavailable
     try:
+        dp = get_provider()
         all_tickers = [new_ticker] + current_positions
-        data = yf.download(all_tickers, period="3mo", progress=False)
-        if data.empty:
+
+        # Fetch bars for each ticker and build a returns DataFrame
+        closes_dict = {}
+        for t in all_tickers:
+            try:
+                bars = dp.get_bars(t, lookback_days=90)
+                if bars is not None and not bars.empty:
+                    closes_dict[t] = bars["Close"]
+            except DataUnavailable:
+                continue
+
+        if new_ticker not in closes_dict:
+            # Can't get data for the candidate — FAIL-CLOSED
+            print(f"  [Agent 4B] No bar data for {new_ticker} — FAIL-CLOSED (vetoing)")
+            return True
+
+        if len(closes_dict) < 2:
+            # Only one ticker (no positions to compare against) — pass
             return False
 
-        closes = data["Close"] if "Close" in data.columns else data
-
-        # If only 1 valid ticker, yfinance returns a Series not DataFrame
-        # Correlation is impossible with a single column
-        if isinstance(closes, pd.Series):
-            return False
-
+        closes = pd.DataFrame(closes_dict)
         returns = closes.pct_change().tail(60)
-
-        if new_ticker not in returns.columns:
-            return False
 
         for pos in current_positions:
             if pos in returns.columns:
                 corr = returns[new_ticker].corr(returns[pos], min_periods=20)
-                if corr is not None and corr > threshold:
+                # NaN means insufficient overlap or unaligned dates — FAIL-CLOSED
+                if pd.isna(corr):
+                    print(f"  [Agent 4B] CORRELATION NaN for {new_ticker} vs {pos} — FAIL-CLOSED (vetoing)")
+                    return True
+                if corr > threshold:
                     print(f"  [Agent 4B] CORRELATION VETO: {new_ticker} vs {pos} = {corr:.2f} (>{threshold})")
                     return True
+        return False  # All correlations computed and below threshold
+    except DataUnavailable as e:
+        print(f"  [Agent 4B] Correlation data unavailable \u2014 FAIL-CLOSED (vetoing {new_ticker}): {e}")
+        return True
     except Exception as e:
-        print(f"  [Agent 4B] Correlation check failed — FAIL-CLOSED (vetoing {new_ticker}): {e}")
+        print(f"  [Agent 4B] Correlation check failed \u2014 FAIL-CLOSED (vetoing {new_ticker}): {e}")
         return True  # Fail-closed: if we can't verify, assume correlated and veto
 
 
@@ -1931,14 +2121,18 @@ def size_position(
 
     # Enforce minimum 1% stop distance floor to prevent infinite leverage on tight stops
     effective_stop_distance = max(stop_distance, entry * 0.01)
-    shares_by_risk = int(risk_dollars // effective_stop_distance)
+    shares_by_risk = risk_dollars / effective_stop_distance
 
     # 4. Allocation cap (max position value as % of account)
     max_position_value = account_value * MAX_ALLOCATION_PCT
-    shares_by_alloc = int(max_position_value // entry)
+    shares_by_alloc = max_position_value / entry
 
-    shares = min(shares_by_risk, shares_by_alloc)
-    if shares == 0:
+    shares_raw = min(shares_by_risk, shares_by_alloc)
+
+    # Allow fractional shares (Robinhood supports them).
+    # Round to 6 decimal places (Robinhood precision), enforce a minimum of 0.001 shares.
+    shares = round(shares_raw, 6)
+    if shares < 0.001:
         return {"shares": 0, "reason": "ZERO_SHARES_AFTER_CONSTRAINTS"}
 
     binding = "risk" if shares == shares_by_risk else "allocation"
@@ -2123,8 +2317,8 @@ def run_agent4b(
             trade_orders.append(_reject_trade(ticker, "Insufficient cash/buying power available"))
             continue
         if position_value > max_deployable:
-            shares = int(max_deployable // entry)
-            if shares <= 0:
+            shares = round(max_deployable / entry, 6)
+            if shares < 0.001:
                 trade_orders.append(_reject_trade(ticker, "Dry powder floor (existing + new > 80%)"))
                 continue
             position_value = round(shares * entry, 2)
@@ -4420,7 +4614,8 @@ load_dotenv(Path(__file__).parent / ".env")
 # budget (out of $10K total project allowance, ~$4K already deployed elsewhere).
 # Scale factor: $500 / $5,500 ≈ 9.1% — pipeline sizes as if $500 is the full account,
 # so all risk parameters below are calibrated to this amount.
-ACCOUNT_SIZE = 500  # $500 Robinhood agentic account (proportional to $5,500 remaining)
+ACCOUNT_SIZE = 500  # $500 Robinhood agentic account
+ALPACA_PAPER_BUDGET = 10_000  # $10K paper trading budget (Alpaca mirror)
 DRY_POWDER_FLOOR = 0.20  # Never deploy beyond 80% ($400 max deployed)
 
 # Alpaca
@@ -4678,6 +4873,437 @@ if __name__ == "__main__":
     data = fetch_macro_data()
     print(json.dumps(data, indent=2))
     print("\n" + format_macro_for_prompt(data))
+
+```
+
+---
+
+## ./data_provider.py
+
+```python
+"""
+data_provider.py — Unified Data Provider Abstraction
+
+Single seam for all market data access. Routes through paid vendors
+(Massive/Polygon, Schwab) instead of yfinance scraping.
+
+Fallback hierarchy per method:
+  get_bars:    Massive → yfinance (deprecated fallback) → raise DataUnavailable
+  get_quote:   Schwab → raise DataUnavailable (broker feed ONLY)
+  get_index:   Massive I:<SYM> → Schwab → ETF proxy → raise DataUnavailable
+  get_corporate_actions: Massive splits → [] with log warning
+
+Rate limiting: Token-bucket for Massive free tier (5 calls/min).
+"""
+import os
+import time
+import logging
+import threading
+import requests
+import pandas as pd
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Optional
+
+from dotenv import load_dotenv
+
+load_dotenv(Path(__file__).parent / ".env")
+
+logger = logging.getLogger("DataProvider")
+
+
+class DataUnavailable(Exception):
+    """Raised when no data source can fulfill the request."""
+    pass
+
+
+# ── Rate Limiter ─────────────────────────────────────────────────────
+
+class _TokenBucket:
+    """Thread-safe token-bucket rate limiter for Massive free tier (5 calls/min).
+    
+    The read-modify-write on _timestamps is protected by a Lock to prevent
+    concurrent ThreadPoolExecutor workers from all seeing "under limit" at
+    the same millisecond and firing parallel requests that trigger 429s.
+    """
+
+    def __init__(self, max_calls: int = 5, window_seconds: int = 60):
+        self.max_calls = max_calls
+        self.window = window_seconds
+        self._timestamps: list = []
+        self._lock = threading.Lock()
+
+    def wait(self):
+        with self._lock:
+            now = time.time()
+            self._timestamps = [t for t in self._timestamps if now - t < self.window]
+            if len(self._timestamps) >= self.max_calls:
+                sleep_time = self.window - (now - self._timestamps[0]) + 0.5
+                if sleep_time > 0:
+                    logger.info(f"Rate limit: waiting {sleep_time:.1f}s")
+                    # Release lock during sleep so other threads can check
+                    self._lock.release()
+                    time.sleep(sleep_time)
+                    self._lock.acquire()
+            self._timestamps.append(time.time())
+
+
+# ── Data Provider ────────────────────────────────────────────────────
+
+class DataProvider:
+    """
+    Unified market data provider with cascading fallbacks.
+
+    Usage:
+        dp = DataProvider()
+        bars = dp.get_bars("AAPL", lookback_days=60)
+        index = dp.get_index("VIX")
+        splits = dp.get_corporate_actions("NVDA", since_days=7)
+    """
+
+    def __init__(self):
+        self._massive_key = os.environ.get("MASSIVE_API_KEY", "")
+        self._massive_base = "https://api.massive.com"
+        self._limiter = _TokenBucket(max_calls=5, window_seconds=60)
+
+        # Schwab credentials loaded lazily
+        self._schwab_quotes_fn = None
+
+    # ── Public API ───────────────────────────────────────────────────
+
+    def get_bars(
+        self,
+        ticker: str,
+        lookback_days: int = 60,
+        timespan: str = "day",
+    ) -> pd.DataFrame:
+        """
+        OHLCV bars, newest last. Columns: Open, High, Low, Close, Volume.
+        Fallback: Massive → yfinance (deprecated) → raise DataUnavailable.
+        """
+        # 1. Massive (Polygon)
+        if self._massive_key:
+            try:
+                df = self._massive_bars(ticker, lookback_days, timespan)
+                if df is not None and not df.empty:
+                    return df
+            except Exception as e:
+                logger.warning(f"Massive bars failed for {ticker}: {e}")
+
+        # 2. yfinance fallback (deprecated — will be removed)
+        try:
+            df = self._yfinance_bars(ticker, lookback_days, timespan)
+            if df is not None and not df.empty:
+                logger.info(f"[DataProvider] {ticker} served from yfinance fallback")
+                return df
+        except Exception as e:
+            logger.warning(f"yfinance bars failed for {ticker}: {e}")
+
+        raise DataUnavailable(f"No bar data available for {ticker}")
+
+    def get_quote(self, ticker: str) -> dict:
+        """
+        Live bid/ask/last for execution. Broker feed ONLY.
+        Fallback: Schwab → raise DataUnavailable.
+        (Execution paths must price against the venue we trade on.)
+        """
+        # Schwab
+        try:
+            quotes = self._schwab_quotes([ticker])
+            if ticker in quotes:
+                return quotes[ticker]
+        except Exception as e:
+            logger.warning(f"Schwab quote failed for {ticker}: {e}")
+
+        raise DataUnavailable(f"No live quote available for {ticker}")
+
+    def get_index(self, symbol: str) -> dict:
+        """
+        Index level for VIX/SPX.
+        Fallback: Massive I:<SYM> → Schwab $<SYM> → ETF proxy → raise.
+        Returns: {'symbol', 'value', 'source', 'is_proxy': bool}
+        """
+        symbol = symbol.upper().replace("^", "")
+        massive_ticker = f"I:{symbol}"
+        etf_proxy = {"VIX": "VIXY", "SPX": "SPY"}.get(symbol)
+
+        # 1. Massive index snapshot
+        if self._massive_key:
+            try:
+                val = self._massive_index(massive_ticker)
+                if val is not None:
+                    return {"symbol": symbol, "value": val, "source": "massive", "is_proxy": False}
+            except Exception as e:
+                logger.warning(f"Massive index {massive_ticker} failed: {e}")
+
+        # 2. Schwab $VIX / $SPX
+        try:
+            schwab_ticker = f"${symbol}"
+            quotes = self._schwab_quotes([schwab_ticker])
+            if schwab_ticker in quotes:
+                val = quotes[schwab_ticker].get("last") or quotes[schwab_ticker].get("bid")
+                if val and val > 0:
+                    return {"symbol": symbol, "value": float(val), "source": "schwab", "is_proxy": False}
+        except Exception as e:
+            logger.warning(f"Schwab index ${symbol} failed: {e}")
+
+        # 3. ETF proxy
+        if etf_proxy:
+            try:
+                bars = self.get_bars(etf_proxy, lookback_days=5, timespan="day")
+                if not bars.empty:
+                    proxy_val = float(bars["Close"].iloc[-1])
+                    logger.info(f"[DataProvider] {symbol} served via ETF proxy {etf_proxy} = {proxy_val}")
+                    return {"symbol": symbol, "value": proxy_val, "source": f"etf_proxy_{etf_proxy}", "is_proxy": True}
+            except Exception as e:
+                logger.warning(f"ETF proxy {etf_proxy} for {symbol} failed: {e}")
+
+        raise DataUnavailable(f"No index data available for {symbol}")
+
+    def get_corporate_actions(self, ticker: str, since_days: int = 7) -> list:
+        """
+        Recent splits/dividends.
+        Fallback: Massive → [] with log warning.
+        """
+        # 1. Massive splits endpoint
+        if self._massive_key:
+            try:
+                return self._massive_splits(ticker, since_days)
+            except Exception as e:
+                logger.warning(f"Massive splits failed for {ticker}: {e}")
+
+        logger.warning(f"[DataProvider] No corporate action data available for {ticker}")
+        return []
+
+    def get_news(self, ticker: str, limit: int = 5) -> list:
+        """
+        Recent news headlines for a ticker.
+        Fallback: Massive -> yfinance -> [].
+        Returns list of dicts with 'title', 'publisher', 'published'.
+        """
+        # 1. Massive news endpoint
+        if self._massive_key:
+            try:
+                articles = self._massive_news(ticker, limit)
+                if articles:
+                    return articles
+            except Exception as e:
+                logger.warning(f"Massive news failed for {ticker}: {e}")
+
+        # 2. yfinance fallback
+        try:
+            import yfinance as yf
+            stock = yf.Ticker(ticker)
+            news_items = stock.news or []
+            return [
+                {
+                    "title": n.get("title", ""),
+                    "publisher": n.get("publisher", ""),
+                    "published": n.get("providerPublishTime", ""),
+                }
+                for n in news_items[:limit]
+            ]
+        except Exception as e:
+            logger.warning(f"yfinance news failed for {ticker}: {e}")
+
+        return []
+
+    # ── Massive (Polygon) Internals ──────────────────────────────────
+
+    def _massive_get(self, endpoint: str, params: dict = None) -> dict:
+        """Authenticated GET to Massive with rate limiting."""
+        self._limiter.wait()
+        params = params or {}
+        params["apiKey"] = self._massive_key
+        url = f"{self._massive_base}{endpoint}"
+        resp = requests.get(url, params=params, timeout=15)
+
+        if resp.status_code == 403:
+            logger.warning(f"Massive 403 (not entitled): {endpoint}")
+            return {}
+        if resp.status_code == 429:
+            logger.warning(f"Massive 429 (rate limited): {endpoint}")
+            time.sleep(12)
+            resp = requests.get(url, params=params, timeout=15)
+
+        resp.raise_for_status()
+        return resp.json()
+
+    def _massive_bars(self, ticker: str, lookback_days: int, timespan: str) -> Optional[pd.DataFrame]:
+        """Fetch OHLCV bars from Massive/Polygon aggregates endpoint."""
+        end = datetime.now().strftime("%Y-%m-%d")
+        start = (datetime.now() - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
+        multiplier = 1
+
+        data = self._massive_get(
+            f"/v2/aggs/ticker/{ticker}/range/{multiplier}/{timespan}/{start}/{end}",
+            params={"limit": 5000, "sort": "asc"},
+        )
+
+        results = data.get("results", [])
+        if not results:
+            return None
+
+        df = pd.DataFrame(results)
+        df = df.rename(columns={"o": "Open", "h": "High", "l": "Low", "c": "Close", "v": "Volume", "t": "timestamp"})
+        df["Date"] = pd.to_datetime(df["timestamp"], unit="ms")
+        df = df.set_index("Date")
+        df = df[["Open", "High", "Low", "Close", "Volume"]]
+        return df
+
+    def _massive_index(self, ticker: str) -> Optional[float]:
+        """Fetch index snapshot from Massive. Returns value or None."""
+        # Try previous day endpoint first (works on broader tiers)
+        data = self._massive_get(f"/v2/aggs/ticker/{ticker}/prev")
+        results = data.get("results", [])
+        if results:
+            return float(results[0].get("c", 0))
+
+        # Try snapshot endpoint
+        data = self._massive_get("/v3/snapshot/indices", params={"ticker.any_of": ticker})
+        results = data.get("results", [])
+        if results:
+            session = results[0].get("session", {}) or results[0].get("value", {})
+            return float(session.get("close", session.get("value", 0)))
+
+        return None
+
+    def _massive_splits(self, ticker: str, since_days: int) -> list:
+        """Fetch recent stock splits from Massive/Polygon reference endpoint."""
+        data = self._massive_get("/v3/reference/splits", params={
+            "ticker": ticker,
+            "limit": 10,
+            "sort": "execution_date",
+            "order": "desc",
+        })
+
+        results = data.get("results", [])
+        cutoff = (datetime.now() - timedelta(days=since_days)).strftime("%Y-%m-%d")
+        recent = []
+        for split in results:
+            if split.get("execution_date", "1970-01-01") >= cutoff:
+                recent.append({
+                    "ticker": split.get("ticker"),
+                    "execution_date": split.get("execution_date"),
+                    "split_from": split.get("split_from"),
+                    "split_to": split.get("split_to"),
+                })
+        return recent
+
+    def _massive_news(self, ticker: str, limit: int = 5) -> list:
+        """Fetch news articles from Massive/Polygon reference endpoint."""
+        data = self._massive_get("/v2/reference/news", params={
+            "ticker": ticker,
+            "limit": limit,
+            "sort": "published_utc",
+            "order": "desc",
+        })
+
+        results = data.get("results", [])
+        return [
+            {
+                "title": article.get("title", ""),
+                "publisher": article.get("publisher", {}).get("name", "") if isinstance(article.get("publisher"), dict) else str(article.get("publisher", "")),
+                "published": article.get("published_utc", ""),
+            }
+            for article in results
+        ]
+
+    # ── Schwab Internals ─────────────────────────────────────────────
+
+    def _schwab_quotes(self, tickers: list) -> dict:
+        """Lazy-load and call Schwab quote function."""
+        if self._schwab_quotes_fn is None:
+            try:
+                from schwab_data import fetch_schwab_quotes
+                self._schwab_quotes_fn = fetch_schwab_quotes
+            except ImportError:
+                raise DataUnavailable("Schwab module not available")
+        return self._schwab_quotes_fn(tickers)
+
+    # ── yfinance Fallback (deprecated) ───────────────────────────────
+
+    @staticmethod
+    def _yfinance_bars(ticker: str, lookback_days: int, timespan: str) -> Optional[pd.DataFrame]:
+        """Deprecated yfinance fallback. Will be removed in a future PR."""
+        import yfinance as yf
+        period_map = {
+            "day": f"{lookback_days}d" if lookback_days <= 30 else "3mo" if lookback_days <= 90 else "6mo",
+        }
+        interval_map = {"day": "1d", "minute": "1m", "hour": "1h"}
+
+        period = period_map.get(timespan, "3mo")
+        interval = interval_map.get(timespan, "1d")
+
+        data = yf.download(ticker, period=period, interval=interval, progress=False)
+        if data.empty:
+            return None
+
+        # Normalize multi-index columns from yfinance
+        if hasattr(data.columns, "levels") and len(data.columns.levels) > 1:
+            data = data.droplevel(1, axis=1)
+
+        return data[["Open", "High", "Low", "Close", "Volume"]]
+
+
+# ── Mock Provider for Testing ────────────────────────────────────────
+
+class MockDataProvider(DataProvider):
+    """
+    Mock provider for unit tests. Returns canned data, no network calls.
+
+    Usage:
+        bars = pd.DataFrame({'Open': [...], 'High': [...], ...})
+        dp = MockDataProvider(bars={"AAPL": bars}, indices={"VIX": 18.5})
+    """
+
+    def __init__(self, bars: dict = None, quotes: dict = None, indices: dict = None, splits: dict = None, news: dict = None):
+        self._canned_bars = bars or {}
+        self._canned_quotes = quotes or {}
+        self._canned_indices = indices or {}
+        self._canned_splits = splits or {}
+        self._canned_news = news or {}
+
+    def get_bars(self, ticker: str, lookback_days: int = 60, timespan: str = "day") -> pd.DataFrame:
+        if ticker in self._canned_bars:
+            return self._canned_bars[ticker]
+        raise DataUnavailable(f"MockDataProvider: no bars for {ticker}")
+
+    def get_quote(self, ticker: str) -> dict:
+        if ticker in self._canned_quotes:
+            return self._canned_quotes[ticker]
+        raise DataUnavailable(f"MockDataProvider: no quote for {ticker}")
+
+    def get_index(self, symbol: str) -> dict:
+        symbol = symbol.upper().replace("^", "")
+        if symbol in self._canned_indices:
+            return {"symbol": symbol, "value": self._canned_indices[symbol], "source": "mock", "is_proxy": False}
+        raise DataUnavailable(f"MockDataProvider: no index for {symbol}")
+
+    def get_corporate_actions(self, ticker: str, since_days: int = 7) -> list:
+        return self._canned_splits.get(ticker, [])
+
+    def get_news(self, ticker: str, limit: int = 5) -> list:
+        return self._canned_news.get(ticker, [])
+
+
+# ── Singleton ────────────────────────────────────────────────────────
+
+_default_provider: Optional[DataProvider] = None
+
+
+def get_provider() -> DataProvider:
+    """Get the default DataProvider singleton."""
+    global _default_provider
+    if _default_provider is None:
+        _default_provider = DataProvider()
+    return _default_provider
+
+
+def set_provider(provider: DataProvider):
+    """Override the default DataProvider (for testing)."""
+    global _default_provider
+    _default_provider = provider
 
 ```
 
@@ -5185,7 +5811,7 @@ class ExecutionEngine:
             result = self.submit_trade_intent(
                 trade_id=trade_id,
                 ticker=order["ticker"],
-                shares=int(shares),
+                shares=shares,  # Allow fractional shares (Robinhood supports them)
                 limit_price=limit_price,
                 stop_price=stop_price,
             )
@@ -6044,7 +6670,7 @@ import sys
 from datetime import datetime, time
 
 import pytz
-import yfinance as yf
+# yfinance removed — all data routed through DataProvider
 
 from broker_factory import get_broker
 
@@ -6075,31 +6701,66 @@ def is_market_hours() -> bool:
 def get_intraday_change(ticker: str) -> dict:
     """
     Fetch intraday data for a ticker and compute change from today's open.
+    Uses DataProvider for SPY (bars) and VIX (index). Falls back to yfinance.
     Returns {"open": float, "current": float, "change_pct": float} or {"error": str}.
     """
+    from data_provider import get_provider, DataUnavailable
+
+    # VIX/SPX — route through get_index for proper fallback chain
+    clean = ticker.upper().replace("^", "")
+    if clean in ("VIX", "SPX"):
+        try:
+            dp = get_provider()
+            idx = dp.get_index(clean)
+            current = idx["value"]
+            # For intraday open we still need bars — try SPY as proxy for SPX
+            proxy = "SPY" if clean == "SPX" else "VIXY"
+            try:
+                bars = dp.get_bars(proxy, lookback_days=1, timespan="minute")
+                if bars is not None and not bars.empty:
+                    open_price = float(bars["Open"].iloc[0])
+                else:
+                    open_price = current  # Can't get open, use current (0% change)
+            except (DataUnavailable, Exception):
+                open_price = current
+
+            if open_price <= 0:
+                return {"error": f"Invalid open price for {ticker}"}
+
+            change_pct = (current - open_price) / open_price
+            return {
+                "open": round(open_price, 2),
+                "current": round(current, 2),
+                "change_pct": round(change_pct, 4),
+                "source": idx.get("source", "unknown"),
+                "is_proxy": idx.get("is_proxy", False),
+            }
+        except DataUnavailable as e:
+            return {"error": f"DataProvider: {e}"}
+        except Exception as e:
+            return {"error": str(e)}
+
+    # Regular tickers (SPY, individual positions) — use DataProvider bars
     try:
-        data = yf.download(ticker, period="1d", interval="1m", progress=False)
-        if data.empty:
+        dp = get_provider()
+        bars = dp.get_bars(ticker, lookback_days=1, timespan="minute")
+        if bars is None or bars.empty:
             return {"error": f"No intraday data for {ticker}"}
 
-        # Handle multi-level columns from yfinance
-        if hasattr(data.columns, 'levels') and len(data.columns.levels) > 1:
-            open_price = float(data["Open"][ticker].iloc[0])
-            current_price = float(data["Close"][ticker].iloc[-1])
-        else:
-            open_price = float(data["Open"].iloc[0])
-            current_price = float(data["Close"].iloc[-1])
+        open_price = float(bars["Open"].iloc[0])
+        current_price = float(bars["Close"].iloc[-1])
 
         if open_price <= 0:
             return {"error": f"Invalid open price for {ticker}"}
 
         change_pct = (current_price - open_price) / open_price
-
         return {
             "open": round(open_price, 2),
             "current": round(current_price, 2),
             "change_pct": round(change_pct, 4),
         }
+    except DataUnavailable as e:
+        return {"error": f"DataProvider: {e}"}
     except Exception as e:
         return {"error": str(e)}
 
@@ -6283,18 +6944,28 @@ def run_daemon():
     # --- Check VIX ---
     vix_data = get_intraday_change("^VIX")
     if "error" not in vix_data:
-        if vix_data["change_pct"] >= VIX_SPIKE_THRESHOLD:
+        # Widen threshold if using ETF proxy (tracking error vs spot VIX)
+        effective_threshold = VIX_SPIKE_THRESHOLD
+        if vix_data.get("is_proxy"):
+            effective_threshold *= 1.25
+            print(f"[Daemon] VIX via proxy — widened threshold to +{effective_threshold*100:.0f}%")
+
+        if vix_data["change_pct"] >= effective_threshold:
             trigger = {
                 "type": "VIX_SPIKE",
-                "detail": f"VIX up {vix_data['change_pct']*100:.2f}% (threshold: +{VIX_SPIKE_THRESHOLD*100:.0f}%)",
+                "detail": f"VIX up {vix_data['change_pct']*100:.2f}% (threshold: +{effective_threshold*100:.0f}%)",
                 "open": vix_data["open"],
                 "current": vix_data["current"],
                 "change_pct": vix_data["change_pct"],
+                "source": vix_data.get("source", "unknown"),
             }
             triggers.append(trigger)
             print(f"[Daemon] ⚠️ TRIGGER: {trigger['detail']}")
     else:
-        print(f"[Daemon] Warning: Could not fetch VIX data — {vix_data['error']}")
+        # VIX blind — alert but still run per-position checks
+        from safeguards import send_telegram
+        send_telegram(f"⚠️ Flash crash daemon blind on VIX: {vix_data['error']} — running degraded (per-position checks only)")
+        print(f"[Daemon] Warning: VIX BLIND — {vix_data['error']} — skipping market-wide trigger, running per-position checks")
 
     # --- Load positions ---
     try:
@@ -7181,23 +7852,28 @@ load_dotenv(Path(__file__).parent / ".env")
 BASE_URL = "https://api.massive.com"
 API_KEY = os.environ.get("MASSIVE_API_KEY", "")
 
-# Rate limiter: free tier = 5 calls/min
+# Thread-safe rate limiter: free tier = 5 calls/min
+import threading
 _call_times: list = []
+_rate_lock = threading.Lock()
 RATE_LIMIT = 5
 RATE_WINDOW = 60  # seconds
 
 
 def _rate_limit():
-    """Simple rate limiter for free tier (5 calls/min)."""
+    """Thread-safe rate limiter for free tier (5 calls/min)."""
     global _call_times
-    now = time.time()
-    _call_times = [t for t in _call_times if now - t < RATE_WINDOW]
-    if len(_call_times) >= RATE_LIMIT:
-        wait = RATE_WINDOW - (now - _call_times[0]) + 0.5
-        if wait > 0:
-            print(f"[Massive] Rate limit reached — waiting {wait:.1f}s")
-            time.sleep(wait)
-    _call_times.append(time.time())
+    with _rate_lock:
+        now = time.time()
+        _call_times = [t for t in _call_times if now - t < RATE_WINDOW]
+        if len(_call_times) >= RATE_LIMIT:
+            wait = RATE_WINDOW - (now - _call_times[0]) + 0.5
+            if wait > 0:
+                print(f"[Massive] Rate limit reached \u2014 waiting {wait:.1f}s")
+                _rate_lock.release()
+                time.sleep(wait)
+                _rate_lock.acquire()
+        _call_times.append(time.time())
 
 
 def _get(endpoint: str, params: dict = None) -> dict:
@@ -8264,6 +8940,57 @@ def fetch_x_smart_money(tickers: list) -> dict:
     return result.get("mentions", {})
 
 
+
+# ━━━ ALPACA PAPER MIRROR ━━━
+# Scale factor: Robinhood $500 → Alpaca paper $10K budget (20x)
+ALPACA_MIRROR_SCALE = 20  # $10K / $500
+
+def mirror_to_alpaca_paper(trade_orders: list) -> list:
+    """
+    Mirror today's trades to the Alpaca paper account, scaled to $10K budget.
+    Runs independently of Robinhood — failures here don't affect real execution.
+    """
+    try:
+        from broker import AlpacaBroker
+        paper_broker = AlpacaBroker()
+        
+        scaled_orders = []
+        for order in trade_orders:
+            if order.get("action") != "BUY":
+                continue
+            
+            scaled = dict(order)
+            original_shares = order.get("shares", 0)
+            
+            # Scale shares by mirror factor
+            if isinstance(original_shares, (int, float)) and original_shares > 0:
+                scaled["shares"] = max(1, int(original_shares * ALPACA_MIRROR_SCALE))
+            else:
+                # Dollar-based: scale the dollar amount
+                scaled["shares"] = ALPACA_MIRROR_SCALE
+            
+            scaled_orders.append(scaled)
+        
+        if not scaled_orders:
+            print("[Mirror] No BUY orders to mirror.")
+            return []
+        
+        print(f"[Mirror] Mirroring {len(scaled_orders)} orders to Alpaca paper (scale: {ALPACA_MIRROR_SCALE}x)...")
+        for o in scaled_orders:
+            print(f"  [Mirror] BUY {o['shares']} {o['ticker']} @ ${o.get('entry_price', '?')}")
+        
+        fills = paper_broker.execute_tear_sheet(scaled_orders, max_gap_pct=0.05)
+        
+        for f in fills:
+            status = f.get("status", "unknown")
+            print(f"  [Mirror] {f.get('ticker')}: {status}")
+        
+        return fills
+    except Exception as e:
+        print(f"[Mirror] ⚠️ Alpaca paper mirror failed (non-fatal): {e}")
+        return []
+
+
 # Discord is OUTPUT ONLY — used to deliver Tear Sheets and Agent 5 alerts.
 # NO Discord scraping for sentiment input. All sentiment comes from X API.
 # discord_fetch.py exists but is NOT called in the pipeline flow.
@@ -8457,18 +9184,14 @@ def run_morning_pipeline(verbose: bool = False) -> dict:
     try:
         x_mentions = fetch_x_smart_money(tickers)
         results["x_fetch"] = {"success": True}
-    except RuntimeError as e:
-        print(f"⚠️ {e}")
-        print("\n🔧 Agent 3 requires X data. Pipeline paused here.")
-        print("   Once X data is available, re-run from Agent 3.")
-        results["x_fetch"] = {"success": False, "error": str(e)}
-        with open("output/pipeline_state.json", "w") as f:
-            json.dump({
-                "stopped_at": "agent3_x_fetch",
-                "tickers_needed": tickers,
-                "timestamp": datetime.now().isoformat(),
-            }, f, indent=2)
-        return results
+    except Exception as e:
+        print(f"\u26a0\ufe0f X/Twitter fetch failed: {e}")
+        print("   Continuing with empty X data — Agent 3 will use news/options/SI only.")
+        x_mentions = {t: [] for t in tickers}
+        # Save empty mentions so Agent 3 can load them
+        with open("output/smart_money_mentions.json", "w") as smf:
+            json.dump(x_mentions, smf, indent=2)
+        results["x_fetch"] = {"success": False, "error": str(e), "fallback": "empty_mentions"}
     # Discord is OUTPUT ONLY — no sentiment scraping from Discord channels
     
     # ━━━ STEP 4: AGENT 3 — QUALITATIVE SYNTHESIZER (8:05 AM) ━━━
@@ -8569,6 +9292,14 @@ def run_morning_pipeline(verbose: bool = False) -> dict:
         for o in buy_orders:
             print(f"     BUY {o.get('shares', '?')} {o.get('ticker', '?')} @ ~${o.get('entry_price', '?')}")
     
+    # ━━━ STEP 6.5: MIRROR TO ALPACA PAPER ━━━
+    if buy_orders:
+        print("\n" + "━" * 40)
+        print("📋 STEP 6.5: ALPACA PAPER MIRROR")
+        print("━" * 40)
+        mirror_fills = mirror_to_alpaca_paper(trade_orders)
+        results["alpaca_mirror"] = {"fills": mirror_fills}
+
     # ━━━ ARCHIVE RUN ━━━
     try:
         archive_run("morning")
@@ -11179,8 +11910,8 @@ class RobinhoodBroker:
                         })
                         continue
 
-                    live_shares = int(risk_budget // live_risk_per_share)
-                    if live_shares <= 0:
+                    live_shares = round(risk_budget / live_risk_per_share, 6)
+                    if live_shares < 0.001:
                         fills.append({"ticker": ticker, "status": "rejected", "reason": "Zero shares after re-sizing"})
                         continue
 
@@ -11584,6 +12315,40 @@ if __name__ == "__main__":
 
 ---
 
+## ./run_daemon.sh
+
+```python
+#!/bin/bash
+# run_daemon.sh — Auto-restarting execution daemon wrapper
+#
+# Runs the execution reconciliation daemon with automatic restart on crash.
+# Writes heartbeat to output/daemon_hb_signal.txt every cycle.
+# The orchestrator checks this heartbeat before routing trades.
+#
+# Usage:
+#   bash run_daemon.sh          # Foreground
+#   nohup bash run_daemon.sh &  # Background
+#   tmux new -d -s daemon 'bash run_daemon.sh'  # tmux session
+
+cd "$(dirname "$0")"
+
+echo "═══════════════════════════════════════════"
+echo "  EXECUTION DAEMON — AUTO-RESTART WRAPPER"
+echo "  Press Ctrl+C to stop"
+echo "═══════════════════════════════════════════"
+
+while true; do
+    echo "[$(date)] Starting execution daemon..."
+    python3 run_execution_daemon.py
+    EXIT_CODE=$?
+    echo "[$(date)] Daemon exited with code $EXIT_CODE. Restarting in 5s..."
+    sleep 5
+done
+
+```
+
+---
+
 ## ./run_execution_daemon.py
 
 ```python
@@ -11613,6 +12378,154 @@ if __name__ == "__main__":
 
     engine = ExecutionEngine()
     engine.run_reconciliation_loop()
+
+```
+
+---
+
+## ./run_monitor.sh
+
+```python
+#!/bin/bash
+# Open Claw — Agent 5 Afternoon Position Monitor + Broker Execution
+# Scheduled: 3:30 PM ET, weekdays only
+cd /Users/chris/code/trading-pipeline
+export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+
+# Source environment variables
+set -a
+source .env
+set +a
+
+# Log output
+LOG_DIR="output/logs"
+mkdir -p "$LOG_DIR"
+LOG_FILE="$LOG_DIR/monitor_$(date +%Y-%m-%d).log"
+
+echo "=== Afternoon Monitor — $(date) ===" >> "$LOG_FILE"
+python3 orchestrator.py monitor >> "$LOG_FILE" 2>&1
+echo "=== Done — $(date) ===" >> "$LOG_FILE"
+
+```
+
+---
+
+## ./run_morning.sh
+
+```python
+#!/bin/bash
+# Open Claw — Morning Entry Pipeline (Agents 1-4 + Broker Execution)
+# Scheduled: 8:00 AM ET, weekdays only
+cd /Users/chris/code/trading-pipeline
+export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+
+# Source environment variables
+set -a
+source .env
+set +a
+
+# Log output
+LOG_DIR="output/logs"
+mkdir -p "$LOG_DIR"
+LOG_FILE="$LOG_DIR/morning_$(date +%Y-%m-%d).log"
+
+echo "=== Morning Pipeline — $(date) ===" >> "$LOG_FILE"
+python3 orchestrator.py morning >> "$LOG_FILE" 2>&1
+echo "=== Done — $(date) ===" >> "$LOG_FILE"
+
+```
+
+---
+
+## ./run_pipeline_auto.sh
+
+```python
+#!/bin/bash
+# Open Claw — Automated Morning Pipeline
+# Runs the full morning pipeline (Agents 1-4) and executes trades on Robinhood.
+# Cron: 55 7 * * 1-5 (7:55 AM ET, weekdays only)
+#
+# Agent 1 & 3: Gemini fallback (no Anthropic API key needed)
+# Agent 2: Gemini 3.1 Pro Preview
+# Agent 4: Pure Python (no LLM)
+# Execution: Robinhood MCP broker
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$SCRIPT_DIR"
+
+LOG_DIR="$SCRIPT_DIR/output/logs"
+mkdir -p "$LOG_DIR"
+
+DATE=$(date +%Y-%m-%d)
+LOG_FILE="$LOG_DIR/pipeline_${DATE}.log"
+
+echo "=============================================" >> "$LOG_FILE"
+echo "🌅 Open Claw Automated Pipeline — $DATE" >> "$LOG_FILE"
+echo "Started: $(date)" >> "$LOG_FILE"
+echo "=============================================" >> "$LOG_FILE"
+
+# Source env vars
+if [ -f "$SCRIPT_DIR/.env" ]; then
+    export $(grep -v '^#' "$SCRIPT_DIR/.env" | xargs)
+fi
+
+# Ensure PATH includes Python and system binaries
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+
+# Run the morning pipeline
+python3 "$SCRIPT_DIR/orchestrator.py" morning >> "$LOG_FILE" 2>&1
+PIPELINE_EXIT=$?
+
+echo "" >> "$LOG_FILE"
+echo "Pipeline exit code: $PIPELINE_EXIT" >> "$LOG_FILE"
+echo "Finished: $(date)" >> "$LOG_FILE"
+
+# If pipeline succeeded and there are pending orders, execute them
+if [ $PIPELINE_EXIT -eq 0 ] && [ -f "$SCRIPT_DIR/output/pending_orders.json" ]; then
+    echo "" >> "$LOG_FILE"
+    echo "⏰ Executing pending orders..." >> "$LOG_FILE"
+    python3 "$SCRIPT_DIR/orchestrator.py" execute >> "$LOG_FILE" 2>&1
+    echo "Execution exit code: $?" >> "$LOG_FILE"
+fi
+
+exit $PIPELINE_EXIT
+
+```
+
+---
+
+## ./run_reviews.sh
+
+```python
+#!/bin/bash
+# Open Claw — Performance Review Runner
+# Schedule: Weekly pulse (Fridays), Biweekly deep (1st + 15th), Monthly params (1st)
+#
+# Usage:
+#   ./run_reviews.sh weekly      # Friday weekly pulse
+#   ./run_reviews.sh biweekly    # Biweekly deep review + data source audit
+#   ./run_reviews.sh monthly     # Monthly parameter review
+#   ./run_reviews.sh all         # All three
+
+cd /Users/chris/code/trading-pipeline
+export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+
+set -a
+source .env 2>/dev/null
+set +a
+
+REVIEWS_DIR="output/reviews"
+mkdir -p "$REVIEWS_DIR"
+
+MODE="${1:-all}"
+TS=$(date +%Y%m%d_%H%M)
+LOG="$REVIEWS_DIR/review_${MODE}_${TS}.log"
+
+echo "=== Open Claw ${MODE} Review — $(date) ===" | tee "$LOG"
+python3 performance_review.py "$MODE" 2>&1 | tee -a "$LOG"
+echo "=== Done — $(date) ===" | tee -a "$LOG"
 
 ```
 
@@ -12055,28 +12968,25 @@ def filter_corporate_actions(screener: list) -> tuple:
     """
     Hard-block tickers that had a stock split in the last 7 days.
     Prevents hallucinated gaps and broken VaR math from adjusted historical prices.
+    Uses DataProvider (Massive/Polygon splits endpoint) instead of yfinance.
     """
-    import yfinance as yf
+    from data_provider import get_provider
+    dp = get_provider()
 
     print(f"[Corp Actions] Checking {len(screener)} tickers for recent splits...")
     filtered, removed = [], []
-    cutoff = datetime.now() - timedelta(days=7)
 
     for entry in screener:
         ticker = entry.get("ticker")
         try:
-            tk = yf.Ticker(ticker)
-            splits = tk.splits
-            if splits is not None and not splits.empty:
-                last_split_date = splits.index[-1]
-                if last_split_date.tzinfo is not None:
-                    last_split_date = last_split_date.tz_localize(None)
-                if last_split_date >= cutoff:
-                    print(f"  [Corp Actions] {ticker} -- Recent split detected ({last_split_date.date()})")
-                    removed.append({"ticker": ticker, "reason": "Recent corporate action/split"})
-                    continue
-        except Exception:
-            pass
+            splits = dp.get_corporate_actions(ticker, since_days=7)
+            if splits:
+                split_info = splits[0]
+                print(f"  [Corp Actions] {ticker} -- Recent split detected ({split_info.get('execution_date', '?')})")
+                removed.append({"ticker": ticker, "reason": "Recent corporate action/split", "detail": split_info})
+                continue
+        except Exception as e:
+            print(f"  [Corp Actions] {ticker}: split check failed ({e}) -- passing")
         filtered.append(entry)
 
     if removed:
@@ -12535,6 +13445,57 @@ if __name__ == "__main__":
 
 ---
 
+## ./schwab_exchange_token.sh
+
+```python
+#!/bin/bash
+# Usage: ./schwab_exchange_token.sh "FULL_CALLBACK_URL"
+# Extracts auth code and exchanges for token immediately
+
+cd "$(dirname "$0")"
+URL="$1"
+
+# Extract code parameter
+CODE=$(python3 -c "
+from urllib.parse import urlparse, parse_qs, unquote
+url = unquote('$URL')
+parsed = urlparse(url)
+params = parse_qs(parsed.query)
+print(params.get('code', [''])[0])
+")
+
+echo "Extracted code: ${CODE:0:20}..."
+
+python3 -c "
+import requests, base64, json, os
+from pathlib import Path
+from dotenv import load_dotenv
+load_dotenv('.env')
+
+app_key = os.environ['SCHWAB_APP_KEY']
+app_secret = os.environ['SCHWAB_APP_SECRET']
+code = '$CODE'
+
+credentials = base64.b64encode(f'{app_key}:{app_secret}'.encode()).decode()
+resp = requests.post(
+    'https://api.schwabapi.com/v1/oauth/token',
+    headers={'Authorization': f'Basic {credentials}', 'Content-Type': 'application/x-www-form-urlencoded'},
+    data={'grant_type': 'authorization_code', 'code': code, 'redirect_uri': 'https://127.0.0.1/'},
+)
+print(f'Status: {resp.status_code}')
+if resp.status_code == 200:
+    token_data = resp.json()
+    Path('schwab_token.json').write_text(json.dumps(token_data, indent=2))
+    print('Token saved to schwab_token.json')
+    print(f'Expires in: {token_data.get(\"expires_in\")}s')
+else:
+    print(f'Error: {resp.text}')
+"
+
+```
+
+---
+
 ## ./schwab_reauth.py
 
 ```python
@@ -12689,6 +13650,241 @@ def main():
 if __name__ == "__main__":
     success = main()
     exit(0 if success else 1)
+
+```
+
+---
+
+## ./test_data_provider.py
+
+```python
+"""
+Tests for DataProvider abstraction and risk math.
+Uses MockDataProvider — no live API calls.
+
+Run: pytest test_data_provider.py -v
+"""
+import pytest
+import numpy as np
+import pandas as pd
+from datetime import datetime, timedelta
+
+from data_provider import DataProvider, MockDataProvider, DataUnavailable, set_provider, get_provider
+
+
+# ── Fixtures ─────────────────────────────────────────────────────────
+
+# Shared date index for all mock bars (avoids join misalignment)
+_SHARED_DATES = pd.date_range(end="2026-05-28", periods=120, freq="B")
+
+
+def _make_bars(prices: list, dates=None) -> pd.DataFrame:
+    """Create a mock OHLCV DataFrame from a list of close prices."""
+    n = len(prices)
+    if dates is None:
+        dates = _SHARED_DATES[-n:]
+    return pd.DataFrame({
+        "Open": [p * 0.99 for p in prices],
+        "High": [p * 1.01 for p in prices],
+        "Low": [p * 0.98 for p in prices],
+        "Close": prices,
+        "Volume": [1_000_000] * n,
+    }, index=dates)
+
+
+@pytest.fixture
+def mock_dp():
+    """Set up a MockDataProvider and register it as default."""
+    # Generate correlated returns (AAPL and MSFT move together)
+    np.random.seed(42)
+    common_factor = np.random.randn(120) * 0.02  # shared market factor
+    aapl_returns = common_factor + np.random.randn(120) * 0.005
+    msft_returns = common_factor + np.random.randn(120) * 0.005
+    # TSLA: independent random walk
+    tsla_returns = np.random.randn(120) * 0.03
+
+    aapl_prices = [150.0]
+    msft_prices = [300.0]
+    tsla_prices = [200.0]
+    for i in range(119):
+        aapl_prices.append(aapl_prices[-1] * (1 + aapl_returns[i]))
+        msft_prices.append(msft_prices[-1] * (1 + msft_returns[i]))
+        tsla_prices.append(tsla_prices[-1] * (1 + tsla_returns[i]))
+
+    dp = MockDataProvider(
+        bars={
+            "AAPL": _make_bars(aapl_prices),
+            "MSFT": _make_bars(msft_prices),
+            "TSLA": _make_bars(tsla_prices),
+        },
+        indices={
+            "VIX": 18.5,
+            "SPX": 5425.0,
+        },
+        splits={
+            "NVDA": [{"ticker": "NVDA", "execution_date": "2024-06-10", "split_from": 1, "split_to": 10}],
+        },
+    )
+    set_provider(dp)
+    yield dp
+    set_provider(None)  # Reset
+
+
+# ── DataProvider Tests ───────────────────────────────────────────────
+
+class TestDataProviderInterface:
+
+    def test_get_bars_returns_dataframe(self, mock_dp):
+        bars = get_provider().get_bars("AAPL", lookback_days=60)
+        assert isinstance(bars, pd.DataFrame)
+        assert "Close" in bars.columns
+        assert len(bars) == 120  # Mock returns all bars
+
+    def test_get_bars_missing_ticker_raises(self, mock_dp):
+        with pytest.raises(DataUnavailable):
+            get_provider().get_bars("FAKE", lookback_days=60)
+
+    def test_get_index_returns_dict(self, mock_dp):
+        idx = get_provider().get_index("VIX")
+        assert idx["symbol"] == "VIX"
+        assert idx["value"] == 18.5
+        assert idx["is_proxy"] is False
+
+    def test_get_index_missing_raises(self, mock_dp):
+        with pytest.raises(DataUnavailable):
+            get_provider().get_index("FAKE")
+
+    def test_get_corporate_actions(self, mock_dp):
+        splits = get_provider().get_corporate_actions("NVDA")
+        assert len(splits) == 1
+        assert splits[0]["split_to"] == 10
+
+    def test_get_corporate_actions_empty(self, mock_dp):
+        splits = get_provider().get_corporate_actions("AAPL")
+        assert splits == []
+
+
+# ── Correlation Veto Tests ───────────────────────────────────────────
+
+class TestCorrelationVeto:
+
+    def test_correlated_tickers_vetoed(self, mock_dp):
+        from agent4_risk_manager import correlation_veto
+        # AAPL and MSFT share 80% common factor — should be correlated
+        # Use lower threshold to account for mock data alignment
+        result = correlation_veto("AAPL", ["MSFT"], threshold=0.50)
+        assert result is True  # Vetoed
+
+    def test_uncorrelated_tickers_pass(self, mock_dp):
+        from agent4_risk_manager import correlation_veto
+        # AAPL trending, TSLA random — should not be correlated
+        result = correlation_veto("AAPL", ["TSLA"], threshold=0.70)
+        assert result is False  # Passes
+
+    def test_empty_positions_pass(self, mock_dp):
+        from agent4_risk_manager import correlation_veto
+        result = correlation_veto("AAPL", [], threshold=0.70)
+        assert result is False
+
+    def test_data_unavailable_vetoes(self, mock_dp):
+        from agent4_risk_manager import correlation_veto
+        # FAKE ticker not in mock — should fail-closed (veto)
+        result = correlation_veto("FAKE", ["AAPL"], threshold=0.70)
+        assert result is True  # Fail-closed: no data for candidate = veto
+
+    def test_nan_correlation_vetoes(self, mock_dp):
+        from agent4_risk_manager import correlation_veto
+        from data_provider import MockDataProvider, set_provider
+        # Create two tickers with non-overlapping dates → NaN correlation
+        dates_a = pd.date_range(end="2026-01-15", periods=60, freq="B")
+        dates_b = pd.date_range(end="2026-05-15", periods=60, freq="B")
+        dp = MockDataProvider(bars={
+            "AAA": _make_bars([100 + i for i in range(60)], dates=dates_a),
+            "BBB": _make_bars([200 + i for i in range(60)], dates=dates_b),
+        })
+        set_provider(dp)
+        result = correlation_veto("AAA", ["BBB"], threshold=0.70)
+        assert result is True  # NaN = fail-closed
+        set_provider(mock_dp)  # Restore
+
+
+# ── Size Position Tests ──────────────────────────────────────────────
+
+class TestSizePosition:
+
+    def test_basic_sizing(self, mock_dp):
+        from agent4_risk_manager import size_position
+        result = size_position(
+            entry=100.0, stop=95.0, account_value=10000,
+            tier="PASS", confirm_enhanced=False, vol_regime="Normal",
+            posture="Aggressive", session_risk_used=0.0,
+        )
+        assert result["shares"] > 0
+        assert result["binding_constraint"] in ("risk", "allocation")
+
+    def test_tight_stop_floor(self, mock_dp):
+        from agent4_risk_manager import size_position
+        # Stop distance = $0.10 on $100 stock (0.1%)
+        # Without 1% floor: shares = risk / 0.10 = huge
+        # With 1% floor: shares = risk / 1.00 = reasonable
+        result = size_position(
+            entry=100.0, stop=99.90, account_value=10000,
+            tier="PASS", confirm_enhanced=False, vol_regime="Normal",
+            posture="Aggressive", session_risk_used=0.0,
+        )
+        # Position should be capped by allocation, not infinite
+        assert result["shares"] > 0
+        max_alloc_shares = int(10000 * 0.25 / 100)  # 25% of 10k
+        assert result["shares"] <= max_alloc_shares
+
+    def test_invalid_stop_zero_shares(self, mock_dp):
+        from agent4_risk_manager import size_position
+        result = size_position(
+            entry=100.0, stop=100.0, account_value=10000,
+            tier="PASS", confirm_enhanced=False, vol_regime="Normal",
+            posture="Aggressive", session_risk_used=0.0,
+        )
+        assert result["shares"] == 0
+
+    def test_bunker_posture_zero_shares(self, mock_dp):
+        from agent4_risk_manager import size_position
+        result = size_position(
+            entry=100.0, stop=95.0, account_value=10000,
+            tier="PASS", confirm_enhanced=False, vol_regime="Normal",
+            posture="Bunker", session_risk_used=0.0,
+        )
+        assert result["shares"] == 0
+
+    def test_session_budget_exhausted(self, mock_dp):
+        from agent4_risk_manager import size_position
+        result = size_position(
+            entry=100.0, stop=95.0, account_value=10000,
+            tier="PASS", confirm_enhanced=False, vol_regime="Normal",
+            posture="Aggressive", session_risk_used=99999.0,
+        )
+        assert result["shares"] == 0
+        assert "EXHAUSTED" in result.get("reason", "")
+
+
+# ── Index Fallback Chain Tests ───────────────────────────────────────
+
+class TestIndexFallback:
+
+    def test_massive_hit(self, mock_dp):
+        idx = get_provider().get_index("VIX")
+        assert idx["value"] == 18.5
+        assert idx["source"] == "mock"
+
+    def test_all_miss_raises(self):
+        empty_dp = MockDataProvider()
+        set_provider(empty_dp)
+        with pytest.raises(DataUnavailable):
+            get_provider().get_index("VIX")
+        set_provider(None)
+
+
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])
 
 ```
 
@@ -13701,55 +14897,581 @@ if __name__ == "__main__":
 
 ---
 
-## ./.env.example
+## ./deprecated/agent2b_deep_research.py
 
 ```python
-# Alpaca (get API keys from https://app.alpaca.markets)
-ALPACA_API_KEY=
-ALPACA_SECRET_KEY=
+"""
+Agent 2.5: Deep Research Analyst (Red Team)
+Model: Gemini 3.1 Pro (Google)
+Role: Qualitatively attack Agent 2's quantitative candidates using
+      pre-fetched news, short interest, and near-term options flow.
+"""
+import json
+import os
+import time
+from datetime import datetime
 
-# LLMs
-ANTHROPIC_API_KEY=
-GOOGLE_API_KEY=
+import yfinance as yf
+from dotenv import load_dotenv
+from google import genai
 
-# Telegram
-TELEGRAM_BOT_TOKEN=
-TELEGRAM_CHAT_ID=-5238217629
+load_dotenv()
+
+GEMINI_MODEL = "deep-research-preview-04-2026"
+MAX_RETRIES = 3
+RETRY_DELAY = 5
+GEMINI_TEMPERATURE = 0.2  # Slightly higher than Agent 2 to allow qualitative reasoning
+
+SYSTEM_PROMPT = """You are Agent 2.5: The Deep Research Analyst (Red Team) for a $100,000 speculative spot-only trading account.
+
+YOUR JOB: Agent 2 has passed you a list of 1-3 surviving candidates based on a rigid quantitative screen. Your role is to brutally stress-test the bullish thesis using the QUALITATIVE_CONTEXT provided by Python (recent news headlines, options flow, short interest).
+
+CRITICAL RULES:
+1. You may NOT look up or fetch external data. Rely ONLY on the QUALITATIVE_CONTEXT injected into this prompt.
+2. For each candidate, you must assign a RED_TEAM_VERDICT:
+   - PASS: The qualitative data reveals no major red flags.
+   - DOWNGRADE: The thesis is okay, but crowded options flow or negative news sentiment warrants caution. Lower the conviction tier (e.g., EXCEPTIONAL -> STRONG). You may NEVER upgrade a tier.
+   - VETO: Fatal flaw discovered (e.g., looming regulatory action, terrible earnings reaction, highly skewed put volume). The trade is dead.
+3. You must generate a "red_flag_warnings" array for each candidate. Even if the setup is clean, identify the biggest risk factor.
+4. Synthesize a "qualitative_thesis" that combines Agent 2's quantitative thesis with your qualitative realities.
+
+<deep_research_protocol>
+CRITICAL: You must conduct your analysis inside a <deep_research_scratchpad> block before generating your final JSON output.
+Step 1: Inventory the qualitative context (News Headlines, Options Flow, Short Interest).
+Step 2: Red Team the Catalyst: Is it already priced in? Is the market ignoring a macro headwind?
+Step 3: Analyze Options Flow: Does the Call/Put ratio confirm the bullish quantitative thesis, or are institutions hedging heavily?
+Step 4: Re-evaluate the CONVICTION_TIER (PASS, STRONG, EXCEPTIONAL, or REJECTED).
+Step 5: Write the qualitative_thesis.
+</deep_research_protocol>
+
+OUTPUT FORMAT:
+First, output your <deep_research_scratchpad>...</deep_research_scratchpad> analysis.
+Then, output ONLY this JSON structure:
+{
+  "agent": "deep_research_analyst",
+  "timestamp": "<ISO timestamp>",
+  "evaluations": [
+    {
+      "ticker": "<SYMBOL>",
+      "red_team_verdict": "<PASS | DOWNGRADE | VETO>",
+      "updated_conviction_tier": "<PASS | STRONG | EXCEPTIONAL | REJECTED>",
+      "red_flag_warnings": ["<specific risk 1>", "<specific risk 2>"],
+      "qualitative_thesis": "<2-3 sentences merging the quant thesis with qualitative realities>"
+    }
+  ],
+  "research_notes": "<Overall summary of your qualitative teardown>"
+}"""
+
+
+def prefetch_qualitative_context(candidates: list) -> dict:
+    """Pre-fetch news and options data to feed Gemini's qualitative deep dive."""
+    context = {}
+    print(f"  [Agent 2.5] Pre-fetching qualitative context for {len(candidates)} candidates...")
+
+    for c in candidates:
+        ticker = c["ticker"]
+        try:
+            stock = yf.Ticker(ticker)
+
+            # 1. Fetch News Headlines
+            news_items = stock.news
+            headlines = [
+                f"- {n.get('providerPublishTime', '')}: {n.get('title', '')} [{n.get('publisher', '')}]"
+                for n in news_items[:5]
+            ] if news_items else ["- No recent news available"]
+
+            # 2. Fetch Options Flow (Put/Call OI Ratio for nearest expiration)
+            options_context = "No options data available"
+            try:
+                expirations = stock.options
+                if expirations:
+                    nearest_exp = expirations[0]
+                    chain = stock.option_chain(nearest_exp)
+                    puts_oi = int(chain.puts['openInterest'].fillna(0).sum()) if not chain.puts.empty else 0
+                    calls_oi = int(chain.calls['openInterest'].fillna(0).sum()) if not chain.calls.empty else 0
+                    pc_ratio = round(puts_oi / calls_oi, 2) if calls_oi > 0 else 0
+                    options_context = f"Nearest Expiration ({nearest_exp}): Put OI = {puts_oi}, Call OI = {calls_oi}, P/C Ratio = {pc_ratio}"
+            except Exception:
+                pass
+
+            # 3. Short Interest
+            info = stock.info
+            short_pct = info.get("shortPercentOfFloat")
+            short_context = f"{round(short_pct * 100, 2)}%" if short_pct else "N/A"
+
+            context[ticker] = {
+                "recent_headlines": headlines,
+                "options_flow": options_context,
+                "short_interest_pct_of_float": short_context,
+            }
+        except Exception as e:
+            context[ticker] = {"error": str(e)}
+
+    return context
+
+
+def call_gemini_red_team(candidates: list, qual_context: dict) -> dict:
+    """Call Gemini 3.1 Pro to red-team candidates with qualitative context."""
+    client = genai.Client(api_key=os.environ.get("GOOGLE_API_KEY"))
+
+    context_lines = []
+    for c in candidates:
+        ticker = c["ticker"]
+        qc = qual_context.get(ticker, {})
+
+        line = (
+            f"TICKER: {ticker}\n"
+            f"  Quantitative Thesis: {c.get('thesis', 'N/A')}\n"
+            f"  Current Conviction: {c.get('conviction_tier', 'PASS')}\n"
+            f"  --- QUALITATIVE DATA ---\n"
+            f"  Short Interest: {qc.get('short_interest_pct_of_float', 'N/A')}\n"
+            f"  Options Flow: {qc.get('options_flow', 'N/A')}\n"
+            f"  Recent Headlines:\n" + "\n".join([f"    {h}" for h in qc.get('recent_headlines', [])]) + "\n"
+        )
+        context_lines.append(line)
+
+    user_message = f"""Here are the candidates from Agent 2, alongside pre-fetched qualitative context (news, short interest, and options flow).
+ALL data has been pre-fetched by Python.
+
+CANDIDATES & QUALITATIVE CONTEXT:
+{"=" * 50}
+{"".join(context_lines)}
+{"=" * 50}
+
+Perform your deep research and red team evaluation.
+Current date/time: {datetime.now().isoformat()}"""
+
+    last_error = None
+    for attempt in range(MAX_RETRIES):
+        try:
+            print(f"  [Agent 2.5] Calling {GEMINI_MODEL} (attempt {attempt + 1}/{MAX_RETRIES})...")
+            response = client.models.generate_content(
+                model=GEMINI_MODEL,
+                contents=user_message,
+                config=genai.types.GenerateContentConfig(
+                    system_instruction=SYSTEM_PROMPT,
+                    temperature=GEMINI_TEMPERATURE,
+                    max_output_tokens=8192,
+                ),
+            )
+
+            raw_text = response.text.strip()
+
+            # Extract JSON after the scratchpad
+            if "</deep_research_scratchpad>" in raw_text:
+                after_scratchpad = raw_text.split("</deep_research_scratchpad>", 1)[1].strip()
+            else:
+                after_scratchpad = raw_text
+
+            # Strip markdown code fences if present
+            if after_scratchpad.startswith("```"):
+                after_scratchpad = after_scratchpad.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+
+            brace_start = after_scratchpad.find("{")
+            if brace_start >= 0:
+                result = json.loads(after_scratchpad[brace_start:])
+                return result
+            else:
+                raise json.JSONDecodeError("No JSON object found", after_scratchpad, 0)
+
+        except Exception as e:
+            last_error = e
+            print(f"  [Agent 2.5] Gemini Error: {e}. Retrying in {RETRY_DELAY}s...")
+            time.sleep(RETRY_DELAY)
+
+    raise Exception(f"{GEMINI_MODEL} failed after {MAX_RETRIES} attempts. Last error: {last_error}")
+
+
+def run_agent2b(agent2_result: dict = None) -> dict:
+    """Run Agent 2.5: Pre-fetch qualitative context, call Gemini, merge output."""
+    if agent2_result is None:
+        path = "output/agent2_candidates.json"
+        if not os.path.exists(path):
+            return {"success": False, "error": "No Agent 2 candidates found."}
+        with open(path) as f:
+            agent2_result = json.load(f)
+
+    candidates = agent2_result.get("candidates", [])
+    if not candidates:
+        return {
+            "success": True,
+            "evaluations": [],
+            "updated_agent2_result": agent2_result,
+            "note": "No candidates to red-team.",
+        }
+
+    # Pre-fetch qualitative context (news, options, short interest)
+    qual_context = prefetch_qualitative_context(candidates)
+
+    # Call Gemini Red Team
+    try:
+        gemini_result = call_gemini_red_team(candidates, qual_context)
+    except Exception as e:
+        return {"success": False, "error": f"Gemini error: {e}"}
+
+    # Merge evaluations and filter VETOs
+    evaluations = {ev["ticker"]: ev for ev in gemini_result.get("evaluations", [])}
+    surviving_candidates = []
+
+    for c in candidates:
+        ticker = c["ticker"]
+        ev = evaluations.get(ticker)
+
+        if not ev:
+            surviving_candidates.append(c)
+            continue
+
+        verdict = ev.get("red_team_verdict", "PASS")
+
+        if verdict == "VETO" or ev.get("updated_conviction_tier") == "REJECTED":
+            print(f"  [Agent 2.5] 🚫 VETOED {ticker}")
+            continue
+
+        # Update conviction tier if downgraded; apply updated qualitative thesis
+        c["conviction_tier"] = ev.get("updated_conviction_tier", c["conviction_tier"])
+        c["thesis"] = ev.get("qualitative_thesis", c["thesis"])
+
+        # Attach red team metadata for downstream reporting/sizing
+        c["red_flag_warnings"] = ev.get("red_flag_warnings", [])
+        c["red_team_verdict"] = verdict
+        surviving_candidates.append(c)
+
+    # Reconstruct output mimicking Agent 2 shape, but with filtered candidates
+    updated_agent2_result = agent2_result.copy()
+    updated_agent2_result["candidates"] = surviving_candidates
+    updated_agent2_result["agent2b_research_notes"] = gemini_result.get("research_notes", "")
+
+    return {
+        "success": True,
+        "evaluations": gemini_result.get("evaluations", []),
+        "research_notes": gemini_result.get("research_notes", ""),
+        "updated_agent2_result": updated_agent2_result,
+    }
+
+
+def format_agent2b_for_slack(result: dict) -> str:
+    """Format Agent 2.5 output using Slack-friendly mrkdwn."""
+    if not result.get("success"):
+        return f"⚠️ *Agent 2.5 FAILED:* {result.get('error')}"
+
+    evaluations = result.get("evaluations", [])
+    updated_candidates = result.get("updated_agent2_result", {}).get("candidates", [])
+
+    lines = [
+        f"🕵️ *AGENT 2.5: RED TEAM DEEP DIVE*",
+        f"> *Survived Red Team:* {len(updated_candidates)}/{len(evaluations)}",
+        f"> *Model:* Gemini 3.1 Pro (Temp: {GEMINI_TEMPERATURE})",
+        f"",
+    ]
+
+    if not evaluations:
+        lines.append("🚫 No evaluations performed.")
+        return "\n".join(lines)
+
+    for i, ev in enumerate(evaluations, 1):
+        verdict = ev.get("red_team_verdict", "PASS")
+        emoji = "⚠️" if verdict == "DOWNGRADE" else "✅"
+        if verdict == "VETO" or ev.get("updated_conviction_tier") == "REJECTED":
+            emoji = "🚫"
+
+        lines.append(f"*{i}. {ev.get('ticker')}* — {emoji} *{verdict}*")
+        lines.append(f"• *Tier:* {ev.get('updated_conviction_tier')}")
+
+        flags = ev.get("red_flag_warnings", [])
+        if flags:
+            lines.append("• *Red Flags:*")
+            for flag in flags:
+                lines.append(f"  - {flag}")
+
+        if verdict != "VETO":
+            lines.append(f"• *Thesis:* {ev.get('qualitative_thesis', '')}")
+
+        lines.append(f"")
+
+    lines.append(f"📝 *Notes:* _{result.get('research_notes', '')}_")
+    return "\n".join(lines)
+
+
+if __name__ == "__main__":
+    result = run_agent2b()
+    print("\n" + format_agent2b_for_slack(result))
+
+    if result.get("success"):
+        os.makedirs("output", exist_ok=True)
+        with open("output/agent2b_evaluations.json", "w") as f:
+            json.dump(result, f, indent=2, default=str)
+        with open("output/agent2_candidates.json", "w") as f:
+            json.dump(result["updated_agent2_result"], f, indent=2, default=str)
+        print(f"\n[Agent 2.5] Filtered candidates saved to output/agent2_candidates.json")
 
 ```
 
 ---
 
-## ./.gitignore
+## ./deprecated/agent3_signal_verifier.py
 
 ```python
-__pycache__/
-*.pyc
-.env
-output/archive/
-output/reviews/
-output/*.json
-output/*.txt
-output/*.pdf
-output/*.md
-output/*.html
-journal/trades.csv
-*.egg-info/
-.DS_Store
-schwab_token.json
-schwab_localhost.pem
-schwab_localhost.key
-schwab_auth_server.py
-schwab_exchange_token.sh
-output/execution_ledger.db
-output/execution_engine.log
-output/broker_state.lock
+"""
+Agent 3: Smart Money Verifier — v2.1
+Model: Claude (Anthropic)
+Role: Reads smart money Twitter/X sentiment for surviving tickers and
+      outputs a VERIFICATION_SCORE (0-10).
+
+X/Twitter research is MANDATORY — no bypass. If data is unavailable,
+the pipeline halts with an error rather than skipping.
+"""
+import json
+import os
+from datetime import datetime, timedelta
+
+from dotenv import load_dotenv
+
+load_dotenv()
+
+# Curated smart money accounts to monitor
+# These are the accounts whose sentiment we track
+CURATED_ACCOUNTS = [
+    "unusual_whales",
+    "DeItaone",
+    "Fxhedgers",
+    "zaborsky",
+    "jimcramer",
+    "GurufocusData",
+    "OptionsHawk",
+    "PeterSchiff",
+    "TruthGundlach",
+    "elerianm",
+    "SqueezeMetrics",
+    "sentimentrader",
+    "DarkPoolChart",
+    "WallStJesus",
+    "VolSignals",
+]
+
+SYSTEM_PROMPT = """You are Agent 3: The Smart Money Verifier for a $100,000 speculative spot-only trading account.
+
+YOUR JOB: Given curated smart money mentions from X/Twitter (7-day lookback, 31 institutional-grade accounts), determine whether smart money sentiment supports or vetoes each candidate trade.
+
+OUTPUT EXACTLY ONE OF THE FOLLOWING VERDICTS per candidate:
+
+- PASS_THROUGH: Default verdict. Smart money is silent, mildly mixed, or moderately positive. The trade proceeds as-is using Agent 2's conviction tier. No numeric score.
+
+- VETO_DIVERGENT: 3 or more curated accounts are bearish on the ticker, OR at least 1 hedge fund principal (boazweinstein, CliffordAsness, DylanLeClair_, cngarabedian, RayDalio) is bearish. Effect: REJECT the trade. It does not proceed to Agent 4.
+
+- VETO_CROWDED: 8 or more curated accounts are bullish on the same ticker within the last 48 hours. Effect: REJECT the trade (contrarian signal — too crowded).
+
+- CONFIRM_ENHANCED: 2 or more sector specialists or hedge fund principals are publicly aligned with the thesis, AND zero curated accounts are bearish. Effect: Trade proceeds with a CONFIRM_BONUS applied in Agent 4B sizing.
+
+RULES:
+- Do NOT produce a numeric score. The verdict IS the output.
+- Cite specific tweets or accounts that drove your verdict.
+- If no mentions exist for a ticker, the verdict is PASS_THROUGH (silence is not a red flag).
+- Be rigorous about VETO thresholds — do not veto on 1-2 mildly negative mentions.
+
+OUTPUT FORMAT — respond with ONLY this JSON:
+{
+  "agent": "smart_money_verifier",
+  "timestamp": "<ISO timestamp>",
+  "verifications": [
+    {
+      "ticker": "<SYMBOL>",
+      "verdict": "<PASS_THROUGH | VETO_DIVERGENT | VETO_CROWDED | CONFIRM_ENHANCED>",
+      "sentiment_read": "<1-2 sentence summary of smart money stance>",
+      "cited_accounts": ["<specific accounts that drove this verdict>"],
+      "cited_tweets": ["<key tweet excerpts>"]
+    }
+  ],
+  "overall_note": "<any cross-candidate observations>"
+}"""
+
+
+def fetch_x_mentions(tickers: list) -> dict:
+    """
+    Fetch Twitter/X mentions from curated smart money accounts
+    for the given tickers over the last 14 days.
+    
+    Uses the x_search tool via the OpenClaw pipeline.
+    Returns structured mention data per ticker.
+    """
+    # This function is called by the orchestrator, which has access to x_search.
+    # When running standalone, it reads from the pre-fetched file.
+    mentions_path = "output/smart_money_mentions.json"
+    if os.path.exists(mentions_path):
+        with open(mentions_path) as f:
+            data = json.load(f)
+        # x_fetch.py saves mentions nested under "mentions" key
+        if "mentions" in data:
+            return data["mentions"]
+        return data
+
+    # If no pre-fetched data exists, raise an error — X research is mandatory
+    raise RuntimeError(
+        "No smart money X/Twitter data found at output/smart_money_mentions.json. "
+        "X research is MANDATORY — run x_fetch.py first. "
+        "The pipeline cannot proceed without smart money sentiment data."
+    )
+
+
+def run_agent3(agent2_result: dict = None, x_mentions: dict = None) -> dict:
+    """
+    Run Agent 3: Analyze smart money X/Twitter sentiment.
+    X research is MANDATORY — pipeline halts if data is unavailable.
+    """
+    # Load Agent 2 candidates
+    if agent2_result is None:
+        path = "output/agent2_candidates.json"
+        if not os.path.exists(path):
+            return {"success": False, "error": "No Agent 2 candidates found."}
+        with open(path) as f:
+            agent2_result = json.load(f)
+
+    candidates = agent2_result.get("candidates", [])
+    if not candidates:
+        return {
+            "success": True,
+            "verifications": [],
+            "note": "No candidates to verify.",
+        }
+
+    tickers = [c.get("ticker") for c in candidates]
+
+    # Fetch X mentions — MANDATORY, no bypass
+    if x_mentions is None:
+        try:
+            x_mentions = fetch_x_mentions(tickers)
+        except RuntimeError as e:
+            return {"success": False, "error": str(e)}
+
+    # Filter mentions for our specific tickers
+    ticker_mentions = {}
+    for ticker in tickers:
+        ticker_mentions[ticker] = x_mentions.get(ticker, x_mentions.get(ticker.lower(), []))
+
+    print(f"[Agent 3] Analyzing X/Twitter sentiment for {len(tickers)} tickers: {tickers}")
+    for t, mentions in ticker_mentions.items():
+        count = len(mentions) if isinstance(mentions, list) else 0
+        print(f"  [Agent 3] {t}: {count} mentions from curated accounts")
+
+    # Send to Claude for interpretation
+    try:
+        import anthropic
+        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        if not api_key:
+            raise RuntimeError("No ANTHROPIC_API_KEY — run as subagent via OpenClaw.")
+
+        client = anthropic.Anthropic(api_key=api_key)
+
+        user_message = f"""Analyze smart money X/Twitter sentiment for these candidates.
+
+CANDIDATES FROM AGENT 2:
+{json.dumps([{"ticker": c.get("ticker"), "thesis": c.get("thesis"), "theme": c.get("theme_match")} for c in candidates], indent=2)}
+
+CURATED SMART MONEY X/TWITTER MENTIONS (last 7 days):
+{json.dumps(ticker_mentions, indent=2)}
+
+CURATED ACCOUNTS MONITORED:
+{json.dumps(CURATED_ACCOUNTS)}
+
+Current date/time: {datetime.now().isoformat()}
+
+Score each ticker's smart money alignment. Respond with ONLY the JSON output."""
+
+        response = client.messages.create(
+            model="claude-opus-4-7",
+            max_tokens=16000,
+            thinking={
+                "type": "enabled",
+                "budget_tokens": 10000,
+            },
+            system=SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": user_message}],
+        )
+
+        # With extended thinking, content has thinking + text blocks
+        raw_text = next(b.text for b in response.content if b.type == "text").strip()
+        if raw_text.startswith("```"):
+            raw_text = raw_text.split("\n", 1)[1]
+            raw_text = raw_text.rsplit("```", 1)[0]
+            raw_text = raw_text.strip()
+
+        result = json.loads(raw_text)
+
+        # Validate verification_score is integer
+        for v in result.get("verifications", []):
+            score = v.get("verification_score")
+            if not isinstance(score, int):
+                raise ValueError(f"verification_score must be int, got: {score}")
+
+        result["success"] = True
+        result["candidates_passthrough"] = candidates
+        return result
+
+    except RuntimeError as e:
+        # No API key — return data for subagent execution
+        return {
+            "success": False,
+            "needs_subagent": True,
+            "prompt": SYSTEM_PROMPT,
+            "candidates": candidates,
+            "x_mentions": ticker_mentions,
+        }
+    except Exception as e:
+        return {"success": False, "error": f"Claude API error: {e}"}
+
+
+def format_agent3_for_telegram(result: dict) -> str:
+    """Format Agent 3 output for Telegram."""
+    if not result.get("success"):
+        return f"⚠️ Agent 3 FAILED: {result.get('error')}"
+
+    lines = [
+        f"{'='*30}",
+        f"📡 AGENT 3: SMART MONEY VERIFIER (v2.1)",
+        f"{'='*30}",
+        f"",
+    ]
+
+    for v in result.get("verifications", []):
+        score = v.get("verification_score", "?")
+        flag = v.get("flag", "unknown")
+
+        flag_emoji = {
+            "aligned": "🟢",
+            "contested": "🟡",
+            "silent": "⚪",
+            "crowded": "🔴",
+            "divergent": "🔴",
+        }.get(flag, "❓")
+
+        lines.append(f"{'─'*25}")
+        lines.append(f"{flag_emoji} {v.get('ticker')} — Score: {score}/10 [{flag.upper()}]")
+        lines.append(f"  💬 {v.get('sentiment_read', 'N/A')}")
+        mentions = v.get("key_mentions", [])
+        if mentions:
+            lines.append(f"  📣 Key: {', '.join(mentions)}")
+        lines.append(f"")
+
+    if result.get("overall_note"):
+        lines.append(f"📝 {result.get('overall_note')}")
+
+    return "\n".join(lines)
+
+
+if __name__ == "__main__":
+    result = run_agent3()
+    print("\n" + format_agent3_for_telegram(result))
+
+    if result.get("success"):
+        os.makedirs("output", exist_ok=True)
+        with open("output/agent3_verified.json", "w") as f:
+            json.dump(result, f, indent=2, default=str)
+        print(f"\n[Agent 3] Results saved to output/agent3_verified.json")
 
 ```
 
 ---
 
-## ./robinhood-mcp/auth_and_discover.py
+## robinhood-mcp/auth_and_discover.py
 
 ```python
 #!/usr/bin/env python3
@@ -14024,4 +15746,3 @@ if __name__ == "__main__":
 ```
 
 ---
-
