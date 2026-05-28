@@ -60,6 +60,13 @@ RULES:
 - A stock being down is NOT thesis broken. The thesis is about WHY you entered, not the price.
 - If no breaking news exists for a ticker, default to INTACT.
 - Cite the specific news headline or regime shift that drove your decision.
+- CLASSIFY the news_category for each review:
+  * COMPANY_SPECIFIC: Earnings, FDA decision, lawsuit, management change, guidance revision
+  * SECTOR_SPECIFIC: Industry-wide regulation, sector earnings trend, supply chain disruption
+  * MACRO_NOISE: Fed commentary, CPI/jobs data, general market selloff, geopolitical tension
+  * SECTOR_ROTATION: Money flowing between sectors (tech→value, growth→defensive)
+  * GENERAL_MARKET: Broad index movement, VIX spike, options expiry
+  Only COMPANY_SPECIFIC and SECTOR_SPECIFIC events can genuinely break a thesis.
 
 OUTPUT FORMAT — respond with ONLY this JSON:
 {
@@ -70,6 +77,7 @@ OUTPUT FORMAT — respond with ONLY this JSON:
     {
       "ticker": "<SYMBOL>",
       "thesis_status": "<INTACT | DEGRADED | BROKEN>",
+      "news_category": "<COMPANY_SPECIFIC | SECTOR_SPECIFIC | MACRO_NOISE | SECTOR_ROTATION | GENERAL_MARKET>",
       "override_action": <null | "CLOSE">,
       "original_thesis_summary": "<1 sentence recap of the entry thesis>",
       "thesis_assessment": "<2-3 sentences explaining why the thesis is intact/degraded/broken>",
@@ -604,6 +612,16 @@ def run_agent5(positions: list = None, snapshot: dict = None) -> dict:
         thesis_review = thesis_lookup.get(ticker, {})
         thesis_status = thesis_review.get("thesis_status", "INTACT")
         thesis_override = thesis_review.get("override_action")
+        news_category = thesis_review.get("news_category", "")
+
+        # MATERIALITY GATE: Override LLM hallucinated thesis breaks on general noise.
+        # If the LLM says BROKEN but the news is just macro noise (not a material
+        # company-specific event), force thesis back to INTACT. Prevents panic sells
+        # on "Fed said something" when the actual stock thesis hasn't changed.
+        if thesis_status == "BROKEN" and news_category in ("MACRO_NOISE", "SECTOR_ROTATION", "GENERAL_MARKET", ""):
+            print(f"  🛡️ {ticker}: MATERIALITY GATE — LLM said BROKEN but news_category='{news_category}' → overriding to INTACT")
+            thesis_status = "INTACT"
+            thesis_override = None
 
         # Merge logic
         if crisis_liquidation:

@@ -237,11 +237,11 @@ def call_synthesis(candidates: list, qual_context: dict, x_mentions: dict) -> di
         mention_count = len(mentions) if isinstance(mentions, list) else 0
         mention_text = json.dumps(mentions, indent=2) if mentions else "No mentions from curated accounts"
 
+        # DOUBLE-BLIND: Do NOT show Agent 2's thesis, conviction tier, or theme
+        # to Agent 3. This prevents sycophantic agreement with upstream analysis.
+        # Agent 3 should form its own independent qualitative assessment.
         line = (
             f"TICKER: {ticker}\n"
-            f"  Quantitative Thesis: {c.get('thesis', 'N/A')}\n"
-            f"  Current Conviction Tier: {c.get('conviction_tier', 'PASS')}\n"
-            f"  Theme: {c.get('theme_match', 'N/A')}\n"
             f"  --- QUALITATIVE MOSAIC ---\n"
             f"  Short Interest: {qc.get('short_interest_pct_of_float', 'N/A')}\n"
             f"  Options Flow: {qc.get('options_flow', 'N/A')}\n"

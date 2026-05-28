@@ -23,14 +23,45 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Gemini Deep Research (speed/efficiency)
-MODEL = "deep-research-preview-04-2026"
-MODEL_DISPLAY = "Gemini Deep Research"
+# Gemini model selection
+# Switch to gemini-3.0-pro with responseSchema for deterministic JSON output.
+# Deep Research is kept as fallback (set AGENT2_USE_DEEP_RESEARCH=true in .env).
+USE_DEEP_RESEARCH = os.environ.get("AGENT2_USE_DEEP_RESEARCH", "false").lower() == "true"
+
+MODEL = "deep-research-preview-04-2026" if USE_DEEP_RESEARCH else "gemini-3.0-pro"
+MODEL_DISPLAY = "Gemini Deep Research" if USE_DEEP_RESEARCH else "Gemini 3.0 Pro"
 GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
 MAX_RETRIES = 3
 RETRY_DELAY = 5
 POLL_INTERVAL = 15  # seconds between status polls
 MAX_POLL_TIME = 300  # 5 min max wait for deep research to complete
+
+# Strict JSON schema for Gemini responseSchema (non-deep-research path)
+OUTPUT_SCHEMA = {
+    "type": "OBJECT",
+    "properties": {
+        "candidates": {
+            "type": "ARRAY",
+            "items": {
+                "type": "OBJECT",
+                "properties": {
+                    "ticker": {"type": "STRING"},
+                    "thesis": {"type": "STRING"},
+                    "conviction_tier": {"type": "STRING", "enum": ["PASS", "STRONG", "EXCEPTIONAL"]},
+                    "theme_match": {"type": "STRING"},
+                    "catalyst": {"type": "STRING"},
+                    "source": {"type": "STRING", "enum": ["Newsletter", "Screener Stage 2"]},
+                    "screening_notes": {"type": "STRING"},
+                },
+                "required": ["ticker", "thesis", "conviction_tier", "theme_match", "catalyst", "source"],
+            },
+        },
+        "screening_notes": {"type": "STRING"},
+        "regime_used": {"type": "STRING"},
+        "posture_used": {"type": "STRING"},
+    },
+    "required": ["candidates", "screening_notes", "regime_used", "posture_used"],
+}
 
 SYSTEM_PROMPT = """You are Agent 2: The Fundamental Screener for a $100,000 speculative spot-only trading account.
 
@@ -49,18 +80,15 @@ CRITICAL RULES:
 6. If the regime is DEFER, CRISIS with Bunker posture, output an empty candidates array.
 7. All surviving candidates must be at least PASS tier.
 
-<deep_research_protocol>
-CRITICAL: You must conduct your analysis inside a <research_scratchpad> block before generating your final structured output.
+ANALYSIS PROTOCOL:
 Step 1: Inventory the exact numerical data and fundamentals injected by Python.
 Step 2: Verify the asset passes the >$5 price and >$100M market cap constraints.
 Step 3: Argue the downside. Why might this setup fail? (Play Devil's Advocate).
 Step 4: Brutally interrogate the fundamentals to assign a CONVICTION_TIER (PASS, STRONG, or EXCEPTIONAL).
 Step 5: Ensure the THEME_MATCH is a verbatim, character-for-character echo of Agent 1's theme.
-Only after completing this <research_scratchpad> block may you output the final JSON.
-</deep_research_protocol>
 
 OUTPUT FORMAT:
-First, output your <research_scratchpad>...</research_scratchpad> analysis.
+Respond with ONLY the JSON object. No preamble, no scratchpad, no explanation.
 Then, output ONLY this JSON structure (no markdown, no code blocks):
 {
   "agent": "fundamental_screener",
@@ -81,35 +109,8 @@ Then, output ONLY this JSON structure (no markdown, no code blocks):
   "screening_notes": "<brief note on selection process and rejected names>"
 }"""
 
-# Strict JSON schema for structured outputs (Jamie fix #3)
-# This prevents Gemini from outputting "HIGH" instead of an integer
-OUTPUT_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "agent": {"type": "string"},
-        "timestamp": {"type": "string"},
-        "regime_received": {"type": "string"},
-        "candidates": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "ticker": {"type": "string"},
-                    "name": {"type": "string"},
-                    "type": {"type": "string", "enum": ["equity", "sector ETF", "commodity ETF", "crypto"]},
-                    "theme_match": {"type": "string"},
-                    "conviction_tier": {"type": "string", "enum": ["PASS", "STRONG", "EXCEPTIONAL"]},
-                    "thesis": {"type": "string"},
-                    "catalyst": {"type": "string"},
-                    "source": {"type": "string", "enum": ["Newsletter", "Screener Stage 2"]},
-                },
-                "required": ["ticker", "name", "type", "theme_match", "conviction_tier", "thesis", "catalyst", "source"],
-            },
-        },
-        "screening_notes": {"type": "string"},
-    },
-    "required": ["agent", "timestamp", "regime_received", "candidates", "screening_notes"],
-}
+# Old OUTPUT_SCHEMA removed — consolidated into the one at the top of the file
+# which uses Gemini API format (OBJECT/STRING/ARRAY uppercase) for responseSchema
 
 
 def prefetch_fundamental_data(screener_universe: list) -> dict:
@@ -369,10 +370,73 @@ def _extract_json_from_report(report_text: str) -> dict:
     raise json.JSONDecodeError("No valid JSON with 'candidates' found in report", report_text[:200], 0)
 
 
+def call_gemini_pro(directive: dict, screener_universe: list, fundamental_data: dict, held_tickers: list = None) -> dict:
+    """
+    Send directive + screener + fundamentals to Gemini 3.0 Pro.
+    Uses synchronous generateContent with responseSchema for deterministic JSON.
+    No deep research, no browsing — pure prompt-in, structured-JSON-out.
+    """
+    api_key = os.environ.get("GOOGLE_API_KEY", "")
+    if not api_key:
+        raise RuntimeError("No GOOGLE_API_KEY — set in .env to use Gemini.")
+
+    prompt = _build_research_prompt(directive, screener_universe, fundamental_data, held_tickers)
+
+    url = f"{GEMINI_API_BASE}/models/{MODEL}:generateContent?key={api_key}"
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "systemInstruction": {"parts": [{"text": SYSTEM_PROMPT}]},
+        "generationConfig": {
+            "temperature": 0.0,
+            "responseMimeType": "application/json",
+            "responseSchema": OUTPUT_SCHEMA,
+        },
+    }
+
+    last_error = None
+    for attempt in range(MAX_RETRIES):
+        try:
+            print(f"  [Agent 2] Calling {MODEL_DISPLAY} (attempt {attempt + 1}/{MAX_RETRIES})...")
+            resp = requests.post(url, json=payload, timeout=120)
+            resp.raise_for_status()
+            data = resp.json()
+
+            # Extract text from response
+            candidates_resp = data.get("candidates", [])
+            if not candidates_resp:
+                raise RuntimeError(f"Gemini returned no candidates: {data}")
+
+            text = candidates_resp[0].get("content", {}).get("parts", [{}])[0].get("text", "")
+            if not text:
+                raise RuntimeError("Gemini returned empty text")
+
+            parsed = json.loads(text)
+
+            # Validate conviction_tier enums (should be enforced by schema, but belt-and-suspenders)
+            for c in parsed.get("candidates", []):
+                tier = c.get("conviction_tier")
+                if tier not in ("PASS", "STRONG", "EXCEPTIONAL"):
+                    c["conviction_tier"] = "PASS"
+                source = c.get("source")
+                if source not in ("Newsletter", "Screener Stage 2"):
+                    c["source"] = "Screener Stage 2"
+
+            print(f"  [Agent 2] Success with {MODEL_DISPLAY} — {len(parsed.get('candidates', []))} candidates")
+            return parsed
+
+        except Exception as e:
+            last_error = e
+            print(f"  [Agent 2] Attempt {attempt + 1} failed: {e}")
+            if attempt < MAX_RETRIES - 1:
+                time.sleep(RETRY_DELAY)
+
+    raise RuntimeError(f"{MODEL_DISPLAY} failed after {MAX_RETRIES} attempts: {last_error}")
+
+
 def call_deep_research(directive: dict, screener_universe: list, fundamental_data: dict, held_tickers: list = None) -> dict:
     """
     Send directive + screener + fundamentals to Gemini Deep Research Max.
-    Uses the Interactions API (async).
+    Uses the Interactions API (async). LEGACY — kept for fallback.
     """
     api_key = os.environ.get("GOOGLE_API_KEY", "")
     if not api_key:
@@ -508,7 +572,10 @@ def run_agent2(directive: dict = None, screener_universe: list = None) -> dict:
     # Call Deep Research Max with full context
     print(f"[Agent 2] Calling {MODEL_DISPLAY} with {len(screener_universe)} tickers + fundamentals...")
     try:
-        model_result = call_deep_research(directive, screener_universe, fundamental_data, held_tickers=held_tickers)
+        if USE_DEEP_RESEARCH:
+            model_result = call_deep_research(directive, screener_universe, fundamental_data, held_tickers=held_tickers)
+        else:
+            model_result = call_gemini_pro(directive, screener_universe, fundamental_data, held_tickers=held_tickers)
     except RuntimeError as re:
         # No API key
         return {"success": False, "needs_subagent": True, "error": str(re)}
