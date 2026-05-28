@@ -64,9 +64,11 @@ You may receive Fed Funds futures-derived rate probabilities. Key signals:
 
 GEX (GAMMA EXPOSURE) DATA (if provided in DIX section):
 GEX from SqueezeMetrics measures dealer gamma positioning:
-- POSITIVE GEX = dealers are long gamma. They buy dips and sell rips → market stabilizes, moves get dampened, price pins to strikes. Low vol environment.
-- NEGATIVE GEX = dealers are short gamma. They sell dips and buy rips → moves get AMPLIFIED. Expect larger daily ranges, whipsaws, and potential flash crashes.
-- GEX is a VOLATILITY AMPLIFIER signal, not directional. Negative GEX + RISK-OFF = much worse than RISK-OFF alone.
+- POSITIVE GEX = Dealers are long gamma. They buy dips and sell rips. The market is pinned, ranges are tight. -> This maps to a COMPRESSED or NORMAL Vol Regime.
+- NEGATIVE GEX = Dealers are short gamma. They sell dips and buy rips. Moves are AMPLIFIED and whipsaws are violent. -> This maps to an ELEVATED or STRESSED Vol Regime.
+
+CRITICAL DIRECTIVE ON GEX:
+GEX is a VOLATILITY signal, not a directional signal. Negative GEX environments produce the most violent mean-reversion rallies of the year. Do NOT downgrade a RISK-ON regime to RISK-OFF solely because GEX is negative. Instead, map negative GEX exclusively to the VOL_REGIME (ELEVATED or STRESSED) to instruct downstream agents to widen their stop-losses so we survive the intraday chop.
 
 ITC (INTO THE CRYPTOVERSE) DATA (if provided):
 You may also receive data from ITC's platform. These are HIGH-VALUE supplementary signals:

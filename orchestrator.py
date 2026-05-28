@@ -35,7 +35,9 @@ from agent5_position_monitor import run_agent5, run_agent5_preflight, format_age
 from broker_factory import get_broker
 from trade_journal import log_close, build_trade_record
 from watchlist import Watchlist, promote_ready_candidates
-from vwap_gate import check_vwap, vwap_gate
+# VWAP gate removed — caused adverse selection (buying above morning VWAP = exit liquidity for institutions)
+# Now using passive midpoint routing in run_deferred_execution()
+# from vwap_gate import check_vwap, vwap_gate
 from run_archiver import archive_run
 from safeguards import (
     is_market_open_today,
@@ -608,67 +610,95 @@ def resume_from_agent3(verbose: bool = False) -> dict:
 
 def run_deferred_execution() -> dict:
     """
-    Execute pending orders with VWAP gate.
-    Run at 9:45-10:15 AM when intraday VWAP has matured.
+    Execute pending orders using PASSIVE MIDPOINT limits.
+    VWAP gate removed — it caused adverse selection by buying above morning VWAP
+    (i.e., crossing the spread to pay institutional algos who VWAP-slice their sells).
+    Now routes limit orders at the NBBO midpoint via the ExecutionEngine.
     """
+    import uuid
+    import market_data
+    from execution_engine import ExecutionEngine
+
     pending_path = "output/pending_orders.json"
     if not os.path.exists(pending_path):
         print("❌ No pending orders found. Run morning pipeline first.")
         return {"error": "no_pending_orders"}
-    
+
     with open(pending_path) as f:
         pending = json.load(f)
-    
+
     trade_orders = pending.get("orders", [])
     buy_orders = [o for o in trade_orders if o.get("action") == "BUY"]
-    
+
     if not buy_orders:
         print("📋 No BUY orders to execute.")
         return {"success": True, "fills": []}
-    
+
     print("=" * 50)
-    print("💰 DEFERRED EXECUTION — VWAP GATE + BROKER")
+    print("💰 DEFERRED EXECUTION — PASSIVE MIDPOINT ROUTING")
     print(f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M:%S ET')}")
     print("=" * 50)
-    
-    # Run VWAP gate with mature intraday data
-    print("\n🔒 VWAP Gate: Checking intraday VWAP...")
-    approved_orders, rejected_orders = vwap_gate(trade_orders)
-    
-    if rejected_orders:
-        print(f"  ❌ VWAP Rejected ({len(rejected_orders)}):")
-        for r in rejected_orders:
-            print(f"     {r['ticker']}: {r.get('reject_reason')}")
-    
-    approved_buys = [o for o in approved_orders if o.get('action') == 'BUY']
-    
-    if not approved_buys:
-        print("📋 All orders rejected by VWAP gate.")
-        return {"success": True, "fills": [], "all_rejected": True}
-    
-    print(f"  ✅ VWAP Approved: {len(approved_buys)} BUY order(s)")
-    
-    # Execute via execution engine (stateful ledger + daemon)
-    try:
-        from execution_engine import ExecutionEngine
-        engine = ExecutionEngine()
-        fills = engine.submit_batch_intents(approved_orders)
-        
-        submitted = [f for f in fills if f.get("status") == "submitted"]
-        errors = [f for f in fills if f.get("status") in ("error", "rejected")]
-        
-        print(f"\n📊 Execution Engine Results:")
-        print(f"  ✅ Submitted to ledger: {len(submitted)}")
-        print(f"  ❌ Errors: {len(errors)}")
-        print(f"  📡 Background daemon will handle fills → stop placement")
-        
-        # Clean up pending file
-        os.rename(pending_path, pending_path.replace(".json", f"_executed_{datetime.now().strftime('%Y%m%d_%H%M')}.json"))
-        
-        return {"success": True, "fills": fills}
-    except Exception as e:
-        print(f"❌ Execution failed: {e}")
-        return {"success": False, "error": str(e)}
+
+    engine = ExecutionEngine()
+
+    # Fetch live quotes to calculate NBBO midpoint
+    tickers = [o["ticker"] for o in buy_orders]
+    print(f"\n📡 Fetching live quotes for {len(tickers)} tickers...")
+    live_quotes = market_data.fetch_latest_quotes(tickers)
+
+    fills = []
+    for order in buy_orders:
+        ticker = order["ticker"]
+        quote = live_quotes.get(ticker, {})
+
+        bid = quote.get("bid", 0)
+        ask = quote.get("ask", 0)
+        last = quote.get("last", order.get("entry_price", 0))
+
+        # Calculate true midpoint. Fall back to last price if NBBO is broken.
+        if bid > 0 and ask > 0:
+            midpoint = round((bid + ask) / 2.0, 2)
+            spread_bps = ((ask - bid) / midpoint) * 10000
+            print(f"  [NBBO] {ticker}: Bid ${bid:.2f} | Ask ${ask:.2f} | Spread {spread_bps:.0f} bps")
+        else:
+            midpoint = round(last, 2)
+            print(f"  [NBBO] {ticker}: Missing bid/ask, defaulting to last ${last:.2f}")
+
+        # Safety: reject if stock gapped up > 3% from planned entry (avoid chasing)
+        entry_price = order.get("entry_price", midpoint)
+        if entry_price > 0:
+            gap_pct = (midpoint - entry_price) / entry_price
+            if gap_pct > 0.03:
+                print(f"  🚫 REJECTED {ticker}: Gapped up {gap_pct*100:.1f}% from planned entry. Avoid chasing.")
+                fills.append({"ticker": ticker, "status": "rejected_gap_up", "gap_pct": round(gap_pct * 100, 1)})
+                continue
+
+        trade_id = str(uuid.uuid4())
+
+        # Route intent to the Execution Ledger
+        # Passive midpoint limit — no more ask * 1.0015 spread-crossing
+        result = engine.submit_trade_intent(
+            trade_id=trade_id,
+            ticker=ticker,
+            shares=int(order.get("shares", 0)),
+            limit_price=midpoint,
+            stop_price=order.get("stop_loss", 0),
+        )
+        fills.append({
+            "ticker": ticker,
+            "status": result.get("status", "unknown"),
+            "limit_price": midpoint,
+            "order_id": result.get("order_id"),
+        })
+        print(f"  ✅ {ticker}: Midpoint limit routed at ${midpoint:.2f}")
+
+    submitted = sum(1 for f in fills if f.get("status") == "submitted")
+    print(f"\n📊 Results: {submitted}/{len(fills)} orders routed to execution ledger")
+    print("📡 Background daemon will handle fills → stop placement")
+
+    # Clean up pending file
+    os.rename(pending_path, pending_path.replace(".json", f"_executed_{datetime.now().strftime('%Y%m%d_%H%M')}.json"))
+    return {"success": True, "fills": fills}
 
 
 if __name__ == "__main__":

@@ -51,6 +51,15 @@ ATR_MULTIPLIERS = {
     "EXCEPTIONAL": 2.0,
 }
 
+# Volatility Regime ATR Modifiers — widen stops in high-vol to survive whipsaws
+# GEX-driven: negative GEX → Elevated/Stressed → wider stops, fewer shares, same dollar risk
+VOL_ATR_MODIFIERS = {
+    "Compressed": 0.85,   # Tighter stops in low vol (dealers long gamma, market pinned)
+    "Normal": 1.0,
+    "Elevated": 1.25,     # Give it room to breathe
+    "Stressed": 1.5,      # Massive stops to survive negative GEX whipsaws
+}
+
 
 def get_moving_averages(ticker: str) -> dict:
     """Fetch prior close + moving averages for a ticker."""
@@ -77,12 +86,13 @@ def get_moving_averages(ticker: str) -> dict:
         return {"error": str(e)}
 
 
-def calculate_atr_stop(ticker: str, entry_price: float, conviction_tier: str) -> dict:
+def calculate_atr_stop(ticker: str, entry_price: float, conviction_tier: str, vol_regime: str = "Normal") -> dict:
     """
     Calculate ATR-based stop loss for a ticker.
-    Downloads 20 trading days of daily OHLC, computes 14-day ATR,
-    and sets stop at entry_price - (multiplier * ATR).
-    Multiplier scales with conviction tier (wider stop = more room for winners).
+    Stop distance scales with Conviction Tier AND Volatility Regime.
+    
+    Wider stops in high-vol (negative GEX) environments avoid whipsaw stops
+    while the dollar-VaR math upstream reduces share count to keep risk flat.
     """
     try:
         stock = yf.Ticker(ticker)
@@ -103,17 +113,21 @@ def calculate_atr_stop(ticker: str, entry_price: float, conviction_tier: str) ->
         # 14-day ATR (simple moving average of true range)
         atr = true_range.tail(14).mean()
 
-        multiplier = ATR_MULTIPLIERS.get(conviction_tier, ATR_MULTIPLIERS["PASS"])
-        stop_distance = multiplier * atr
+        # Dynamic stop expansion: Conviction * Volatility
+        base_multiplier = ATR_MULTIPLIERS.get(conviction_tier, ATR_MULTIPLIERS["PASS"])
+        vol_modifier = VOL_ATR_MODIFIERS.get(vol_regime, 1.0)
+        final_multiplier = base_multiplier * vol_modifier
+
+        stop_distance = final_multiplier * atr
         stop_price = entry_price - stop_distance
         stop_distance_pct = (stop_distance / entry_price) * 100
 
         return {
             "stop_price": round(stop_price, 2),
             "atr": round(atr, 4),
-            "atr_multiplier": multiplier,
+            "atr_multiplier": round(final_multiplier, 2),
             "stop_distance_pct": round(stop_distance_pct, 2),
-            "stop_label": f"{multiplier}x ATR({round(atr, 2)})",
+            "stop_label": f"{round(final_multiplier, 2)}x ATR({round(atr, 2)})",
         }
     except Exception as e:
         return {"error": str(e)}
@@ -207,7 +221,7 @@ def calculate_portfolio_heat() -> dict:
 
         if stop_price is None:
             # Estimate stop using ATR
-            atr_result = calculate_atr_stop(ticker, entry_price, "PASS")
+            atr_result = calculate_atr_stop(ticker, entry_price, "PASS", "Normal")
             if "error" not in atr_result:
                 stop_price = atr_result["stop_price"]
                 stop_source = "estimated_atr"
@@ -642,6 +656,14 @@ def run_agent4(agent2_result: dict = None, agent3_result: dict = None, directive
     candidates = agent2_result.get("candidates", [])
     verifications = agent3_result.get("verifications", []) if agent3_result else []
 
+    # Extract vol_regime for dynamic ATR stop widening
+    vol_raw = directive.get("vol_regime", "Normal")
+    try:
+        vol_regime = normalize_vol_regime(vol_raw)
+    except Exception:
+        vol_regime = "Normal"
+    print(f"[Agent 4] Vol regime: {vol_regime} (ATR modifier: {VOL_ATR_MODIFIERS.get(vol_regime, 1.0)}x)")
+
     if not candidates:
         return {
             "success": True,
@@ -731,8 +753,8 @@ def run_agent4(agent2_result: dict = None, agent3_result: dict = None, directive
 
         entry_price = ma_data["prior_close"]
 
-        # Calculate ATR-based stop
-        atr_result = calculate_atr_stop(ticker, entry_price, conviction_tier)
+        # Calculate ATR-based stop with vol regime modifier
+        atr_result = calculate_atr_stop(ticker, entry_price, conviction_tier, vol_regime)
         if "error" in atr_result:
             print(f"  [Agent 4] {ticker}: ATR failed — {atr_result['error']}")
             stop_anchors.append({
