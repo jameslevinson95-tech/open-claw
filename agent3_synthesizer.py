@@ -203,12 +203,9 @@ def _load_x_mentions(tickers: list) -> dict:
             result[ticker] = raw.get(ticker, raw.get(ticker.lower(), []))
         return result
 
-    # X research is mandatory — raise if missing
-    raise RuntimeError(
-        "No smart money X/Twitter data found at output/smart_money_mentions.json. "
-        "X research is MANDATORY — run x_fetch.py first. "
-        "The pipeline cannot proceed without smart money sentiment data."
-    )
+    # X data not available — return empty mentions, Agent 3 will work with news/options/SI
+    print("  [Agent 3] No X/Twitter data found — proceeding with news/options/SI only.")
+    return {t: [] for t in tickers}
 
 
 def call_synthesis(candidates: list, qual_context: dict, x_mentions: dict) -> dict:
@@ -216,14 +213,18 @@ def call_synthesis(candidates: list, qual_context: dict, x_mentions: dict) -> di
     Send the complete qualitative mosaic to Claude Opus 4.7 for unified synthesis.
     Uses adaptive thinking (extended thinking with budget_tokens).
     """
-    import anthropic
     import time
 
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if not api_key:
-        raise RuntimeError("No ANTHROPIC_API_KEY — run as subagent via OCPlatform.")
+    anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    google_key = os.environ.get("GOOGLE_API_KEY", "")
 
-    client = anthropic.Anthropic(api_key=api_key)
+    if not anthropic_key and not google_key:
+        raise RuntimeError("No ANTHROPIC_API_KEY or GOOGLE_API_KEY — cannot run Agent 3.")
+
+    client = None
+    if anthropic_key:
+        import anthropic
+        client = anthropic.Anthropic(api_key=anthropic_key)
 
     # Build the mosaic payload for each candidate
     mosaic_lines = []
@@ -282,70 +283,96 @@ Current date/time: {datetime.now().isoformat()}
 Perform your synthesis and respond with ONLY the JSON output."""
 
     last_error = None
-    for attempt in range(MAX_RETRIES):
+    raw_text = None
+
+    # Try Claude first
+    if client:
+        for attempt in range(MAX_RETRIES):
+            try:
+                print(f"  [Agent 3] Calling {MODEL} (attempt {attempt + 1}/{MAX_RETRIES})...")
+                response = client.messages.create(
+                    model=MODEL,
+                    max_tokens=16000,
+                    temperature=1,
+                    thinking={"type": "enabled", "budget_tokens": 10000},
+                    system=SYSTEM_PROMPT,
+                    messages=[{"role": "user", "content": user_message}],
+                )
+                raw_text = next(b.text for b in response.content if b.type == "text").strip()
+                break
+            except Exception as e:
+                last_error = e
+                print(f"  [Agent 3] Claude error: {e}. Retrying in {RETRY_DELAY}s...")
+                time.sleep(RETRY_DELAY)
+
+    # Fall back to Gemini if Claude unavailable or failed
+    if raw_text is None and google_key:
+        print("  [Agent 3] Falling back to Gemini 3.1 Pro Preview...")
         try:
-            print(f"  [Agent 3] Calling {MODEL} (attempt {attempt + 1}/{MAX_RETRIES})...")
-
-            response = client.messages.create(
-                model=MODEL,
-                max_tokens=16000,
-                temperature=1,  # Required for extended thinking
-                thinking={
-                    "type": "enabled",
-                    "budget_tokens": 10000,
+            import requests as _requests
+            gemini_model = "gemini-3.1-pro-preview"
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{gemini_model}:generateContent?key={google_key}"
+            payload = {
+                "contents": [{"parts": [{"text": user_message}]}],
+                "systemInstruction": {"parts": [{"text": SYSTEM_PROMPT}]},
+                "generationConfig": {
+                    "temperature": 0.0,
+                    "responseMimeType": "application/json",
+                    "thinkingConfig": {"thinkingBudget": 4096},
                 },
-                system=SYSTEM_PROMPT,
-                messages=[{"role": "user", "content": user_message}],
-            )
-
-            # With extended thinking, content has thinking + text blocks
-            raw_text = next(b.text for b in response.content if b.type == "text").strip()
-
-            # Strip scratchpad if present
-            if "</research_scratchpad>" in raw_text:
-                raw_text = raw_text.split("</research_scratchpad>", 1)[1].strip()
-
-            # Try code-fenced JSON first
-            json_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', raw_text, re.DOTALL)
-            if json_match:
-                json_str = json_match.group(1)
-            else:
-                # Find the outermost JSON object by matching balanced braces
-                brace_depth = 0
-                start = None
-                json_str = None
-                for i, ch in enumerate(raw_text):
-                    if ch == '{':
-                        if brace_depth == 0:
-                            start = i
-                        brace_depth += 1
-                    elif ch == '}':
-                        brace_depth -= 1
-                        if brace_depth == 0 and start is not None:
-                            candidate = raw_text[start:i+1]
-                            try:
-                                json.loads(candidate)
-                                json_str = candidate
-                                break
-                            except json.JSONDecodeError:
-                                start = None
-                                continue
-
-                if json_str is None:
-                    raise json.JSONDecodeError("No valid JSON object found in response", raw_text[:200], 0)
-
-            result = json.loads(json_str)
-            return result
-
-        except RuntimeError:
-            raise  # Re-raise missing API key
+            }
+            resp = _requests.post(url, json=payload, timeout=120)
+            resp.raise_for_status()
+            data = resp.json()
+            parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [])
+            for p in parts:
+                if p.get("text"):
+                    raw_text = p["text"]
+            print("  [Agent 3] Gemini response received")
         except Exception as e:
             last_error = e
-            print(f"  [Agent 3] Claude error: {e}. Retrying in {RETRY_DELAY}s...")
-            import time
-            time.sleep(RETRY_DELAY)
+            print(f"  [Agent 3] Gemini failed: {e}")
 
-    raise Exception(f"{MODEL} failed after {MAX_RETRIES} attempts. Last error: {last_error}")
+    if raw_text is None:
+        raise Exception(f"All models failed after retries. Last error: {last_error}")
+
+    # Strip scratchpad if present
+    if "</research_scratchpad>" in raw_text:
+        raw_text = raw_text.split("</research_scratchpad>", 1)[1].strip()
+
+    # Try code-fenced JSON first
+    json_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', raw_text, re.DOTALL)
+    if json_match:
+        json_str = json_match.group(1)
+    else:
+        # Find the outermost JSON object by matching balanced braces
+        brace_depth = 0
+        start = None
+        json_str = None
+        for i, ch in enumerate(raw_text):
+            if ch == '{':
+                if brace_depth == 0:
+                    start = i
+                brace_depth += 1
+            elif ch == '}':
+                brace_depth -= 1
+                if brace_depth == 0 and start is not None:
+                    candidate = raw_text[start:i+1]
+                    try:
+                        json.loads(candidate)
+                        json_str = candidate
+                        break
+                    except json.JSONDecodeError:
+                        start = None
+                        continue
+
+        if json_str is None:
+            raise json.JSONDecodeError("No valid JSON object found in response", raw_text[:200], 0)
+
+    result = json.loads(json_str)
+    return result
+
+
 
 
 def run_agent3(agent2_result: dict = None, x_mentions: dict = None) -> dict:

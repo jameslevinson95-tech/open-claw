@@ -261,18 +261,14 @@ def run_morning_pipeline(verbose: bool = False) -> dict:
     try:
         x_mentions = fetch_x_smart_money(tickers)
         results["x_fetch"] = {"success": True}
-    except RuntimeError as e:
-        print(f"⚠️ {e}")
-        print("\n🔧 Agent 3 requires X data. Pipeline paused here.")
-        print("   Once X data is available, re-run from Agent 3.")
-        results["x_fetch"] = {"success": False, "error": str(e)}
-        with open("output/pipeline_state.json", "w") as f:
-            json.dump({
-                "stopped_at": "agent3_x_fetch",
-                "tickers_needed": tickers,
-                "timestamp": datetime.now().isoformat(),
-            }, f, indent=2)
-        return results
+    except Exception as e:
+        print(f"\u26a0\ufe0f X/Twitter fetch failed: {e}")
+        print("   Continuing with empty X data — Agent 3 will use news/options/SI only.")
+        x_mentions = {t: [] for t in tickers}
+        # Save empty mentions so Agent 3 can load them
+        with open("output/smart_money_mentions.json", "w") as smf:
+            json.dump(x_mentions, smf, indent=2)
+        results["x_fetch"] = {"success": False, "error": str(e), "fallback": "empty_mentions"}
     # Discord is OUTPUT ONLY — no sentiment scraping from Discord channels
     
     # ━━━ STEP 4: AGENT 3 — QUALITATIVE SYNTHESIZER (8:05 AM) ━━━

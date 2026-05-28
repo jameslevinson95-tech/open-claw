@@ -174,17 +174,7 @@ def run_agent1(macro_data: dict = None) -> dict:
 
     print(f"[Agent 1] Macro data loaded from {macro_data.get('timestamp', 'unknown')}")
 
-    # Send to Claude
-    print("[Agent 1] Sending to Claude for regime classification...")
-
-    try:
-        import anthropic
-        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-        if not api_key:
-            raise RuntimeError("No ANTHROPIC_API_KEY — run as subagent via OCPlatform instead.")
-        client = anthropic.Anthropic(api_key=api_key)
-
-        user_message = f"""Here is today's macro data. Classify the regime and produce your directive.
+    user_message = f"""Here is today's macro data. Classify the regime and produce your directive.
 
 CRITICAL: If DIX, MOVE, or Credit data is marked as unavailable, you MUST output REGIME: DEFER.
 
@@ -194,17 +184,54 @@ Current date/time: {datetime.now().isoformat()}
 
 Respond with ONLY the JSON directive, no other text."""
 
-        response = client.messages.create(
-            model="claude-3-5-sonnet-latest",
-            max_tokens=16000,
-            temperature=0.0,
-            system=SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": user_message}],
-        )
+    # Try Claude first, fall back to Gemini for automated runs
+    raw_text = None
+    anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    google_key = os.environ.get("GOOGLE_API_KEY", "")
 
-        raw_text = response.content[0].text.strip()
-    except RuntimeError:
-        # No API key — return the prompt for subagent execution
+    if anthropic_key:
+        print("[Agent 1] Sending to Claude for regime classification...")
+        try:
+            import anthropic
+            client = anthropic.Anthropic(api_key=anthropic_key)
+            response = client.messages.create(
+                model="claude-3-5-sonnet-latest",
+                max_tokens=16000,
+                temperature=0.0,
+                system=SYSTEM_PROMPT,
+                messages=[{"role": "user", "content": user_message}],
+            )
+            raw_text = response.content[0].text.strip()
+        except Exception as e:
+            print(f"[Agent 1] Claude failed: {e}")
+
+    if raw_text is None and google_key:
+        print("[Agent 1] Falling back to Gemini 3.1 Pro Preview...")
+        try:
+            import requests as _requests
+            gemini_model = "gemini-3.1-pro-preview"
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{gemini_model}:generateContent?key={google_key}"
+            payload = {
+                "contents": [{"parts": [{"text": user_message}]}],
+                "systemInstruction": {"parts": [{"text": SYSTEM_PROMPT}]},
+                "generationConfig": {
+                    "temperature": 0.0,
+                    "responseMimeType": "application/json",
+                    "thinkingConfig": {"thinkingBudget": 2048},
+                },
+            }
+            resp = _requests.post(url, json=payload, timeout=120)
+            resp.raise_for_status()
+            data = resp.json()
+            parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [])
+            for p in parts:
+                if p.get("text"):
+                    raw_text = p["text"]
+            print("[Agent 1] Gemini response received")
+        except Exception as e:
+            print(f"[Agent 1] Gemini failed: {e}")
+
+    if raw_text is None:
         return {
             "success": False,
             "needs_subagent": True,
