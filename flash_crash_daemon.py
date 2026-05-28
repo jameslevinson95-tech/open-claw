@@ -22,7 +22,7 @@ import sys
 from datetime import datetime, time
 
 import pytz
-import yfinance as yf
+# yfinance removed — all data routed through DataProvider
 
 from broker_factory import get_broker
 
@@ -53,31 +53,66 @@ def is_market_hours() -> bool:
 def get_intraday_change(ticker: str) -> dict:
     """
     Fetch intraday data for a ticker and compute change from today's open.
+    Uses DataProvider for SPY (bars) and VIX (index). Falls back to yfinance.
     Returns {"open": float, "current": float, "change_pct": float} or {"error": str}.
     """
+    from data_provider import get_provider, DataUnavailable
+
+    # VIX/SPX — route through get_index for proper fallback chain
+    clean = ticker.upper().replace("^", "")
+    if clean in ("VIX", "SPX"):
+        try:
+            dp = get_provider()
+            idx = dp.get_index(clean)
+            current = idx["value"]
+            # For intraday open we still need bars — try SPY as proxy for SPX
+            proxy = "SPY" if clean == "SPX" else "VIXY"
+            try:
+                bars = dp.get_bars(proxy, lookback_days=1, timespan="minute")
+                if bars is not None and not bars.empty:
+                    open_price = float(bars["Open"].iloc[0])
+                else:
+                    open_price = current  # Can't get open, use current (0% change)
+            except (DataUnavailable, Exception):
+                open_price = current
+
+            if open_price <= 0:
+                return {"error": f"Invalid open price for {ticker}"}
+
+            change_pct = (current - open_price) / open_price
+            return {
+                "open": round(open_price, 2),
+                "current": round(current, 2),
+                "change_pct": round(change_pct, 4),
+                "source": idx.get("source", "unknown"),
+                "is_proxy": idx.get("is_proxy", False),
+            }
+        except DataUnavailable as e:
+            return {"error": f"DataProvider: {e}"}
+        except Exception as e:
+            return {"error": str(e)}
+
+    # Regular tickers (SPY, individual positions) — use DataProvider bars
     try:
-        data = yf.download(ticker, period="1d", interval="1m", progress=False)
-        if data.empty:
+        dp = get_provider()
+        bars = dp.get_bars(ticker, lookback_days=1, timespan="minute")
+        if bars is None or bars.empty:
             return {"error": f"No intraday data for {ticker}"}
 
-        # Handle multi-level columns from yfinance
-        if hasattr(data.columns, 'levels') and len(data.columns.levels) > 1:
-            open_price = float(data["Open"][ticker].iloc[0])
-            current_price = float(data["Close"][ticker].iloc[-1])
-        else:
-            open_price = float(data["Open"].iloc[0])
-            current_price = float(data["Close"].iloc[-1])
+        open_price = float(bars["Open"].iloc[0])
+        current_price = float(bars["Close"].iloc[-1])
 
         if open_price <= 0:
             return {"error": f"Invalid open price for {ticker}"}
 
         change_pct = (current_price - open_price) / open_price
-
         return {
             "open": round(open_price, 2),
             "current": round(current_price, 2),
             "change_pct": round(change_pct, 4),
         }
+    except DataUnavailable as e:
+        return {"error": f"DataProvider: {e}"}
     except Exception as e:
         return {"error": str(e)}
 
@@ -261,18 +296,28 @@ def run_daemon():
     # --- Check VIX ---
     vix_data = get_intraday_change("^VIX")
     if "error" not in vix_data:
-        if vix_data["change_pct"] >= VIX_SPIKE_THRESHOLD:
+        # Widen threshold if using ETF proxy (tracking error vs spot VIX)
+        effective_threshold = VIX_SPIKE_THRESHOLD
+        if vix_data.get("is_proxy"):
+            effective_threshold *= 1.25
+            print(f"[Daemon] VIX via proxy — widened threshold to +{effective_threshold*100:.0f}%")
+
+        if vix_data["change_pct"] >= effective_threshold:
             trigger = {
                 "type": "VIX_SPIKE",
-                "detail": f"VIX up {vix_data['change_pct']*100:.2f}% (threshold: +{VIX_SPIKE_THRESHOLD*100:.0f}%)",
+                "detail": f"VIX up {vix_data['change_pct']*100:.2f}% (threshold: +{effective_threshold*100:.0f}%)",
                 "open": vix_data["open"],
                 "current": vix_data["current"],
                 "change_pct": vix_data["change_pct"],
+                "source": vix_data.get("source", "unknown"),
             }
             triggers.append(trigger)
             print(f"[Daemon] ⚠️ TRIGGER: {trigger['detail']}")
     else:
-        print(f"[Daemon] Warning: Could not fetch VIX data — {vix_data['error']}")
+        # VIX blind — alert but still run per-position checks
+        from safeguards import send_telegram
+        send_telegram(f"⚠️ Flash crash daemon blind on VIX: {vix_data['error']} — running degraded (per-position checks only)")
+        print(f"[Daemon] Warning: VIX BLIND — {vix_data['error']} — skipping market-wide trigger, running per-position checks")
 
     # --- Load positions ---
     try:

@@ -432,28 +432,25 @@ def filter_corporate_actions(screener: list) -> tuple:
     """
     Hard-block tickers that had a stock split in the last 7 days.
     Prevents hallucinated gaps and broken VaR math from adjusted historical prices.
+    Uses DataProvider (Massive/Polygon splits endpoint) instead of yfinance.
     """
-    import yfinance as yf
+    from data_provider import get_provider
+    dp = get_provider()
 
     print(f"[Corp Actions] Checking {len(screener)} tickers for recent splits...")
     filtered, removed = [], []
-    cutoff = datetime.now() - timedelta(days=7)
 
     for entry in screener:
         ticker = entry.get("ticker")
         try:
-            tk = yf.Ticker(ticker)
-            splits = tk.splits
-            if splits is not None and not splits.empty:
-                last_split_date = splits.index[-1]
-                if last_split_date.tzinfo is not None:
-                    last_split_date = last_split_date.tz_localize(None)
-                if last_split_date >= cutoff:
-                    print(f"  [Corp Actions] {ticker} -- Recent split detected ({last_split_date.date()})")
-                    removed.append({"ticker": ticker, "reason": "Recent corporate action/split"})
-                    continue
-        except Exception:
-            pass
+            splits = dp.get_corporate_actions(ticker, since_days=7)
+            if splits:
+                split_info = splits[0]
+                print(f"  [Corp Actions] {ticker} -- Recent split detected ({split_info.get('execution_date', '?')})")
+                removed.append({"ticker": ticker, "reason": "Recent corporate action/split", "detail": split_info})
+                continue
+        except Exception as e:
+            print(f"  [Corp Actions] {ticker}: split check failed ({e}) -- passing")
         filtered.append(entry)
 
     if removed:

@@ -17,7 +17,7 @@ import os
 from datetime import datetime
 
 import pandas as pd
-import yfinance as yf
+# yfinance removed — all data routed through DataProvider
 from dotenv import load_dotenv
 
 from config import (
@@ -62,10 +62,11 @@ VOL_ATR_MODIFIERS = {
 
 
 def get_moving_averages(ticker: str) -> dict:
-    """Fetch prior close + moving averages for a ticker."""
+    """Fetch prior close + moving averages for a ticker via DataProvider."""
+    from data_provider import get_provider, DataUnavailable
     try:
-        stock = yf.Ticker(ticker)
-        hist = stock.history(period="6mo")
+        dp = get_provider()
+        hist = dp.get_bars(ticker, lookback_days=180)  # ~6 months
         if hist.empty or len(hist) < 50:
             return {"error": f"Insufficient data for {ticker}"}
 
@@ -82,6 +83,8 @@ def get_moving_averages(ticker: str) -> dict:
             "ma_50": round(ma_50, 2),
             "recent_low_20d": round(min(closes[-20:]), 2),
         }
+    except DataUnavailable as e:
+        return {"error": str(e)}
     except Exception as e:
         return {"error": str(e)}
 
@@ -94,11 +97,12 @@ def calculate_atr_stop(ticker: str, entry_price: float, conviction_tier: str, vo
     Wider stops in high-vol (negative GEX) environments avoid whipsaw stops
     while the dollar-VaR math upstream reduces share count to keep risk flat.
     """
+    from data_provider import get_provider, DataUnavailable
     try:
-        stock = yf.Ticker(ticker)
-        hist = stock.history(period="1mo")  # ~20 trading days
+        dp = get_provider()
+        hist = dp.get_bars(ticker, lookback_days=30)  # ~20 trading days
         if hist.empty or len(hist) < 14:
-            return {"error": f"Insufficient data for {ticker} ({len(hist) if not hist.empty else 0} bars)"}
+            return {"error": f"Insufficient data for {ticker} ({len(hist)} bars)"}
 
         # Calculate True Range for each bar
         high = hist["High"]
@@ -141,32 +145,39 @@ def correlation_veto(new_ticker: str, current_positions: list, threshold: float 
     if not current_positions:
         return False
 
+    from data_provider import get_provider, DataUnavailable
     try:
+        dp = get_provider()
         all_tickers = [new_ticker] + current_positions
-        data = yf.download(all_tickers, period="3mo", progress=False)
-        if data.empty:
+
+        # Fetch bars for each ticker and build a returns DataFrame
+        closes_dict = {}
+        for t in all_tickers:
+            try:
+                bars = dp.get_bars(t, lookback_days=90)
+                if bars is not None and not bars.empty:
+                    closes_dict[t] = bars["Close"]
+            except DataUnavailable:
+                continue
+
+        if new_ticker not in closes_dict or len(closes_dict) < 2:
             return False
 
-        closes = data["Close"] if "Close" in data.columns else data
-
-        # If only 1 valid ticker, yfinance returns a Series not DataFrame
-        # Correlation is impossible with a single column
-        if isinstance(closes, pd.Series):
-            return False
-
+        closes = pd.DataFrame(closes_dict)
         returns = closes.pct_change().tail(60)
-
-        if new_ticker not in returns.columns:
-            return False
 
         for pos in current_positions:
             if pos in returns.columns:
                 corr = returns[new_ticker].corr(returns[pos], min_periods=20)
-                if corr is not None and corr > threshold:
+                if corr is not None and not pd.isna(corr) and corr > threshold:
                     print(f"  [Agent 4B] CORRELATION VETO: {new_ticker} vs {pos} = {corr:.2f} (>{threshold})")
                     return True
+        return False  # No correlation found above threshold
+    except DataUnavailable as e:
+        print(f"  [Agent 4B] Correlation data unavailable \u2014 FAIL-CLOSED (vetoing {new_ticker}): {e}")
+        return True
     except Exception as e:
-        print(f"  [Agent 4B] Correlation check failed — FAIL-CLOSED (vetoing {new_ticker}): {e}")
+        print(f"  [Agent 4B] Correlation check failed \u2014 FAIL-CLOSED (vetoing {new_ticker}): {e}")
         return True  # Fail-closed: if we can't verify, assume correlated and veto
 
 
