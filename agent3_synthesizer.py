@@ -1,6 +1,6 @@
 """
 Agent 3: Qualitative Synthesizer — v3.0
-Model: Claude Opus 4.7 (Anthropic) with adaptive thinking
+Model: Claude Opus 4.8 (Anthropic) with adaptive thinking
 Role: Merges the former Agent 2.5 (deep research / red team) and Agent 3
       (smart money verifier) into a single qualitative synthesis pass.
 
@@ -30,7 +30,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Opus for synthesis — nuanced judgment on qualitative signals
-MODEL = "claude-opus-4-7"
+MODEL = "claude-opus-4-8"
 MAX_RETRIES = 3
 RETRY_DELAY = 5
 
@@ -210,7 +210,7 @@ def _load_x_mentions(tickers: list) -> dict:
 
 def call_synthesis(candidates: list, qual_context: dict, x_mentions: dict) -> dict:
     """
-    Send the complete qualitative mosaic to Claude Opus 4.7 for unified synthesis.
+    Send the complete qualitative mosaic to Claude Opus 4.8 for unified synthesis.
     Uses adaptive thinking (extended thinking with budget_tokens).
     """
     import time
@@ -294,7 +294,7 @@ Perform your synthesis and respond with ONLY the JSON output."""
                     model=MODEL,
                     max_tokens=16000,
                     temperature=1,
-                    thinking={"type": "enabled", "budget_tokens": 10000},
+                    thinking={"type": "enabled", "budget_tokens": 32000},
                     system=SYSTEM_PROMPT,
                     messages=[{"role": "user", "content": user_message}],
                 )
@@ -530,7 +530,7 @@ def format_agent3_for_slack(result: dict) -> str:
     lines = [
         f"🧪 *AGENT 3: QUALITATIVE SYNTHESIZER*",
         f"> *Survived Synthesis:* {len(surviving)}/{len(evaluations)}",
-        f"> *Model:* Claude Opus 4.7 (Adaptive Thinking)",
+        f"> *Model:* Claude Opus 4.8 (High Thinking)",
         f"",
     ]
 

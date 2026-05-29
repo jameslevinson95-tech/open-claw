@@ -1,6 +1,6 @@
 """
 Agent 5: Position Monitor — v3 (Python trailing stops + Claude thesis monitor)
-Model: Claude Opus 4.7 (Anthropic) with adaptive thinking
+Model: Claude 3.5 Haiku (Anthropic) — fast thesis drift classification
 Role: Runs at 3:30 PM ET to review open positions and decide hold/trim/close.
 
 Architecture:
