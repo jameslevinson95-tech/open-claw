@@ -1,6 +1,6 @@
 """
 Agent 1: Macro Director — v2 (Jamie's Golden Path tweaks)
-Model: Claude (Anthropic)
+Model: Claude Sonnet 4.6 (Anthropic)
 Role: Classify the current market regime and issue a directive.
 
 Changes from v1:
@@ -195,7 +195,7 @@ Respond with ONLY the JSON directive, no other text."""
             import anthropic
             client = anthropic.Anthropic(api_key=anthropic_key)
             response = client.messages.create(
-                model="claude-3-5-sonnet-latest",
+                model="claude-sonnet-4-6",
                 max_tokens=16000,
                 temperature=0.0,
                 system=SYSTEM_PROMPT,

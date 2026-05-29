@@ -1,6 +1,6 @@
 """
 Agent 5: Position Monitor — v3 (Python trailing stops + Claude thesis monitor)
-Model: Claude 3.5 Haiku (Anthropic) — fast thesis drift classification
+Model: Claude Sonnet 4.6 (Anthropic) with adaptive thinking
 Role: Runs at 3:30 PM ET to review open positions and decide hold/trim/close.
 
 Architecture:
@@ -22,8 +22,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Haiku for fast thesis drift classification — no extended thinking needed
-MODEL = "claude-3-5-haiku-latest"
+# Sonnet 4.6 with adaptive thinking for thesis drift classification
+MODEL = "claude-sonnet-4-6"
 MAX_RETRIES = 3
 RETRY_DELAY = 5
 
@@ -458,7 +458,8 @@ Respond with ONLY the JSON output."""
             response = client.messages.create(
                 model=MODEL,
                 max_tokens=16000,
-                temperature=0.0,
+                temperature=1,
+                thinking={"type": "adaptive"},
                 system=SYSTEM_PROMPT,
                 messages=[{"role": "user", "content": user_message}],
             )

@@ -294,7 +294,7 @@ Perform your synthesis and respond with ONLY the JSON output."""
                     model=MODEL,
                     max_tokens=16000,
                     temperature=1,
-                    thinking={"type": "enabled", "budget_tokens": 32000},
+                    thinking={"type": "adaptive"},
                     system=SYSTEM_PROMPT,
                     messages=[{"role": "user", "content": user_message}],
                 )
