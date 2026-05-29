@@ -92,6 +92,28 @@ def generate_weekly_pulse():
         report.append(f" • *Total P&L:* ${pnl:,.2f}")
         report.append(f" • *Hit Stops:* {stops} trades")
 
+    # Execution quality — fill rate from the execution ledger
+    try:
+        from execution_engine import ExecutionEngine
+        engine = ExecutionEngine()
+        stats = engine.get_fill_rate_stats(days=7)
+        incidents = engine.get_incidents(days=7)
+
+        report.append("")
+        report.append("*Execution Quality:*")
+        report.append(f" • *Orders Submitted:* {stats['orders_submitted']}")
+        report.append(f" • *Orders Filled:* {stats['orders_filled']}")
+        report.append(f" • *Fill Rate:* {stats['fill_rate_pct']}%")
+        if stats['orders_dead'] > 0:
+            report.append(f" • ⚠️ *Unfilled/Dead:* {stats['orders_dead']}")
+        if incidents:
+            report.append(f" • *Incidents This Week:* {len(incidents)}")
+            # Show last 3 incidents
+            for inc in incidents[:3]:
+                report.append(f"   — {inc['date']} {inc['ticker']}: {inc['incident_type']} ({inc.get('root_cause', '')})") 
+    except Exception as e:
+        report.append(f"\n_Execution stats unavailable: {e}_")
+
     return "\n".join(report)
 
 

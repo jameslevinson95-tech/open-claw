@@ -92,6 +92,27 @@ class ExecutionEngine:
                     timestamp   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS execution_incidents (
+                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    date            TEXT NOT NULL,
+                    ticker          TEXT NOT NULL,
+                    incident_type   TEXT NOT NULL,
+                    limit_price     REAL,
+                    bid             REAL,
+                    ask             REAL,
+                    mid             REAL,
+                    spread_bps      REAL,
+                    target_shares   INTEGER,
+                    filled_shares   INTEGER DEFAULT 0,
+                    time_open_sec   INTEGER,
+                    close_reason    TEXT,
+                    root_cause      TEXT,
+                    fix_applied     TEXT,
+                    notes           TEXT,
+                    timestamp       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
             conn.commit()
 
     def _log_event(self, trade_id: str, ticker: str, event: str, detail: str = ""):
@@ -684,6 +705,17 @@ class ExecutionEngine:
                             )
                             conn.commit()
                         self._log_event(trade["trade_id"], ticker, "TRADE_DEAD", status)
+                        # Log execution incident for system review
+                        self.log_incident(
+                            ticker=ticker,
+                            incident_type="UNFILLED_ORDER",
+                            limit_price=float(trade.get("limit_price", 0) or 0),
+                            target_shares=int(trade.get("target_shares", 0) or 0),
+                            filled_shares=0,
+                            close_reason=status,
+                            root_cause="passive_limit_below_ask" if status in ("canceled", "cancelled", "expired") else status,
+                            notes=f"Trade {trade['trade_id']} died with 0 fills. Entry order {status}.",
+                        )
 
         except Timeout:
             logger.warning("Lock timeout during reconciliation — skipping this cycle")
@@ -712,6 +744,103 @@ class ExecutionEngine:
                 (limit,),
             ).fetchall()
             return [dict(r) for r in rows]
+
+    # ── Execution Incident Tracking ──────────────────────────────────────
+
+    def log_incident(
+        self,
+        ticker: str,
+        incident_type: str,
+        limit_price: float = 0,
+        bid: float = 0,
+        ask: float = 0,
+        target_shares: int = 0,
+        filled_shares: int = 0,
+        time_open_sec: int = 0,
+        close_reason: str = "",
+        root_cause: str = "",
+        fix_applied: str = "",
+        notes: str = "",
+    ):
+        """
+        Log an execution incident (unfilled order, rejected order, partial fill,
+        wide spread rejection, gap-up rejection, etc.) for system review.
+        """
+        mid = round((bid + ask) / 2, 2) if bid and ask else 0
+        spread_bps = round((ask - bid) / mid * 10000, 1) if mid > 0 else 0
+        today = datetime.now().strftime("%Y-%m-%d")
+
+        with sqlite3.connect(DB_PATH, timeout=20.0) as conn:
+            conn.execute(
+                """INSERT INTO execution_incidents
+                (date, ticker, incident_type, limit_price, bid, ask, mid,
+                 spread_bps, target_shares, filled_shares, time_open_sec,
+                 close_reason, root_cause, fix_applied, notes)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (today, ticker, incident_type, limit_price, bid, ask, mid,
+                 spread_bps, target_shares, filled_shares, time_open_sec,
+                 close_reason, root_cause, fix_applied, notes),
+            )
+            conn.commit()
+        logger.info(f"[Incident] {incident_type}: {ticker} — {root_cause or notes}")
+
+    def get_incidents(self, days: int = 30) -> list:
+        """Return execution incidents from the last N days."""
+        cutoff = (datetime.now() - __import__('datetime').timedelta(days=days)).strftime("%Y-%m-%d")
+        with sqlite3.connect(DB_PATH, timeout=20.0) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT * FROM execution_incidents WHERE date >= ? ORDER BY timestamp DESC",
+                (cutoff,),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def get_fill_rate_stats(self, days: int = 30) -> dict:
+        """
+        Calculate fill rate and execution quality stats for system review.
+        Queries active_trades to compute: orders submitted, filled, dead, fill rate.
+        """
+        cutoff = (datetime.now() - __import__('datetime').timedelta(days=days)).strftime("%Y-%m-%d")
+        with sqlite3.connect(DB_PATH, timeout=20.0) as conn:
+            # Total orders submitted in period
+            total = conn.execute(
+                "SELECT COUNT(*) FROM active_trades WHERE created_at >= ?", (cutoff,)
+            ).fetchone()[0]
+
+            # Filled (have filled_shares > 0)
+            filled = conn.execute(
+                "SELECT COUNT(*) FROM active_trades WHERE created_at >= ? AND filled_shares > 0",
+                (cutoff,),
+            ).fetchone()[0]
+
+            # Dead (closed with 0 fills)
+            dead = conn.execute(
+                "SELECT COUNT(*) FROM active_trades WHERE created_at >= ? AND closed_at IS NOT NULL AND filled_shares = 0",
+                (cutoff,),
+            ).fetchone()[0]
+
+            # Still open
+            pending = conn.execute(
+                "SELECT COUNT(*) FROM active_trades WHERE created_at >= ? AND closed_at IS NULL AND filled_shares = 0",
+                (cutoff,),
+            ).fetchone()[0]
+
+            # Incidents
+            incidents = conn.execute(
+                "SELECT COUNT(*) FROM execution_incidents WHERE date >= ?", (cutoff,)
+            ).fetchone()[0]
+
+        fill_rate = (filled / total * 100) if total > 0 else 0
+
+        return {
+            "period_days": days,
+            "orders_submitted": total,
+            "orders_filled": filled,
+            "orders_dead": dead,
+            "orders_pending": pending,
+            "fill_rate_pct": round(fill_rate, 1),
+            "incidents": incidents,
+        }
 
 
 # Quick test

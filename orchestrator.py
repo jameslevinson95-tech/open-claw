@@ -780,6 +780,12 @@ def run_deferred_execution() -> dict:
         if bid <= 0 or ask <= 0 or ask < bid:
             print(f"  🚫 REJECTED {ticker}: Order book broken (Bid: {bid}, Ask: {ask}).")
             fills.append({"ticker": ticker, "status": "rejected_broken_book"})
+            engine.log_incident(
+                ticker=ticker, incident_type="BROKEN_BOOK",
+                bid=bid, ask=ask, target_shares=int(order.get("shares", 0)),
+                root_cause="broken_order_book",
+                notes=f"Bid={bid}, Ask={ask}. Order book invalid at execution time.",
+            )
             continue
 
         midpoint = round((bid + ask) / 2.0, 2)
@@ -788,6 +794,12 @@ def run_deferred_execution() -> dict:
         if spread_pct > 0.05:
             print(f"  🚫 REJECTED {ticker}: Spread is toxic ({spread_pct*100:.1f}% wide). Bid: {bid}, Ask: {ask}")
             fills.append({"ticker": ticker, "status": "rejected_wide_spread"})
+            engine.log_incident(
+                ticker=ticker, incident_type="WIDE_SPREAD",
+                bid=bid, ask=ask, target_shares=int(order.get("shares", 0)),
+                root_cause="toxic_spread",
+                notes=f"Spread {spread_pct*100:.1f}% exceeds 5% threshold.",
+            )
             continue
 
         print(f"  [NBBO] {ticker}: Bid ${bid:.2f} | Ask ${ask:.2f} | Spread {spread_pct*10000:.0f} bps")
@@ -807,6 +819,13 @@ def run_deferred_execution() -> dict:
             if gap_pct > 0.03:
                 print(f"  🚫 REJECTED {ticker}: Gapped up {gap_pct*100:.1f}% from planned entry. Avoid chasing.")
                 fills.append({"ticker": ticker, "status": "rejected_gap_up", "gap_pct": round(gap_pct * 100, 1)})
+                engine.log_incident(
+                    ticker=ticker, incident_type="GAP_UP_REJECTION",
+                    limit_price=entry_price, bid=bid, ask=ask,
+                    target_shares=int(order.get("shares", 0)),
+                    root_cause="gap_up_chase_prevention",
+                    notes=f"Ask gapped {gap_pct*100:.1f}% above planned entry ${entry_price:.2f}.",
+                )
                 continue
 
         trade_id = str(uuid.uuid4())

@@ -1,6 +1,6 @@
 # OPEN CLAW TRADING PIPELINE — FULL CODEBASE DUMP
 
-Generated: 2026-05-28 21:07:12 ET
+Generated: 2026-05-28 22:06:09 ET
 
 Repo: https://github.com/jameslevinson95-tech/open-claw
 
@@ -19,14 +19,14 @@ Repo: https://github.com/jameslevinson95-tech/open-claw
 - `data_fetcher_v1_deprecated.py` (3,477 bytes)
 - `data_provider.py` (16,990 bytes)
 - `discord_fetch.py` (11,288 bytes)
-- `execution_engine.py` (35,032 bytes)
+- `execution_engine.py` (40,791 bytes)
 - `fedwatch.py` (11,075 bytes)
 - `flash_crash_daemon.py` (16,571 bytes)
 - `itc_data.py` (16,523 bytes)
 - `market_data.py` (12,431 bytes)
 - `massive_data.py` (36,119 bytes)
-- `orchestrator.py` (37,700 bytes)
-- `performance_review.py` (24,626 bytes)
+- `orchestrator.py` (38,730 bytes)
+- `performance_review.py` (25,689 bytes)
 - `preflight.py` (48,731 bytes)
 - `robinhood_broker.py` (26,680 bytes)
 - `run_archiver.py` (5,396 bytes)
@@ -5815,6 +5815,27 @@ class ExecutionEngine:
                     timestamp   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS execution_incidents (
+                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    date            TEXT NOT NULL,
+                    ticker          TEXT NOT NULL,
+                    incident_type   TEXT NOT NULL,
+                    limit_price     REAL,
+                    bid             REAL,
+                    ask             REAL,
+                    mid             REAL,
+                    spread_bps      REAL,
+                    target_shares   INTEGER,
+                    filled_shares   INTEGER DEFAULT 0,
+                    time_open_sec   INTEGER,
+                    close_reason    TEXT,
+                    root_cause      TEXT,
+                    fix_applied     TEXT,
+                    notes           TEXT,
+                    timestamp       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
             conn.commit()
 
     def _log_event(self, trade_id: str, ticker: str, event: str, detail: str = ""):
@@ -6407,6 +6428,17 @@ class ExecutionEngine:
                             )
                             conn.commit()
                         self._log_event(trade["trade_id"], ticker, "TRADE_DEAD", status)
+                        # Log execution incident for system review
+                        self.log_incident(
+                            ticker=ticker,
+                            incident_type="UNFILLED_ORDER",
+                            limit_price=float(trade.get("limit_price", 0) or 0),
+                            target_shares=int(trade.get("target_shares", 0) or 0),
+                            filled_shares=0,
+                            close_reason=status,
+                            root_cause="passive_limit_below_ask" if status in ("canceled", "cancelled", "expired") else status,
+                            notes=f"Trade {trade['trade_id']} died with 0 fills. Entry order {status}.",
+                        )
 
         except Timeout:
             logger.warning("Lock timeout during reconciliation — skipping this cycle")
@@ -6435,6 +6467,103 @@ class ExecutionEngine:
                 (limit,),
             ).fetchall()
             return [dict(r) for r in rows]
+
+    # ── Execution Incident Tracking ──────────────────────────────────────
+
+    def log_incident(
+        self,
+        ticker: str,
+        incident_type: str,
+        limit_price: float = 0,
+        bid: float = 0,
+        ask: float = 0,
+        target_shares: int = 0,
+        filled_shares: int = 0,
+        time_open_sec: int = 0,
+        close_reason: str = "",
+        root_cause: str = "",
+        fix_applied: str = "",
+        notes: str = "",
+    ):
+        """
+        Log an execution incident (unfilled order, rejected order, partial fill,
+        wide spread rejection, gap-up rejection, etc.) for system review.
+        """
+        mid = round((bid + ask) / 2, 2) if bid and ask else 0
+        spread_bps = round((ask - bid) / mid * 10000, 1) if mid > 0 else 0
+        today = datetime.now().strftime("%Y-%m-%d")
+
+        with sqlite3.connect(DB_PATH, timeout=20.0) as conn:
+            conn.execute(
+                """INSERT INTO execution_incidents
+                (date, ticker, incident_type, limit_price, bid, ask, mid,
+                 spread_bps, target_shares, filled_shares, time_open_sec,
+                 close_reason, root_cause, fix_applied, notes)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (today, ticker, incident_type, limit_price, bid, ask, mid,
+                 spread_bps, target_shares, filled_shares, time_open_sec,
+                 close_reason, root_cause, fix_applied, notes),
+            )
+            conn.commit()
+        logger.info(f"[Incident] {incident_type}: {ticker} — {root_cause or notes}")
+
+    def get_incidents(self, days: int = 30) -> list:
+        """Return execution incidents from the last N days."""
+        cutoff = (datetime.now() - __import__('datetime').timedelta(days=days)).strftime("%Y-%m-%d")
+        with sqlite3.connect(DB_PATH, timeout=20.0) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT * FROM execution_incidents WHERE date >= ? ORDER BY timestamp DESC",
+                (cutoff,),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def get_fill_rate_stats(self, days: int = 30) -> dict:
+        """
+        Calculate fill rate and execution quality stats for system review.
+        Queries active_trades to compute: orders submitted, filled, dead, fill rate.
+        """
+        cutoff = (datetime.now() - __import__('datetime').timedelta(days=days)).strftime("%Y-%m-%d")
+        with sqlite3.connect(DB_PATH, timeout=20.0) as conn:
+            # Total orders submitted in period
+            total = conn.execute(
+                "SELECT COUNT(*) FROM active_trades WHERE created_at >= ?", (cutoff,)
+            ).fetchone()[0]
+
+            # Filled (have filled_shares > 0)
+            filled = conn.execute(
+                "SELECT COUNT(*) FROM active_trades WHERE created_at >= ? AND filled_shares > 0",
+                (cutoff,),
+            ).fetchone()[0]
+
+            # Dead (closed with 0 fills)
+            dead = conn.execute(
+                "SELECT COUNT(*) FROM active_trades WHERE created_at >= ? AND closed_at IS NOT NULL AND filled_shares = 0",
+                (cutoff,),
+            ).fetchone()[0]
+
+            # Still open
+            pending = conn.execute(
+                "SELECT COUNT(*) FROM active_trades WHERE created_at >= ? AND closed_at IS NULL AND filled_shares = 0",
+                (cutoff,),
+            ).fetchone()[0]
+
+            # Incidents
+            incidents = conn.execute(
+                "SELECT COUNT(*) FROM execution_incidents WHERE date >= ?", (cutoff,)
+            ).fetchone()[0]
+
+        fill_rate = (filled / total * 100) if total > 0 else 0
+
+        return {
+            "period_days": days,
+            "orders_submitted": total,
+            "orders_filled": filled,
+            "orders_dead": dead,
+            "orders_pending": pending,
+            "fill_rate_pct": round(fill_rate, 1),
+            "incidents": incidents,
+        }
 
 
 # Quick test
@@ -9761,6 +9890,12 @@ def run_deferred_execution() -> dict:
         if bid <= 0 or ask <= 0 or ask < bid:
             print(f"  🚫 REJECTED {ticker}: Order book broken (Bid: {bid}, Ask: {ask}).")
             fills.append({"ticker": ticker, "status": "rejected_broken_book"})
+            engine.log_incident(
+                ticker=ticker, incident_type="BROKEN_BOOK",
+                bid=bid, ask=ask, target_shares=int(order.get("shares", 0)),
+                root_cause="broken_order_book",
+                notes=f"Bid={bid}, Ask={ask}. Order book invalid at execution time.",
+            )
             continue
 
         midpoint = round((bid + ask) / 2.0, 2)
@@ -9769,6 +9904,12 @@ def run_deferred_execution() -> dict:
         if spread_pct > 0.05:
             print(f"  🚫 REJECTED {ticker}: Spread is toxic ({spread_pct*100:.1f}% wide). Bid: {bid}, Ask: {ask}")
             fills.append({"ticker": ticker, "status": "rejected_wide_spread"})
+            engine.log_incident(
+                ticker=ticker, incident_type="WIDE_SPREAD",
+                bid=bid, ask=ask, target_shares=int(order.get("shares", 0)),
+                root_cause="toxic_spread",
+                notes=f"Spread {spread_pct*100:.1f}% exceeds 5% threshold.",
+            )
             continue
 
         print(f"  [NBBO] {ticker}: Bid ${bid:.2f} | Ask ${ask:.2f} | Spread {spread_pct*10000:.0f} bps")
@@ -9788,6 +9929,13 @@ def run_deferred_execution() -> dict:
             if gap_pct > 0.03:
                 print(f"  🚫 REJECTED {ticker}: Gapped up {gap_pct*100:.1f}% from planned entry. Avoid chasing.")
                 fills.append({"ticker": ticker, "status": "rejected_gap_up", "gap_pct": round(gap_pct * 100, 1)})
+                engine.log_incident(
+                    ticker=ticker, incident_type="GAP_UP_REJECTION",
+                    limit_price=entry_price, bid=bid, ask=ask,
+                    target_shares=int(order.get("shares", 0)),
+                    root_cause="gap_up_chase_prevention",
+                    notes=f"Ask gapped {gap_pct*100:.1f}% above planned entry ${entry_price:.2f}.",
+                )
                 continue
 
         trade_id = str(uuid.uuid4())
@@ -9940,6 +10088,28 @@ def generate_weekly_pulse():
         report.append(f" • *Avg R-Multiple:* {avg_r:.2f}R")
         report.append(f" • *Total P&L:* ${pnl:,.2f}")
         report.append(f" • *Hit Stops:* {stops} trades")
+
+    # Execution quality — fill rate from the execution ledger
+    try:
+        from execution_engine import ExecutionEngine
+        engine = ExecutionEngine()
+        stats = engine.get_fill_rate_stats(days=7)
+        incidents = engine.get_incidents(days=7)
+
+        report.append("")
+        report.append("*Execution Quality:*")
+        report.append(f" • *Orders Submitted:* {stats['orders_submitted']}")
+        report.append(f" • *Orders Filled:* {stats['orders_filled']}")
+        report.append(f" • *Fill Rate:* {stats['fill_rate_pct']}%")
+        if stats['orders_dead'] > 0:
+            report.append(f" • ⚠️ *Unfilled/Dead:* {stats['orders_dead']}")
+        if incidents:
+            report.append(f" • *Incidents This Week:* {len(incidents)}")
+            # Show last 3 incidents
+            for inc in incidents[:3]:
+                report.append(f"   — {inc['date']} {inc['ticker']}: {inc['incident_type']} ({inc.get('root_cause', '')})") 
+    except Exception as e:
+        report.append(f"\n_Execution stats unavailable: {e}_")
 
     return "\n".join(report)
 
