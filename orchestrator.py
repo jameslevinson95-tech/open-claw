@@ -36,7 +36,7 @@ from broker_factory import get_broker
 from trade_journal import log_close, build_trade_record
 from watchlist import Watchlist, promote_ready_candidates
 # VWAP gate removed — caused adverse selection (buying above morning VWAP = exit liquidity for institutions)
-# Now using passive midpoint routing in run_deferred_execution()
+# Marketable limit routing: cross the book at ask + 15bps to guarantee fills on breakouts
 # from vwap_gate import check_vwap, vwap_gate
 from run_archiver import archive_run
 from safeguards import (
@@ -783,7 +783,7 @@ def run_deferred_execution() -> dict:
             continue
 
         midpoint = round((bid + ask) / 2.0, 2)
-        spread_pct = (ask - bid) / midpoint
+        spread_pct = (ask - bid) / midpoint if midpoint > 0 else 999
 
         if spread_pct > 0.05:
             print(f"  🚫 REJECTED {ticker}: Spread is toxic ({spread_pct*100:.1f}% wide). Bid: {bid}, Ask: {ask}")
@@ -792,10 +792,18 @@ def run_deferred_execution() -> dict:
 
         print(f"  [NBBO] {ticker}: Bid ${bid:.2f} | Ask ${ask:.2f} | Spread {spread_pct*10000:.0f} bps")
 
+        # ---------------------------------------------------------
+        # Marketable Limit Routing
+        # Cross the book by targeting the Ask + 15 bps slippage allowance.
+        # This pays the spread to guarantee fill and defeat adverse selection.
+        # ---------------------------------------------------------
+        marketable_limit = round(ask * 1.0015, 2)
+
         # Safety: reject if stock gapped up > 3% from planned entry (avoid chasing)
-        entry_price = order.get("entry_price", midpoint)
+        # Compare against the ASK (our actual fill target), not the midpoint
+        entry_price = order.get("entry_price", ask)
         if entry_price > 0:
-            gap_pct = (midpoint - entry_price) / entry_price
+            gap_pct = (ask - entry_price) / entry_price
             if gap_pct > 0.03:
                 print(f"  🚫 REJECTED {ticker}: Gapped up {gap_pct*100:.1f}% from planned entry. Avoid chasing.")
                 fills.append({"ticker": ticker, "status": "rejected_gap_up", "gap_pct": round(gap_pct * 100, 1)})
@@ -804,21 +812,21 @@ def run_deferred_execution() -> dict:
         trade_id = str(uuid.uuid4())
 
         # Route intent to the Execution Ledger
-        # Passive midpoint limit — no more ask * 1.0015 spread-crossing
+        # Marketable limit: ask + 15bps to cross the spread and guarantee fills
         result = engine.submit_trade_intent(
             trade_id=trade_id,
             ticker=ticker,
             shares=int(order.get("shares", 0)),
-            limit_price=midpoint,
+            limit_price=marketable_limit,
             stop_price=order.get("stop_loss", 0),
         )
         fills.append({
             "ticker": ticker,
             "status": result.get("status", "unknown"),
-            "limit_price": midpoint,
+            "limit_price": marketable_limit,
             "order_id": result.get("order_id"),
         })
-        print(f"  ✅ {ticker}: Midpoint limit routed at ${midpoint:.2f}")
+        print(f"  ✅ {ticker}: Marketable limit routed at ${marketable_limit:.2f} (Ask ${ask:.2f} + 15bps)")
 
     submitted = sum(1 for f in fills if f.get("status") == "submitted")
     print(f"\n📊 Results: {submitted}/{len(fills)} orders routed to execution ledger")

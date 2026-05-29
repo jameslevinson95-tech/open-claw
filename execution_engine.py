@@ -179,9 +179,10 @@ class ExecutionEngine:
                 continue
 
             trade_id = str(uuid.uuid4())
-            # Add slippage allowance to limit price (0.15%)
+            # Use the limit price as-is — slippage allowance is already applied
+            # upstream in orchestrator.py (marketable limit = ask * 1.0015)
             entry_price = order.get("entry_price", order.get("limit_price", 0))
-            limit_price = round(entry_price * 1.0015, 2)
+            limit_price = round(entry_price, 2)
             stop_price = order.get("stop_loss", 0)
             shares = order.get("shares", 0)
 
