@@ -85,7 +85,7 @@ Open Claw is a 5-agent AI trading pipeline for a $10,000 speculative spot-only e
 ---
 
 ## Agent 1: Macro Director
-**Model:** Claude (Anthropic)
+**Model:** Claude 3.5 Sonnet (`claude-3-5-sonnet-latest`), Gemini 3.1 Pro fallback
 **Role:** Classify the current market regime and issue a directive for downstream agents.
 
 **Inputs:**
@@ -141,7 +141,7 @@ Open Claw is a 5-agent AI trading pipeline for a $10,000 speculative spot-only e
 ---
 
 ## Agent 3: Smart Money Verifier
-**Model:** Claude (Anthropic)
+**Model:** Claude Opus 4.8 (`claude-opus-4-8`) with adaptive thinking, Gemini fallback
 **Role:** Score the smart money X/Twitter sentiment for each of Agent 2's candidates.
 
 **Inputs:**
@@ -171,7 +171,7 @@ Open Claw is a 5-agent AI trading pipeline for a $10,000 speculative spot-only e
 ---
 
 ## Agent 4: Risk Manager
-**Model:** Agent 4A = Claude (stop anchors), Agent 4B = Python (math)
+**Model:** Python only (ATR-based stop anchors + sizing math; legacy Claude 4A call removed)
 **Role:** Calculate position sizes, stop losses, and generate the final tear sheet.
 
 **Sub-Agent 4A (Claude) — Stop Anchor Identification:**
@@ -204,7 +204,7 @@ Open Claw is a 5-agent AI trading pipeline for a $10,000 speculative spot-only e
 ---
 
 ## Agent 5: Position Monitor
-**Model:** Claude (Anthropic)
+**Model:** Claude 3.5 Haiku (`claude-3-5-haiku-latest`), fast thesis-drift classification
 **Role:** Run at 3:30 PM ET to review all open positions and decide hold/trim/close before market close.
 
 **Inputs:**
@@ -600,7 +600,7 @@ Role: Given Agent 1's directive + SCREENER_UNIVERSE + FUNDAMENTAL_DATA
       (all pre-fetched by Python), select 1-3 tickers with rigorous analysis.
 
 Changes from v3.0:
-- Switched from Claude Opus 4.7 to Gemini Deep Research Max
+- Switched from Claude Opus 4.8 to Gemini Deep Research Max
 - Uses Interactions API (async) for comprehensive research synthesis
 - Deep Research Max: maximum comprehensiveness, accuracy-critical investigations
 - Python pre-fetches ALL fundamental data — model does NOT fetch or browse
@@ -1292,7 +1292,7 @@ if __name__ == "__main__":
 ```python
 """
 Agent 3: Qualitative Synthesizer — v3.0
-Model: Claude Opus 4.7 (Anthropic) with adaptive thinking
+Model: Claude Opus 4.8 (Anthropic) with adaptive thinking
 Role: Merges the former Agent 2.5 (deep research / red team) and Agent 3
       (smart money verifier) into a single qualitative synthesis pass.
 
@@ -1502,7 +1502,7 @@ def _load_x_mentions(tickers: list) -> dict:
 
 def call_synthesis(candidates: list, qual_context: dict, x_mentions: dict) -> dict:
     """
-    Send the complete qualitative mosaic to Claude Opus 4.7 for unified synthesis.
+    Send the complete qualitative mosaic to Claude Opus 4.8 for unified synthesis.
     Uses adaptive thinking (extended thinking with budget_tokens).
     """
     import time
@@ -1822,7 +1822,7 @@ def format_agent3_for_slack(result: dict) -> str:
     lines = [
         f"🧪 *AGENT 3: QUALITATIVE SYNTHESIZER*",
         f"> *Survived Synthesis:* {len(surviving)}/{len(evaluations)}",
-        f"> *Model:* Claude Opus 4.7 (Adaptive Thinking)",
+        f"> *Model:* Claude Opus 4.8 (Adaptive Thinking)",
         f"",
     ]
 
@@ -2770,7 +2770,7 @@ if __name__ == "__main__":
 ```python
 """
 Agent 5: Position Monitor — v3 (Python trailing stops + Claude thesis monitor)
-Model: Claude Opus 4.7 (Anthropic) with adaptive thinking
+Model: Claude Opus 4.8 (Anthropic) with adaptive thinking
 Role: Runs at 3:30 PM ET to review open positions and decide hold/trim/close.
 
 Architecture:
