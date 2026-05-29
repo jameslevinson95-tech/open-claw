@@ -1,159 +1,267 @@
 # OPEN CLAW TRADING PIPELINE — FULL CODEBASE DUMP
 
-Generated: 2026-05-28 11:25:08 ET
+Generated: 2026-05-28 21:07:12 ET
 
 Repo: https://github.com/jameslevinson95-tech/open-claw
 
+## Files Included (35)
 
-Files included (47):
-- ./.env.example (11 lines)
-- ./.gitignore (21 lines)
-- ./DATA_PARITY.md (41 lines)
-- ./agent1_macro_director.py (321 lines)
-- ./agent2_fundamental_screener.py (689 lines)
-- ./agent3_synthesizer.py (595 lines)
-- ./agent4_risk_manager.py (867 lines)
-- ./agent5_position_monitor.py (758 lines)
-- ./alpaca_data.py (352 lines)
-- ./assembly_scraper.py (217 lines)
-- ./broker.py (505 lines)
-- ./broker_factory.py (67 lines)
-- ./config.py (166 lines)
-- ./data_fetcher_v1_deprecated.py (100 lines)
-- ./data_provider.py (423 lines)
-- ./discord_fetch.py (293 lines)
-- ./execution_engine.py (723 lines)
-- ./fedwatch.py (294 lines)
-- ./flash_crash_daemon.py (405 lines)
-- ./itc_data.py (394 lines)
-- ./market_data.py (354 lines)
-- ./massive_data.py (1039 lines)
-- ./orchestrator.py (852 lines)
-- ./performance_review.py (534 lines)
-- ./preflight.py (1201 lines)
-- ./robinhood_broker.py (646 lines)
-- ./run_archiver.py (175 lines)
-- ./run_daemon.sh (26 lines)
-- ./run_execution_daemon.py (26 lines)
-- ./run_monitor.sh (19 lines)
-- ./run_morning.sh (19 lines)
-- ./run_pipeline_auto.sh (51 lines)
-- ./run_reviews.sh (27 lines)
-- ./safeguards.py (622 lines)
-- ./schwab_auth_server.py (106 lines)
-- ./schwab_data.py (162 lines)
-- ./schwab_exchange_token.sh (43 lines)
-- ./schwab_reauth.py (151 lines)
-- ./test_data_provider.py (227 lines)
-- ./trade_journal.py (161 lines)
-- ./vwap_gate.py (108 lines)
-- ./watchlist.py (260 lines)
-- ./weekly_review.py (125 lines)
-- ./x_fetch.py (313 lines)
-- ./deprecated/agent2b_deep_research.py (303 lines)
-- ./deprecated/agent3_signal_verifier.py (255 lines)
-- robinhood-mcp/auth_and_discover.py (268 lines)
+- `agent1_macro_director.py` (15,264 bytes)
+- `agent2_fundamental_screener.py` (29,808 bytes)
+- `agent3_synthesizer.py` (24,510 bytes)
+- `agent4_risk_manager.py` (34,187 bytes)
+- `agent5_position_monitor.py` (30,492 bytes)
+- `alpaca_data.py` (11,957 bytes)
+- `assembly_scraper.py` (7,932 bytes)
+- `broker.py` (22,224 bytes)
+- `broker_factory.py` (2,014 bytes)
+- `config.py` (6,045 bytes)
+- `data_fetcher_v1_deprecated.py` (3,477 bytes)
+- `data_provider.py` (16,990 bytes)
+- `discord_fetch.py` (11,288 bytes)
+- `execution_engine.py` (35,032 bytes)
+- `fedwatch.py` (11,075 bytes)
+- `flash_crash_daemon.py` (16,571 bytes)
+- `itc_data.py` (16,523 bytes)
+- `market_data.py` (12,431 bytes)
+- `massive_data.py` (36,119 bytes)
+- `orchestrator.py` (37,700 bytes)
+- `performance_review.py` (24,626 bytes)
+- `preflight.py` (48,731 bytes)
+- `robinhood_broker.py` (26,680 bytes)
+- `run_archiver.py` (5,396 bytes)
+- `run_execution_daemon.py` (760 bytes)
+- `safeguards.py` (24,129 bytes)
+- `schwab_auth_server.py` (3,844 bytes)
+- `schwab_data.py` (5,569 bytes)
+- `schwab_reauth.py` (4,753 bytes)
+- `test_data_provider.py` (8,972 bytes)
+- `trade_journal.py` (6,178 bytes)
+- `vwap_gate.py` (3,483 bytes)
+- `watchlist.py` (9,653 bytes)
+- `weekly_review.py` (4,604 bytes)
+- `x_fetch.py` (11,509 bytes)
 
 ---
 
-## ./.env.example
+## Agent Responsibilities
 
-```python
-# Alpaca (get API keys from https://app.alpaca.markets)
-ALPACA_API_KEY=
-ALPACA_SECRET_KEY=
+# OPEN CLAW - Agent Responsibilities (v2 Golden Path)
+### Updated: May 19, 2026
 
-# LLMs
-ANTHROPIC_API_KEY=
-GOOGLE_API_KEY=
+---
 
-# Telegram
-TELEGRAM_BOT_TOKEN=
-TELEGRAM_CHAT_ID=-5238217629
+## Pipeline Overview
+
+Open Claw is a 5-agent AI trading pipeline for a $10,000 speculative spot-only equity account. Each agent has a single, clearly-defined responsibility. No agent overlaps with another.
+
+**Schedule (Eastern Time):**
+| Time | Step |
+|------|------|
+| 7:50 AM | Pre-flight: Assembly Private scrape (sentiment, macro, momentum screens) |
+| 7:55 AM | Pre-flight: Macro data fetch (VIX, MOVE, yields, credit, breadth) + screener universe (66 tickers) |
+| 8:00 AM | Agent 1 (Claude): Regime classification |
+| 8:01 AM | Agent 2 (Gemini 3.1 Pro): Fundamental screening with deep research |
+| 8:10 AM | X/Twitter fetch: Smart money mentions for Agent 2's candidates |
+| 8:15 AM | Agent 3 (Claude): Smart money sentiment verification |
+| 8:20 AM | Agent 4A (Claude) + 4B (Python): Risk management + tear sheet |
+| 9:30 AM | **Execute trades** (market open) |
+| 3:25 PM | Agent 5 pre-flight: Intraday price snapshot |
+| 3:30 PM | Agent 5 (Claude): Position monitoring (hold/trim/close) |
+
+---
+
+## Pre-Flight Data Layer
+
+**What:** Fetches all raw data before any agent runs. No agent calls APIs directly.
+
+**Data Sources:**
+- **yfinance:** VIX, MOVE, 10Y/2Y yields, HYG, LQD, sector ETFs, prior closes
+- **Assembly Private:** Sentiment composite (fear/greed + 7 sub-components), risk & credit gauges (VIX, VXN, MOVE, HYG, LQD, JNK with 50d/200d trends), cross-asset rotation, sector RS vs SPY, full yield curve, momentum screens
+- **X/Twitter API:** Smart money mentions from 15 curated accounts (7-day lookback)
+
+**Screener Universe:** 60 static core tickers (mega-cap leaders across all sectors) + ~6-10 dynamic tickers from Assembly's live momentum screen = ~66-70 total per day.
+
+---
+
+## Agent 1: Macro Director
+**Model:** Claude (Anthropic)
+**Role:** Classify the current market regime and issue a directive for downstream agents.
+
+**Inputs:**
+- VIX (current + 5d/20d change)
+- MOVE index (current + 5d/20d change)
+- DIX (dark pool index, if available)
+- 10Y/2Y yields + yield curve spread
+- HY credit spread proxy (HYG/LQD ratio)
+- Sector breadth (% of sectors above 20DMA)
+- Assembly Private: sentiment composite, risk gauges, cross-asset rotation, sector RS, yield curve
+
+**Outputs (JSON):**
+- `regime`: RISK-ON | CAUTIOUS RISK-ON | RISK-OFF | CRISIS | DEFER
+- `vol_regime`: COMPRESSED | NORMAL | ELEVATED | STRESSED
+- `posture`: Aggressive | Offensive | Defensive | Bunker | Hold
+- `conviction_floor`: integer (5-10)
+- `preferred_themes`: 1-3 macro themes for Agent 2
+- `summary`: 2-3 sentence plain English
+- `key_signals`: reads on VIX, MOVE, DIX, yield curve, credit, breadth
+- `missing_data`: any unavailable feeds
+
+**Kill-Switch:** If MOVE or Credit data is missing → REGIME: DEFER (non-negotiable). DIX missing → proceed with -2 confidence penalty.
+
+**Does NOT do:** Pick stocks, set position sizes, set allocation caps.
+
+---
+
+## Agent 2: Fundamental Screener
+**Model:** Gemini 3.1 Pro (Google) with Deep Research protocol
+**Role:** Screen the 66-ticker universe through Agent 1's regime lens and select 3-5 candidates with the best risk/reward.
+
+**Inputs:**
+- Agent 1's directive (regime, posture, conviction floor, preferred themes)
+- Screener universe (66 tickers with pre-fetched fundamentals: P/E, Fwd P/E, PEG, market cap, beta, margins, FCF, D/E, 5d/20d momentum)
+
+**Outputs (JSON per candidate):**
+- `ticker`, `company_name`
+- `conviction_score`: integer (must meet Agent 1's conviction floor)
+- `theme_match`: which of Agent 1's themes this candidate fits
+- `thesis`: 2-3 sentence investment case
+- `catalyst`: what could move this in 5-15 days
+- `asset_type`: EQUITY | ETF
+- Fundamental data passthrough (P/E, Fwd P/E, PEG, beta, margins, etc.)
+
+**Key Rules:**
+- Must respect Agent 1's conviction floor (won't pass candidates below it)
+- Must map each candidate to one of Agent 1's preferred themes
+- Uses Gemini's deep research mode: extended thinking, multi-step reasoning
+- No candidate without a clear catalyst
+
+**Does NOT do:** Set stops, calculate position sizes, verify sentiment.
+
+---
+
+## Agent 3: Smart Money Verifier
+**Model:** Claude (Anthropic)
+**Role:** Score the smart money X/Twitter sentiment for each of Agent 2's candidates.
+
+**Inputs:**
+- Agent 2's candidate list (tickers + theses)
+- X/Twitter mentions from 15 curated smart money accounts (7-day window)
+- Curated accounts: unusual_whales, DeItaone, Fxhedgers, zaborsky, jimcramer, GurufocusData, OptionsHawk, PeterSchiff, TruthGundlach, elerianm, SqueezeMetrics, sentimentrader, DarkPoolChart, WallStJesus, VolSignals
+
+**Outputs (JSON per candidate):**
+- `verification_score`: 0-10
+  - 9-10: Strong alignment, multiple accounts bullish
+  - 7-8: Moderate alignment
+  - 5-6: Neutral/silent (not a red flag)
+  - 3-4: Contested
+  - 1-2: Divergent/bearish
+  - 0: Crowded trade warning
+- `sentiment_read`: 1-2 sentence summary
+- `key_mentions`: notable tweets
+- `flag`: aligned | contested | silent | crowded | divergent
+
+**Key Rules:**
+- Silence (no mentions) scores 5 — neutral, not negative
+- A crowded trade (score 0) is a kill signal
+- X research is mandatory — Agent 3 does not bypass
+
+**Does NOT do:** Change conviction scores, reject candidates, set stops.
+
+---
+
+## Agent 4: Risk Manager
+**Model:** Agent 4A = Claude (stop anchors), Agent 4B = Python (math)
+**Role:** Calculate position sizes, stop losses, and generate the final tear sheet.
+
+**Sub-Agent 4A (Claude) — Stop Anchor Identification:**
+- Looks at each candidate's moving averages (MA10, MA20, MA50) and recent 20d low
+- Identifies the nearest significant technical level below entry as the stop anchor
+- Calculates FINAL_CONVICTION = average of Agent 2's conviction_score and Agent 3's verification_score
+
+**Sub-Agent 4B (Python) — Multiplicative Sizing:**
+- Position size = BASE_ALLOC × CONVICTION_MOD × VOL_MOD × POSTURE_MOD × CONTRARIAN_MOD
+- Base allocation: 15% of account ($1,500)
+- Conviction modifier: 0.6 (score 5) → 1.0 (score 7) → 1.4 (score 10)
+- Vol regime modifier: Compressed=1.2, Normal=1.0, Elevated=0.7, Stressed=0.4
+- Posture modifier: Aggressive=1.0, Offensive=0.85, Defensive=0.6, Bunker=0.3
+- Contrarian modifier: 1.0 default (future: adjusts for Agent 3 divergent signals)
+- Shares = floor(dollar_amount / entry_price)
+- Risk per trade = shares × (entry - stop)
+
+**Outputs — Tear Sheet:**
+- Per trade: ticker, action (BUY), shares, entry price, stop price, stop distance %, theme, conviction, cost, risk, sizing math
+- Session totals: trade count, total risk vs budget ($500), % deployed, dry powder
+
+**Key Rules:**
+- Max risk budget: $500/session (5% of account)
+- Max risk per trade: $150
+- Stops must be within 10% of entry
+- No position exceeds calculated allocation cap
+
+**Does NOT do:** Pick stocks, verify sentiment, monitor positions.
+
+---
+
+## Agent 5: Position Monitor
+**Model:** Claude (Anthropic)
+**Role:** Run at 3:30 PM ET to review all open positions and decide hold/trim/close before market close.
+
+**Inputs:**
+- Open positions from today's tear sheet
+- 3:25 PM price snapshot (5 min before agent runs)
+- Original stop prices and theses
+
+**Outputs (JSON per position):**
+- `action`: HOLD | TRIM | CLOSE
+- `reasoning`: why this action
+- `new_stop`: adjusted stop if applicable (trailing stop logic)
+
+**Key Rules:**
+- If price is below stop → CLOSE (non-negotiable)
+- If position is up >3% from entry → consider tightening stop (trailing)
+- If thesis has broken (catalyst failed, sector rotation against) → CLOSE
+- TRIM = sell half, keep half with tighter stop
+- Default action is HOLD unless there's a reason not to
+
+**Does NOT do:** Open new positions, change the regime, override Agent 4's sizing.
+
+---
+
+## Data Flow Summary
 
 ```
-
----
-
-## ./.gitignore
-
-```python
-__pycache__/
-*.pyc
-.env
-output/archive/
-output/reviews/
-output/*.json
-output/*.txt
-output/*.pdf
-output/*.md
-output/*.html
-journal/trades.csv
-*.egg-info/
-.DS_Store
-schwab_token.json
-schwab_localhost.pem
-schwab_localhost.key
-schwab_auth_server.py
-schwab_exchange_token.sh
-output/execution_ledger.db
-output/execution_engine.log
-output/broker_state.lock
-
+Pre-Flight (7:55 AM)
+    ├── Macro data (yfinance + Assembly)
+    ├── Screener universe (60 static + Assembly momentum)
+    └── Assembly sentiment + risk gauges
+        │
+        ▼
+Agent 1: Regime → directive.json
+        │
+        ▼
+Agent 2: Screen 66 tickers → candidates.json (3-5 picks)
+        │
+        ▼
+X/Twitter Fetch → smart_money_mentions.json
+        │
+        ▼
+Agent 3: Verify sentiment → verified.json (scored candidates)
+        │
+        ▼
+Agent 4A: Stop anchors (Claude) → 4B: Sizing math (Python) → tear_sheet.txt
+        │
+        ▼
+Execute at 9:30 AM market open
+        │
+        ▼
+Agent 5: Monitor at 3:30 PM → hold/trim/close decisions
 ```
 
----
-
-## ./DATA_PARITY.md
-
-```python
-# Data Parity Matrix — yfinance Removal Status
-
-Last verified: 2026-05-28 01:52 ET
-
-## Current Vendor Coverage
-
-| Data Type | Massive (Free) | Schwab | yfinance | Status |
-|-----------|---------------|--------|----------|--------|
-| Daily OHLCV bars | ✅ 200 | ❌ Not impl | ✅ Fallback | **Routed via DataProvider** |
-| 1-min intraday bars | ✅ 200 (~6hr delay) | ❌ Not impl | ✅ Live | **yfinance required for live** |
-| News headlines | ✅ 200 | ❌ Not impl | ✅ Fallback | **Routed via DataProvider** |
-| Options OI / P-C ratio | ❌ 403 (paid) | ❌ Not impl | ✅ Only source | **yfinance required** |
-| Short interest % float | ❌ 404 (no endpoint) | ❌ Not impl | ✅ Only source | **yfinance required** |
-| Stock splits | ✅ 200 | ❌ Not impl | Removed | **Routed via DataProvider** |
-| Index VIX/SPX | ❌ 403 (paid) | ✅ $VIX/$SPX | ✅ ETF proxy | **DataProvider fallback chain** |
-| Live quotes (NBBO) | N/A | ✅ Primary | N/A | **Broker feed only** |
-| Earnings dates | N/A | N/A | ✅ Only source | **yfinance required** |
-
-## What Blocks PR3 (full yfinance removal)
-
-Before yfinance can be deleted, one of these must be implemented:
-
-1. **Options OI**: Upgrade to Massive paid tier for options snapshots, OR implement Schwab options chain endpoint
-2. **Short Interest**: Find alternative source (Massive doesn't have it, Schwab TBD)
-3. **Earnings Dates**: Alternative source needed (possibly Massive ticker events?)
-4. **Intraday 1-min bars**: Schwab historical bars endpoint, OR accept Massive's EOD delay
-5. **Historical bars fallback**: Without yfinance, Massive becomes SPOF for ATR/correlation
-
-## Current yfinance Usage (files that still import it)
-
-- `agent3_synthesizer.py` — Options OI, short interest (sandboxed in `fetch_single()`)
-- `broker.py` — 1-min intraday tape for cross-reference price
-- `preflight.py` — Macro data (VIX, MOVE, yield curve), technicals local calc
-- `safeguards.py` — Earnings dates
-- `trade_journal.py` — SPX benchmark calculation
-- `data_provider.py` — Deprecated fallback for EOD bars + news fallback
-
-## Files Fully Off yfinance
-
-- `agent4_risk_manager.py` ✅ — All via DataProvider
-- `flash_crash_daemon.py` ✅ — All via DataProvider
-
-```
 
 ---
 
-## ./agent1_macro_director.py
+## agent1_macro_director.py
 
 ```python
 """
@@ -482,7 +590,7 @@ if __name__ == "__main__":
 
 ---
 
-## ./agent2_fundamental_screener.py
+## agent2_fundamental_screener.py
 
 ```python
 """
@@ -1179,7 +1287,7 @@ if __name__ == "__main__":
 
 ---
 
-## ./agent3_synthesizer.py
+## agent3_synthesizer.py
 
 ```python
 """
@@ -1782,7 +1890,7 @@ if __name__ == "__main__":
 
 ---
 
-## ./agent4_risk_manager.py
+## agent4_risk_manager.py
 
 ```python
 """
@@ -2657,7 +2765,7 @@ if __name__ == "__main__":
 
 ---
 
-## ./agent5_position_monitor.py
+## agent5_position_monitor.py
 
 ```python
 """
@@ -3423,7 +3531,7 @@ if __name__ == "__main__":
 
 ---
 
-## ./alpaca_data.py
+## alpaca_data.py
 
 ```python
 """
@@ -3783,7 +3891,7 @@ if __name__ == "__main__":
 
 ---
 
-## ./assembly_scraper.py
+## assembly_scraper.py
 
 ```python
 """
@@ -4008,7 +4116,7 @@ if __name__ == "__main__":
 
 ---
 
-## ./broker.py
+## broker.py
 
 ```python
 """
@@ -4521,7 +4629,7 @@ class AlpacaBroker:
 
 ---
 
-## ./broker_factory.py
+## broker_factory.py
 
 ```python
 """
@@ -4596,7 +4704,7 @@ def _get_alpaca():
 
 ---
 
-## ./config.py
+## config.py
 
 ```python
 """
@@ -4770,7 +4878,7 @@ MASSIVE_API_KEY = os.environ.get("MASSIVE_API_KEY", "")
 
 ---
 
-## ./data_fetcher_v1_deprecated.py
+## data_fetcher_v1_deprecated.py
 
 ```python
 """
@@ -4878,7 +4986,7 @@ if __name__ == "__main__":
 
 ---
 
-## ./data_provider.py
+## data_provider.py
 
 ```python
 """
@@ -5309,7 +5417,7 @@ def set_provider(provider: DataProvider):
 
 ---
 
-## ./discord_fetch.py
+## discord_fetch.py
 
 ```python
 """
@@ -5610,7 +5718,7 @@ if __name__ == "__main__":
 
 ---
 
-## ./execution_engine.py
+## execution_engine.py
 
 ```python
 """
@@ -5794,9 +5902,10 @@ class ExecutionEngine:
                 continue
 
             trade_id = str(uuid.uuid4())
-            # Add slippage allowance to limit price (0.15%)
+            # Use the limit price as-is — slippage allowance is already applied
+            # upstream in orchestrator.py (marketable limit = ask * 1.0015)
             entry_price = order.get("entry_price", order.get("limit_price", 0))
-            limit_price = round(entry_price * 1.0015, 2)
+            limit_price = round(entry_price, 2)
             stop_price = order.get("stop_loss", 0)
             shares = order.get("shares", 0)
 
@@ -6341,7 +6450,7 @@ if __name__ == "__main__":
 
 ---
 
-## ./fedwatch.py
+## fedwatch.py
 
 ```python
 """
@@ -6643,7 +6752,7 @@ if __name__ == "__main__":
 
 ---
 
-## ./flash_crash_daemon.py
+## flash_crash_daemon.py
 
 ```python
 """
@@ -7056,7 +7165,7 @@ if __name__ == "__main__":
 
 ---
 
-## ./itc_data.py
+## itc_data.py
 
 ```python
 """
@@ -7458,7 +7567,7 @@ if __name__ == "__main__":
 
 ---
 
-## ./market_data.py
+## market_data.py
 
 ```python
 """
@@ -7820,7 +7929,7 @@ if __name__ == "__main__":
 
 ---
 
-## ./massive_data.py
+## massive_data.py
 
 ```python
 """
@@ -8867,7 +8976,7 @@ if __name__ == "__main__":
 
 ---
 
-## ./orchestrator.py
+## orchestrator.py
 
 ```python
 """
@@ -8908,7 +9017,7 @@ from broker_factory import get_broker
 from trade_journal import log_close, build_trade_record
 from watchlist import Watchlist, promote_ready_candidates
 # VWAP gate removed — caused adverse selection (buying above morning VWAP = exit liquidity for institutions)
-# Now using passive midpoint routing in run_deferred_execution()
+# Marketable limit routing: cross the book at ask + 15bps to guarantee fills on breakouts
 # from vwap_gate import check_vwap, vwap_gate
 from run_archiver import archive_run
 from safeguards import (
@@ -9655,7 +9764,7 @@ def run_deferred_execution() -> dict:
             continue
 
         midpoint = round((bid + ask) / 2.0, 2)
-        spread_pct = (ask - bid) / midpoint
+        spread_pct = (ask - bid) / midpoint if midpoint > 0 else 999
 
         if spread_pct > 0.05:
             print(f"  🚫 REJECTED {ticker}: Spread is toxic ({spread_pct*100:.1f}% wide). Bid: {bid}, Ask: {ask}")
@@ -9664,10 +9773,18 @@ def run_deferred_execution() -> dict:
 
         print(f"  [NBBO] {ticker}: Bid ${bid:.2f} | Ask ${ask:.2f} | Spread {spread_pct*10000:.0f} bps")
 
+        # ---------------------------------------------------------
+        # Marketable Limit Routing
+        # Cross the book by targeting the Ask + 15 bps slippage allowance.
+        # This pays the spread to guarantee fill and defeat adverse selection.
+        # ---------------------------------------------------------
+        marketable_limit = round(ask * 1.0015, 2)
+
         # Safety: reject if stock gapped up > 3% from planned entry (avoid chasing)
-        entry_price = order.get("entry_price", midpoint)
+        # Compare against the ASK (our actual fill target), not the midpoint
+        entry_price = order.get("entry_price", ask)
         if entry_price > 0:
-            gap_pct = (midpoint - entry_price) / entry_price
+            gap_pct = (ask - entry_price) / entry_price
             if gap_pct > 0.03:
                 print(f"  🚫 REJECTED {ticker}: Gapped up {gap_pct*100:.1f}% from planned entry. Avoid chasing.")
                 fills.append({"ticker": ticker, "status": "rejected_gap_up", "gap_pct": round(gap_pct * 100, 1)})
@@ -9676,21 +9793,21 @@ def run_deferred_execution() -> dict:
         trade_id = str(uuid.uuid4())
 
         # Route intent to the Execution Ledger
-        # Passive midpoint limit — no more ask * 1.0015 spread-crossing
+        # Marketable limit: ask + 15bps to cross the spread and guarantee fills
         result = engine.submit_trade_intent(
             trade_id=trade_id,
             ticker=ticker,
             shares=int(order.get("shares", 0)),
-            limit_price=midpoint,
+            limit_price=marketable_limit,
             stop_price=order.get("stop_loss", 0),
         )
         fills.append({
             "ticker": ticker,
             "status": result.get("status", "unknown"),
-            "limit_price": midpoint,
+            "limit_price": marketable_limit,
             "order_id": result.get("order_id"),
         })
-        print(f"  ✅ {ticker}: Midpoint limit routed at ${midpoint:.2f}")
+        print(f"  ✅ {ticker}: Marketable limit routed at ${marketable_limit:.2f} (Ask ${ask:.2f} + 15bps)")
 
     submitted = sum(1 for f in fills if f.get("status") == "submitted")
     print(f"\n📊 Results: {submitted}/{len(fills)} orders routed to execution ledger")
@@ -9727,7 +9844,7 @@ if __name__ == "__main__":
 
 ---
 
-## ./performance_review.py
+## performance_review.py
 
 ```python
 """
@@ -10269,7 +10386,7 @@ if __name__ == "__main__":
 
 ---
 
-## ./preflight.py
+## preflight.py
 
 ```python
 """
@@ -11478,7 +11595,7 @@ if __name__ == "__main__":
 
 ---
 
-## ./robinhood_broker.py
+## robinhood_broker.py
 
 ```python
 """
@@ -12132,7 +12249,7 @@ if __name__ == "__main__":
 
 ---
 
-## ./run_archiver.py
+## run_archiver.py
 
 ```python
 #!/usr/bin/env python3
@@ -12315,41 +12432,7 @@ if __name__ == "__main__":
 
 ---
 
-## ./run_daemon.sh
-
-```python
-#!/bin/bash
-# run_daemon.sh — Auto-restarting execution daemon wrapper
-#
-# Runs the execution reconciliation daemon with automatic restart on crash.
-# Writes heartbeat to output/daemon_hb_signal.txt every cycle.
-# The orchestrator checks this heartbeat before routing trades.
-#
-# Usage:
-#   bash run_daemon.sh          # Foreground
-#   nohup bash run_daemon.sh &  # Background
-#   tmux new -d -s daemon 'bash run_daemon.sh'  # tmux session
-
-cd "$(dirname "$0")"
-
-echo "═══════════════════════════════════════════"
-echo "  EXECUTION DAEMON — AUTO-RESTART WRAPPER"
-echo "  Press Ctrl+C to stop"
-echo "═══════════════════════════════════════════"
-
-while true; do
-    echo "[$(date)] Starting execution daemon..."
-    python3 run_execution_daemon.py
-    EXIT_CODE=$?
-    echo "[$(date)] Daemon exited with code $EXIT_CODE. Restarting in 5s..."
-    sleep 5
-done
-
-```
-
----
-
-## ./run_execution_daemon.py
+## run_execution_daemon.py
 
 ```python
 #!/usr/bin/env python3
@@ -12383,155 +12466,7 @@ if __name__ == "__main__":
 
 ---
 
-## ./run_monitor.sh
-
-```python
-#!/bin/bash
-# Open Claw — Agent 5 Afternoon Position Monitor + Broker Execution
-# Scheduled: 3:30 PM ET, weekdays only
-cd /Users/chris/code/trading-pipeline
-export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
-
-# Source environment variables
-set -a
-source .env
-set +a
-
-# Log output
-LOG_DIR="output/logs"
-mkdir -p "$LOG_DIR"
-LOG_FILE="$LOG_DIR/monitor_$(date +%Y-%m-%d).log"
-
-echo "=== Afternoon Monitor — $(date) ===" >> "$LOG_FILE"
-python3 orchestrator.py monitor >> "$LOG_FILE" 2>&1
-echo "=== Done — $(date) ===" >> "$LOG_FILE"
-
-```
-
----
-
-## ./run_morning.sh
-
-```python
-#!/bin/bash
-# Open Claw — Morning Entry Pipeline (Agents 1-4 + Broker Execution)
-# Scheduled: 8:00 AM ET, weekdays only
-cd /Users/chris/code/trading-pipeline
-export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
-
-# Source environment variables
-set -a
-source .env
-set +a
-
-# Log output
-LOG_DIR="output/logs"
-mkdir -p "$LOG_DIR"
-LOG_FILE="$LOG_DIR/morning_$(date +%Y-%m-%d).log"
-
-echo "=== Morning Pipeline — $(date) ===" >> "$LOG_FILE"
-python3 orchestrator.py morning >> "$LOG_FILE" 2>&1
-echo "=== Done — $(date) ===" >> "$LOG_FILE"
-
-```
-
----
-
-## ./run_pipeline_auto.sh
-
-```python
-#!/bin/bash
-# Open Claw — Automated Morning Pipeline
-# Runs the full morning pipeline (Agents 1-4) and executes trades on Robinhood.
-# Cron: 55 7 * * 1-5 (7:55 AM ET, weekdays only)
-#
-# Agent 1 & 3: Gemini fallback (no Anthropic API key needed)
-# Agent 2: Gemini 3.1 Pro Preview
-# Agent 4: Pure Python (no LLM)
-# Execution: Robinhood MCP broker
-
-set -e
-
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-cd "$SCRIPT_DIR"
-
-LOG_DIR="$SCRIPT_DIR/output/logs"
-mkdir -p "$LOG_DIR"
-
-DATE=$(date +%Y-%m-%d)
-LOG_FILE="$LOG_DIR/pipeline_${DATE}.log"
-
-echo "=============================================" >> "$LOG_FILE"
-echo "🌅 Open Claw Automated Pipeline — $DATE" >> "$LOG_FILE"
-echo "Started: $(date)" >> "$LOG_FILE"
-echo "=============================================" >> "$LOG_FILE"
-
-# Source env vars
-if [ -f "$SCRIPT_DIR/.env" ]; then
-    export $(grep -v '^#' "$SCRIPT_DIR/.env" | xargs)
-fi
-
-# Ensure PATH includes Python and system binaries
-export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
-
-# Run the morning pipeline
-python3 "$SCRIPT_DIR/orchestrator.py" morning >> "$LOG_FILE" 2>&1
-PIPELINE_EXIT=$?
-
-echo "" >> "$LOG_FILE"
-echo "Pipeline exit code: $PIPELINE_EXIT" >> "$LOG_FILE"
-echo "Finished: $(date)" >> "$LOG_FILE"
-
-# If pipeline succeeded and there are pending orders, execute them
-if [ $PIPELINE_EXIT -eq 0 ] && [ -f "$SCRIPT_DIR/output/pending_orders.json" ]; then
-    echo "" >> "$LOG_FILE"
-    echo "⏰ Executing pending orders..." >> "$LOG_FILE"
-    python3 "$SCRIPT_DIR/orchestrator.py" execute >> "$LOG_FILE" 2>&1
-    echo "Execution exit code: $?" >> "$LOG_FILE"
-fi
-
-exit $PIPELINE_EXIT
-
-```
-
----
-
-## ./run_reviews.sh
-
-```python
-#!/bin/bash
-# Open Claw — Performance Review Runner
-# Schedule: Weekly pulse (Fridays), Biweekly deep (1st + 15th), Monthly params (1st)
-#
-# Usage:
-#   ./run_reviews.sh weekly      # Friday weekly pulse
-#   ./run_reviews.sh biweekly    # Biweekly deep review + data source audit
-#   ./run_reviews.sh monthly     # Monthly parameter review
-#   ./run_reviews.sh all         # All three
-
-cd /Users/chris/code/trading-pipeline
-export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
-
-set -a
-source .env 2>/dev/null
-set +a
-
-REVIEWS_DIR="output/reviews"
-mkdir -p "$REVIEWS_DIR"
-
-MODE="${1:-all}"
-TS=$(date +%Y%m%d_%H%M)
-LOG="$REVIEWS_DIR/review_${MODE}_${TS}.log"
-
-echo "=== Open Claw ${MODE} Review — $(date) ===" | tee "$LOG"
-python3 performance_review.py "$MODE" 2>&1 | tee -a "$LOG"
-echo "=== Done — $(date) ===" | tee -a "$LOG"
-
-```
-
----
-
-## ./safeguards.py
+## safeguards.py
 
 ```python
 """
@@ -13161,7 +13096,7 @@ if __name__ == "__main__":
 
 ---
 
-## ./schwab_auth_server.py
+## schwab_auth_server.py
 
 ```python
 """
@@ -13275,7 +13210,7 @@ print("[*] Done.")
 
 ---
 
-## ./schwab_data.py
+## schwab_data.py
 
 ```python
 """
@@ -13445,58 +13380,7 @@ if __name__ == "__main__":
 
 ---
 
-## ./schwab_exchange_token.sh
-
-```python
-#!/bin/bash
-# Usage: ./schwab_exchange_token.sh "FULL_CALLBACK_URL"
-# Extracts auth code and exchanges for token immediately
-
-cd "$(dirname "$0")"
-URL="$1"
-
-# Extract code parameter
-CODE=$(python3 -c "
-from urllib.parse import urlparse, parse_qs, unquote
-url = unquote('$URL')
-parsed = urlparse(url)
-params = parse_qs(parsed.query)
-print(params.get('code', [''])[0])
-")
-
-echo "Extracted code: ${CODE:0:20}..."
-
-python3 -c "
-import requests, base64, json, os
-from pathlib import Path
-from dotenv import load_dotenv
-load_dotenv('.env')
-
-app_key = os.environ['SCHWAB_APP_KEY']
-app_secret = os.environ['SCHWAB_APP_SECRET']
-code = '$CODE'
-
-credentials = base64.b64encode(f'{app_key}:{app_secret}'.encode()).decode()
-resp = requests.post(
-    'https://api.schwabapi.com/v1/oauth/token',
-    headers={'Authorization': f'Basic {credentials}', 'Content-Type': 'application/x-www-form-urlencoded'},
-    data={'grant_type': 'authorization_code', 'code': code, 'redirect_uri': 'https://127.0.0.1/'},
-)
-print(f'Status: {resp.status_code}')
-if resp.status_code == 200:
-    token_data = resp.json()
-    Path('schwab_token.json').write_text(json.dumps(token_data, indent=2))
-    print('Token saved to schwab_token.json')
-    print(f'Expires in: {token_data.get(\"expires_in\")}s')
-else:
-    print(f'Error: {resp.text}')
-"
-
-```
-
----
-
-## ./schwab_reauth.py
+## schwab_reauth.py
 
 ```python
 #!/usr/bin/env python3
@@ -13655,7 +13539,7 @@ if __name__ == "__main__":
 
 ---
 
-## ./test_data_provider.py
+## test_data_provider.py
 
 ```python
 """
@@ -13890,7 +13774,7 @@ if __name__ == "__main__":
 
 ---
 
-## ./trade_journal.py
+## trade_journal.py
 
 ```python
 """
@@ -14059,7 +13943,7 @@ def build_trade_record(
 
 ---
 
-## ./vwap_gate.py
+## vwap_gate.py
 
 ```python
 """
@@ -14175,7 +14059,7 @@ def vwap_gate(trade_orders: list[dict]) -> tuple[list[dict], list[dict]]:
 
 ---
 
-## ./watchlist.py
+## watchlist.py
 
 ```python
 """
@@ -14443,7 +14327,7 @@ def promote_ready_candidates() -> list[dict]:
 
 ---
 
-## ./weekly_review.py
+## weekly_review.py
 
 ```python
 #!/usr/bin/env python3
@@ -14576,7 +14460,7 @@ if __name__ == "__main__":
 
 ---
 
-## ./x_fetch.py
+## x_fetch.py
 
 ```python
 """
@@ -14894,855 +14778,3 @@ if __name__ == "__main__":
         print("  python3 x_fetch.py --from-agent2    # Read from Agent 2 output")
 
 ```
-
----
-
-## ./deprecated/agent2b_deep_research.py
-
-```python
-"""
-Agent 2.5: Deep Research Analyst (Red Team)
-Model: Gemini 3.1 Pro (Google)
-Role: Qualitatively attack Agent 2's quantitative candidates using
-      pre-fetched news, short interest, and near-term options flow.
-"""
-import json
-import os
-import time
-from datetime import datetime
-
-import yfinance as yf
-from dotenv import load_dotenv
-from google import genai
-
-load_dotenv()
-
-GEMINI_MODEL = "deep-research-preview-04-2026"
-MAX_RETRIES = 3
-RETRY_DELAY = 5
-GEMINI_TEMPERATURE = 0.2  # Slightly higher than Agent 2 to allow qualitative reasoning
-
-SYSTEM_PROMPT = """You are Agent 2.5: The Deep Research Analyst (Red Team) for a $100,000 speculative spot-only trading account.
-
-YOUR JOB: Agent 2 has passed you a list of 1-3 surviving candidates based on a rigid quantitative screen. Your role is to brutally stress-test the bullish thesis using the QUALITATIVE_CONTEXT provided by Python (recent news headlines, options flow, short interest).
-
-CRITICAL RULES:
-1. You may NOT look up or fetch external data. Rely ONLY on the QUALITATIVE_CONTEXT injected into this prompt.
-2. For each candidate, you must assign a RED_TEAM_VERDICT:
-   - PASS: The qualitative data reveals no major red flags.
-   - DOWNGRADE: The thesis is okay, but crowded options flow or negative news sentiment warrants caution. Lower the conviction tier (e.g., EXCEPTIONAL -> STRONG). You may NEVER upgrade a tier.
-   - VETO: Fatal flaw discovered (e.g., looming regulatory action, terrible earnings reaction, highly skewed put volume). The trade is dead.
-3. You must generate a "red_flag_warnings" array for each candidate. Even if the setup is clean, identify the biggest risk factor.
-4. Synthesize a "qualitative_thesis" that combines Agent 2's quantitative thesis with your qualitative realities.
-
-<deep_research_protocol>
-CRITICAL: You must conduct your analysis inside a <deep_research_scratchpad> block before generating your final JSON output.
-Step 1: Inventory the qualitative context (News Headlines, Options Flow, Short Interest).
-Step 2: Red Team the Catalyst: Is it already priced in? Is the market ignoring a macro headwind?
-Step 3: Analyze Options Flow: Does the Call/Put ratio confirm the bullish quantitative thesis, or are institutions hedging heavily?
-Step 4: Re-evaluate the CONVICTION_TIER (PASS, STRONG, EXCEPTIONAL, or REJECTED).
-Step 5: Write the qualitative_thesis.
-</deep_research_protocol>
-
-OUTPUT FORMAT:
-First, output your <deep_research_scratchpad>...</deep_research_scratchpad> analysis.
-Then, output ONLY this JSON structure:
-{
-  "agent": "deep_research_analyst",
-  "timestamp": "<ISO timestamp>",
-  "evaluations": [
-    {
-      "ticker": "<SYMBOL>",
-      "red_team_verdict": "<PASS | DOWNGRADE | VETO>",
-      "updated_conviction_tier": "<PASS | STRONG | EXCEPTIONAL | REJECTED>",
-      "red_flag_warnings": ["<specific risk 1>", "<specific risk 2>"],
-      "qualitative_thesis": "<2-3 sentences merging the quant thesis with qualitative realities>"
-    }
-  ],
-  "research_notes": "<Overall summary of your qualitative teardown>"
-}"""
-
-
-def prefetch_qualitative_context(candidates: list) -> dict:
-    """Pre-fetch news and options data to feed Gemini's qualitative deep dive."""
-    context = {}
-    print(f"  [Agent 2.5] Pre-fetching qualitative context for {len(candidates)} candidates...")
-
-    for c in candidates:
-        ticker = c["ticker"]
-        try:
-            stock = yf.Ticker(ticker)
-
-            # 1. Fetch News Headlines
-            news_items = stock.news
-            headlines = [
-                f"- {n.get('providerPublishTime', '')}: {n.get('title', '')} [{n.get('publisher', '')}]"
-                for n in news_items[:5]
-            ] if news_items else ["- No recent news available"]
-
-            # 2. Fetch Options Flow (Put/Call OI Ratio for nearest expiration)
-            options_context = "No options data available"
-            try:
-                expirations = stock.options
-                if expirations:
-                    nearest_exp = expirations[0]
-                    chain = stock.option_chain(nearest_exp)
-                    puts_oi = int(chain.puts['openInterest'].fillna(0).sum()) if not chain.puts.empty else 0
-                    calls_oi = int(chain.calls['openInterest'].fillna(0).sum()) if not chain.calls.empty else 0
-                    pc_ratio = round(puts_oi / calls_oi, 2) if calls_oi > 0 else 0
-                    options_context = f"Nearest Expiration ({nearest_exp}): Put OI = {puts_oi}, Call OI = {calls_oi}, P/C Ratio = {pc_ratio}"
-            except Exception:
-                pass
-
-            # 3. Short Interest
-            info = stock.info
-            short_pct = info.get("shortPercentOfFloat")
-            short_context = f"{round(short_pct * 100, 2)}%" if short_pct else "N/A"
-
-            context[ticker] = {
-                "recent_headlines": headlines,
-                "options_flow": options_context,
-                "short_interest_pct_of_float": short_context,
-            }
-        except Exception as e:
-            context[ticker] = {"error": str(e)}
-
-    return context
-
-
-def call_gemini_red_team(candidates: list, qual_context: dict) -> dict:
-    """Call Gemini 3.1 Pro to red-team candidates with qualitative context."""
-    client = genai.Client(api_key=os.environ.get("GOOGLE_API_KEY"))
-
-    context_lines = []
-    for c in candidates:
-        ticker = c["ticker"]
-        qc = qual_context.get(ticker, {})
-
-        line = (
-            f"TICKER: {ticker}\n"
-            f"  Quantitative Thesis: {c.get('thesis', 'N/A')}\n"
-            f"  Current Conviction: {c.get('conviction_tier', 'PASS')}\n"
-            f"  --- QUALITATIVE DATA ---\n"
-            f"  Short Interest: {qc.get('short_interest_pct_of_float', 'N/A')}\n"
-            f"  Options Flow: {qc.get('options_flow', 'N/A')}\n"
-            f"  Recent Headlines:\n" + "\n".join([f"    {h}" for h in qc.get('recent_headlines', [])]) + "\n"
-        )
-        context_lines.append(line)
-
-    user_message = f"""Here are the candidates from Agent 2, alongside pre-fetched qualitative context (news, short interest, and options flow).
-ALL data has been pre-fetched by Python.
-
-CANDIDATES & QUALITATIVE CONTEXT:
-{"=" * 50}
-{"".join(context_lines)}
-{"=" * 50}
-
-Perform your deep research and red team evaluation.
-Current date/time: {datetime.now().isoformat()}"""
-
-    last_error = None
-    for attempt in range(MAX_RETRIES):
-        try:
-            print(f"  [Agent 2.5] Calling {GEMINI_MODEL} (attempt {attempt + 1}/{MAX_RETRIES})...")
-            response = client.models.generate_content(
-                model=GEMINI_MODEL,
-                contents=user_message,
-                config=genai.types.GenerateContentConfig(
-                    system_instruction=SYSTEM_PROMPT,
-                    temperature=GEMINI_TEMPERATURE,
-                    max_output_tokens=8192,
-                ),
-            )
-
-            raw_text = response.text.strip()
-
-            # Extract JSON after the scratchpad
-            if "</deep_research_scratchpad>" in raw_text:
-                after_scratchpad = raw_text.split("</deep_research_scratchpad>", 1)[1].strip()
-            else:
-                after_scratchpad = raw_text
-
-            # Strip markdown code fences if present
-            if after_scratchpad.startswith("```"):
-                after_scratchpad = after_scratchpad.split("\n", 1)[1].rsplit("```", 1)[0].strip()
-
-            brace_start = after_scratchpad.find("{")
-            if brace_start >= 0:
-                result = json.loads(after_scratchpad[brace_start:])
-                return result
-            else:
-                raise json.JSONDecodeError("No JSON object found", after_scratchpad, 0)
-
-        except Exception as e:
-            last_error = e
-            print(f"  [Agent 2.5] Gemini Error: {e}. Retrying in {RETRY_DELAY}s...")
-            time.sleep(RETRY_DELAY)
-
-    raise Exception(f"{GEMINI_MODEL} failed after {MAX_RETRIES} attempts. Last error: {last_error}")
-
-
-def run_agent2b(agent2_result: dict = None) -> dict:
-    """Run Agent 2.5: Pre-fetch qualitative context, call Gemini, merge output."""
-    if agent2_result is None:
-        path = "output/agent2_candidates.json"
-        if not os.path.exists(path):
-            return {"success": False, "error": "No Agent 2 candidates found."}
-        with open(path) as f:
-            agent2_result = json.load(f)
-
-    candidates = agent2_result.get("candidates", [])
-    if not candidates:
-        return {
-            "success": True,
-            "evaluations": [],
-            "updated_agent2_result": agent2_result,
-            "note": "No candidates to red-team.",
-        }
-
-    # Pre-fetch qualitative context (news, options, short interest)
-    qual_context = prefetch_qualitative_context(candidates)
-
-    # Call Gemini Red Team
-    try:
-        gemini_result = call_gemini_red_team(candidates, qual_context)
-    except Exception as e:
-        return {"success": False, "error": f"Gemini error: {e}"}
-
-    # Merge evaluations and filter VETOs
-    evaluations = {ev["ticker"]: ev for ev in gemini_result.get("evaluations", [])}
-    surviving_candidates = []
-
-    for c in candidates:
-        ticker = c["ticker"]
-        ev = evaluations.get(ticker)
-
-        if not ev:
-            surviving_candidates.append(c)
-            continue
-
-        verdict = ev.get("red_team_verdict", "PASS")
-
-        if verdict == "VETO" or ev.get("updated_conviction_tier") == "REJECTED":
-            print(f"  [Agent 2.5] 🚫 VETOED {ticker}")
-            continue
-
-        # Update conviction tier if downgraded; apply updated qualitative thesis
-        c["conviction_tier"] = ev.get("updated_conviction_tier", c["conviction_tier"])
-        c["thesis"] = ev.get("qualitative_thesis", c["thesis"])
-
-        # Attach red team metadata for downstream reporting/sizing
-        c["red_flag_warnings"] = ev.get("red_flag_warnings", [])
-        c["red_team_verdict"] = verdict
-        surviving_candidates.append(c)
-
-    # Reconstruct output mimicking Agent 2 shape, but with filtered candidates
-    updated_agent2_result = agent2_result.copy()
-    updated_agent2_result["candidates"] = surviving_candidates
-    updated_agent2_result["agent2b_research_notes"] = gemini_result.get("research_notes", "")
-
-    return {
-        "success": True,
-        "evaluations": gemini_result.get("evaluations", []),
-        "research_notes": gemini_result.get("research_notes", ""),
-        "updated_agent2_result": updated_agent2_result,
-    }
-
-
-def format_agent2b_for_slack(result: dict) -> str:
-    """Format Agent 2.5 output using Slack-friendly mrkdwn."""
-    if not result.get("success"):
-        return f"⚠️ *Agent 2.5 FAILED:* {result.get('error')}"
-
-    evaluations = result.get("evaluations", [])
-    updated_candidates = result.get("updated_agent2_result", {}).get("candidates", [])
-
-    lines = [
-        f"🕵️ *AGENT 2.5: RED TEAM DEEP DIVE*",
-        f"> *Survived Red Team:* {len(updated_candidates)}/{len(evaluations)}",
-        f"> *Model:* Gemini 3.1 Pro (Temp: {GEMINI_TEMPERATURE})",
-        f"",
-    ]
-
-    if not evaluations:
-        lines.append("🚫 No evaluations performed.")
-        return "\n".join(lines)
-
-    for i, ev in enumerate(evaluations, 1):
-        verdict = ev.get("red_team_verdict", "PASS")
-        emoji = "⚠️" if verdict == "DOWNGRADE" else "✅"
-        if verdict == "VETO" or ev.get("updated_conviction_tier") == "REJECTED":
-            emoji = "🚫"
-
-        lines.append(f"*{i}. {ev.get('ticker')}* — {emoji} *{verdict}*")
-        lines.append(f"• *Tier:* {ev.get('updated_conviction_tier')}")
-
-        flags = ev.get("red_flag_warnings", [])
-        if flags:
-            lines.append("• *Red Flags:*")
-            for flag in flags:
-                lines.append(f"  - {flag}")
-
-        if verdict != "VETO":
-            lines.append(f"• *Thesis:* {ev.get('qualitative_thesis', '')}")
-
-        lines.append(f"")
-
-    lines.append(f"📝 *Notes:* _{result.get('research_notes', '')}_")
-    return "\n".join(lines)
-
-
-if __name__ == "__main__":
-    result = run_agent2b()
-    print("\n" + format_agent2b_for_slack(result))
-
-    if result.get("success"):
-        os.makedirs("output", exist_ok=True)
-        with open("output/agent2b_evaluations.json", "w") as f:
-            json.dump(result, f, indent=2, default=str)
-        with open("output/agent2_candidates.json", "w") as f:
-            json.dump(result["updated_agent2_result"], f, indent=2, default=str)
-        print(f"\n[Agent 2.5] Filtered candidates saved to output/agent2_candidates.json")
-
-```
-
----
-
-## ./deprecated/agent3_signal_verifier.py
-
-```python
-"""
-Agent 3: Smart Money Verifier — v2.1
-Model: Claude (Anthropic)
-Role: Reads smart money Twitter/X sentiment for surviving tickers and
-      outputs a VERIFICATION_SCORE (0-10).
-
-X/Twitter research is MANDATORY — no bypass. If data is unavailable,
-the pipeline halts with an error rather than skipping.
-"""
-import json
-import os
-from datetime import datetime, timedelta
-
-from dotenv import load_dotenv
-
-load_dotenv()
-
-# Curated smart money accounts to monitor
-# These are the accounts whose sentiment we track
-CURATED_ACCOUNTS = [
-    "unusual_whales",
-    "DeItaone",
-    "Fxhedgers",
-    "zaborsky",
-    "jimcramer",
-    "GurufocusData",
-    "OptionsHawk",
-    "PeterSchiff",
-    "TruthGundlach",
-    "elerianm",
-    "SqueezeMetrics",
-    "sentimentrader",
-    "DarkPoolChart",
-    "WallStJesus",
-    "VolSignals",
-]
-
-SYSTEM_PROMPT = """You are Agent 3: The Smart Money Verifier for a $100,000 speculative spot-only trading account.
-
-YOUR JOB: Given curated smart money mentions from X/Twitter (7-day lookback, 31 institutional-grade accounts), determine whether smart money sentiment supports or vetoes each candidate trade.
-
-OUTPUT EXACTLY ONE OF THE FOLLOWING VERDICTS per candidate:
-
-- PASS_THROUGH: Default verdict. Smart money is silent, mildly mixed, or moderately positive. The trade proceeds as-is using Agent 2's conviction tier. No numeric score.
-
-- VETO_DIVERGENT: 3 or more curated accounts are bearish on the ticker, OR at least 1 hedge fund principal (boazweinstein, CliffordAsness, DylanLeClair_, cngarabedian, RayDalio) is bearish. Effect: REJECT the trade. It does not proceed to Agent 4.
-
-- VETO_CROWDED: 8 or more curated accounts are bullish on the same ticker within the last 48 hours. Effect: REJECT the trade (contrarian signal — too crowded).
-
-- CONFIRM_ENHANCED: 2 or more sector specialists or hedge fund principals are publicly aligned with the thesis, AND zero curated accounts are bearish. Effect: Trade proceeds with a CONFIRM_BONUS applied in Agent 4B sizing.
-
-RULES:
-- Do NOT produce a numeric score. The verdict IS the output.
-- Cite specific tweets or accounts that drove your verdict.
-- If no mentions exist for a ticker, the verdict is PASS_THROUGH (silence is not a red flag).
-- Be rigorous about VETO thresholds — do not veto on 1-2 mildly negative mentions.
-
-OUTPUT FORMAT — respond with ONLY this JSON:
-{
-  "agent": "smart_money_verifier",
-  "timestamp": "<ISO timestamp>",
-  "verifications": [
-    {
-      "ticker": "<SYMBOL>",
-      "verdict": "<PASS_THROUGH | VETO_DIVERGENT | VETO_CROWDED | CONFIRM_ENHANCED>",
-      "sentiment_read": "<1-2 sentence summary of smart money stance>",
-      "cited_accounts": ["<specific accounts that drove this verdict>"],
-      "cited_tweets": ["<key tweet excerpts>"]
-    }
-  ],
-  "overall_note": "<any cross-candidate observations>"
-}"""
-
-
-def fetch_x_mentions(tickers: list) -> dict:
-    """
-    Fetch Twitter/X mentions from curated smart money accounts
-    for the given tickers over the last 14 days.
-    
-    Uses the x_search tool via the OpenClaw pipeline.
-    Returns structured mention data per ticker.
-    """
-    # This function is called by the orchestrator, which has access to x_search.
-    # When running standalone, it reads from the pre-fetched file.
-    mentions_path = "output/smart_money_mentions.json"
-    if os.path.exists(mentions_path):
-        with open(mentions_path) as f:
-            data = json.load(f)
-        # x_fetch.py saves mentions nested under "mentions" key
-        if "mentions" in data:
-            return data["mentions"]
-        return data
-
-    # If no pre-fetched data exists, raise an error — X research is mandatory
-    raise RuntimeError(
-        "No smart money X/Twitter data found at output/smart_money_mentions.json. "
-        "X research is MANDATORY — run x_fetch.py first. "
-        "The pipeline cannot proceed without smart money sentiment data."
-    )
-
-
-def run_agent3(agent2_result: dict = None, x_mentions: dict = None) -> dict:
-    """
-    Run Agent 3: Analyze smart money X/Twitter sentiment.
-    X research is MANDATORY — pipeline halts if data is unavailable.
-    """
-    # Load Agent 2 candidates
-    if agent2_result is None:
-        path = "output/agent2_candidates.json"
-        if not os.path.exists(path):
-            return {"success": False, "error": "No Agent 2 candidates found."}
-        with open(path) as f:
-            agent2_result = json.load(f)
-
-    candidates = agent2_result.get("candidates", [])
-    if not candidates:
-        return {
-            "success": True,
-            "verifications": [],
-            "note": "No candidates to verify.",
-        }
-
-    tickers = [c.get("ticker") for c in candidates]
-
-    # Fetch X mentions — MANDATORY, no bypass
-    if x_mentions is None:
-        try:
-            x_mentions = fetch_x_mentions(tickers)
-        except RuntimeError as e:
-            return {"success": False, "error": str(e)}
-
-    # Filter mentions for our specific tickers
-    ticker_mentions = {}
-    for ticker in tickers:
-        ticker_mentions[ticker] = x_mentions.get(ticker, x_mentions.get(ticker.lower(), []))
-
-    print(f"[Agent 3] Analyzing X/Twitter sentiment for {len(tickers)} tickers: {tickers}")
-    for t, mentions in ticker_mentions.items():
-        count = len(mentions) if isinstance(mentions, list) else 0
-        print(f"  [Agent 3] {t}: {count} mentions from curated accounts")
-
-    # Send to Claude for interpretation
-    try:
-        import anthropic
-        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-        if not api_key:
-            raise RuntimeError("No ANTHROPIC_API_KEY — run as subagent via OpenClaw.")
-
-        client = anthropic.Anthropic(api_key=api_key)
-
-        user_message = f"""Analyze smart money X/Twitter sentiment for these candidates.
-
-CANDIDATES FROM AGENT 2:
-{json.dumps([{"ticker": c.get("ticker"), "thesis": c.get("thesis"), "theme": c.get("theme_match")} for c in candidates], indent=2)}
-
-CURATED SMART MONEY X/TWITTER MENTIONS (last 7 days):
-{json.dumps(ticker_mentions, indent=2)}
-
-CURATED ACCOUNTS MONITORED:
-{json.dumps(CURATED_ACCOUNTS)}
-
-Current date/time: {datetime.now().isoformat()}
-
-Score each ticker's smart money alignment. Respond with ONLY the JSON output."""
-
-        response = client.messages.create(
-            model="claude-opus-4-7",
-            max_tokens=16000,
-            thinking={
-                "type": "enabled",
-                "budget_tokens": 10000,
-            },
-            system=SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": user_message}],
-        )
-
-        # With extended thinking, content has thinking + text blocks
-        raw_text = next(b.text for b in response.content if b.type == "text").strip()
-        if raw_text.startswith("```"):
-            raw_text = raw_text.split("\n", 1)[1]
-            raw_text = raw_text.rsplit("```", 1)[0]
-            raw_text = raw_text.strip()
-
-        result = json.loads(raw_text)
-
-        # Validate verification_score is integer
-        for v in result.get("verifications", []):
-            score = v.get("verification_score")
-            if not isinstance(score, int):
-                raise ValueError(f"verification_score must be int, got: {score}")
-
-        result["success"] = True
-        result["candidates_passthrough"] = candidates
-        return result
-
-    except RuntimeError as e:
-        # No API key — return data for subagent execution
-        return {
-            "success": False,
-            "needs_subagent": True,
-            "prompt": SYSTEM_PROMPT,
-            "candidates": candidates,
-            "x_mentions": ticker_mentions,
-        }
-    except Exception as e:
-        return {"success": False, "error": f"Claude API error: {e}"}
-
-
-def format_agent3_for_telegram(result: dict) -> str:
-    """Format Agent 3 output for Telegram."""
-    if not result.get("success"):
-        return f"⚠️ Agent 3 FAILED: {result.get('error')}"
-
-    lines = [
-        f"{'='*30}",
-        f"📡 AGENT 3: SMART MONEY VERIFIER (v2.1)",
-        f"{'='*30}",
-        f"",
-    ]
-
-    for v in result.get("verifications", []):
-        score = v.get("verification_score", "?")
-        flag = v.get("flag", "unknown")
-
-        flag_emoji = {
-            "aligned": "🟢",
-            "contested": "🟡",
-            "silent": "⚪",
-            "crowded": "🔴",
-            "divergent": "🔴",
-        }.get(flag, "❓")
-
-        lines.append(f"{'─'*25}")
-        lines.append(f"{flag_emoji} {v.get('ticker')} — Score: {score}/10 [{flag.upper()}]")
-        lines.append(f"  💬 {v.get('sentiment_read', 'N/A')}")
-        mentions = v.get("key_mentions", [])
-        if mentions:
-            lines.append(f"  📣 Key: {', '.join(mentions)}")
-        lines.append(f"")
-
-    if result.get("overall_note"):
-        lines.append(f"📝 {result.get('overall_note')}")
-
-    return "\n".join(lines)
-
-
-if __name__ == "__main__":
-    result = run_agent3()
-    print("\n" + format_agent3_for_telegram(result))
-
-    if result.get("success"):
-        os.makedirs("output", exist_ok=True)
-        with open("output/agent3_verified.json", "w") as f:
-            json.dump(result, f, indent=2, default=str)
-        print(f"\n[Agent 3] Results saved to output/agent3_verified.json")
-
-```
-
----
-
-## robinhood-mcp/auth_and_discover.py
-
-```python
-#!/usr/bin/env python3
-"""
-Robinhood Agentic Trading MCP - Auth & Tool Discovery
-
-This script:
-1. Registers a dynamic OAuth client with Robinhood's MCP endpoint
-2. Opens a browser for you to log in and authorize
-3. Captures the auth code via a local callback server
-4. Exchanges for an access token
-5. Connects to the MCP endpoint and lists available tools
-
-Usage: python3 auth_and_discover.py
-"""
-
-import json
-import hashlib
-import secrets
-import base64
-import urllib.parse
-import webbrowser
-import http.server
-import threading
-import time
-import sys
-from urllib.request import Request, urlopen
-from urllib.error import URLError, HTTPError
-
-# ── Config ──────────────────────────────────────────────────────────────
-MCP_URL = "https://agent.robinhood.com/mcp/trading"
-REGISTER_URL = "https://agent.robinhood.com/oauth/trading/register"
-AUTH_URL = "https://robinhood.com/oauth"
-TOKEN_URL = "https://api.robinhood.com/oauth2/token/"
-CALLBACK_PORT = 8888
-REDIRECT_URI = f"http://localhost:{CALLBACK_PORT}/callback"
-
-# ── Step 1: Dynamic Client Registration ─────────────────────────────────
-def register_client():
-    print("[1/5] Registering OAuth client...")
-    data = json.dumps({
-        "client_name": "Trading Pipeline Agent",
-        "redirect_uris": [REDIRECT_URI],
-        "grant_types": ["authorization_code", "refresh_token"],
-        "response_types": ["code"],
-        "token_endpoint_auth_method": "none"
-    }).encode()
-    
-    req = Request(REGISTER_URL, data=data, headers={"Content-Type": "application/json"})
-    resp = urlopen(req)
-    result = json.loads(resp.read())
-    print(f"  ✓ Client ID: {result['client_id']}")
-    return result["client_id"]
-
-# ── Step 2: PKCE Challenge ───────────────────────────────────────────────
-def generate_pkce():
-    verifier = secrets.token_urlsafe(64)[:128]
-    digest = hashlib.sha256(verifier.encode()).digest()
-    challenge = base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
-    return verifier, challenge
-
-# ── Step 3: Local callback server to capture auth code ───────────────────
-auth_code_result = {"code": None, "error": None}
-
-class CallbackHandler(http.server.BaseHTTPRequestHandler):
-    def do_GET(self):
-        parsed = urllib.parse.urlparse(self.path)
-        params = urllib.parse.parse_qs(parsed.query)
-        
-        if "code" in params:
-            auth_code_result["code"] = params["code"][0]
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html")
-            self.end_headers()
-            self.wfile.write(b"<html><body><h1>&#9989; Authorized!</h1><p>You can close this tab and return to the terminal.</p></body></html>")
-        elif "error" in params:
-            auth_code_result["error"] = params.get("error_description", params["error"])[0]
-            self.send_response(400)
-            self.send_header("Content-Type", "text/html")
-            self.end_headers()
-            self.wfile.write(f"<html><body><h1>Error</h1><p>{auth_code_result['error']}</p></body></html>".encode())
-        else:
-            self.send_response(404)
-            self.end_headers()
-    
-    def log_message(self, format, *args):
-        pass  # Silence request logs
-
-def start_callback_server():
-    server = http.server.HTTPServer(("localhost", CALLBACK_PORT), CallbackHandler)
-    server.timeout = 120
-    thread = threading.Thread(target=server.handle_request, daemon=True)
-    thread.start()
-    return server, thread
-
-# ── Step 4: Token exchange ───────────────────────────────────────────────
-def exchange_token(client_id, code, verifier):
-    print("[4/5] Exchanging auth code for access token...")
-    data = urllib.parse.urlencode({
-        "grant_type": "authorization_code",
-        "client_id": client_id,
-        "code": code,
-        "redirect_uri": REDIRECT_URI,
-        "code_verifier": verifier
-    }).encode()
-    
-    req = Request(TOKEN_URL, data=data, headers={"Content-Type": "application/x-www-form-urlencoded"})
-    try:
-        resp = urlopen(req)
-        result = json.loads(resp.read())
-        print(f"  ✓ Access token obtained (expires in {result.get('expires_in', '?')}s)")
-        return result
-    except HTTPError as e:
-        body = e.read().decode()
-        print(f"  ✗ Token exchange failed ({e.code}): {body}")
-        return None
-
-# ── Step 5: MCP Tool Discovery ──────────────────────────────────────────
-def mcp_request(access_token, method, params=None, req_id=1):
-    payload = {
-        "jsonrpc": "2.0",
-        "id": req_id,
-        "method": method,
-    }
-    if params:
-        payload["params"] = params
-    
-    data = json.dumps(payload).encode()
-    req = Request(MCP_URL, data=data, headers={
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {access_token}"
-    })
-    resp = urlopen(req)
-    return json.loads(resp.read())
-
-def discover_tools(access_token):
-    print("[5/5] Connecting to MCP and discovering tools...")
-    
-    # Initialize
-    init_resp = mcp_request(access_token, "initialize", {
-        "protocolVersion": "2025-03-26",
-        "capabilities": {},
-        "clientInfo": {"name": "trading-pipeline", "version": "0.1.0"}
-    }, req_id=1)
-    print(f"  ✓ MCP initialized: {json.dumps(init_resp.get('result', {}).get('serverInfo', {}))}")
-    
-    # Send initialized notification
-    notify_payload = json.dumps({
-        "jsonrpc": "2.0",
-        "method": "notifications/initialized"
-    }).encode()
-    req = Request(MCP_URL, data=notify_payload, headers={
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {access_token}"
-    })
-    try:
-        urlopen(req)
-    except:
-        pass  # Notifications don't always return responses
-    
-    # List tools
-    tools_resp = mcp_request(access_token, "tools/list", {}, req_id=2)
-    tools = tools_resp.get("result", {}).get("tools", [])
-    
-    print(f"\n{'='*60}")
-    print(f"  ROBINHOOD MCP TOOLS ({len(tools)} available)")
-    print(f"{'='*60}\n")
-    
-    for tool in tools:
-        name = tool.get("name", "?")
-        desc = tool.get("description", "No description")
-        schema = tool.get("inputSchema", {})
-        props = schema.get("properties", {})
-        required = schema.get("required", [])
-        
-        print(f"  ◆ {name}")
-        print(f"    {desc}")
-        if props:
-            print(f"    Parameters:")
-            for pname, pinfo in props.items():
-                req_mark = " (required)" if pname in required else ""
-                ptype = pinfo.get("type", "any")
-                pdesc = pinfo.get("description", "")
-                print(f"      - {pname}: {ptype}{req_mark} — {pdesc}")
-        print()
-    
-    # Save tools to JSON for reference
-    output_path = "/Users/chris/code/trading-pipeline/robinhood-mcp/tools.json"
-    with open(output_path, "w") as f:
-        json.dump(tools, f, indent=2)
-    print(f"  Tools saved to {output_path}")
-    
-    return tools
-
-# ── Main ─────────────────────────────────────────────────────────────────
-def main():
-    print("=" * 60)
-    print("  Robinhood Agentic Trading MCP — Auth & Discovery")
-    print("=" * 60)
-    print()
-    
-    # Register client
-    client_id = register_client()
-    
-    # Generate PKCE
-    verifier, challenge = generate_pkce()
-    
-    # Start callback server
-    print("[2/5] Starting local auth server...")
-    server, thread = start_callback_server()
-    print(f"  ✓ Listening on localhost:{CALLBACK_PORT}")
-    
-    # Build auth URL
-    state = secrets.token_urlsafe(32)
-    auth_params = urllib.parse.urlencode({
-        "response_type": "code",
-        "client_id": client_id,
-        "redirect_uri": REDIRECT_URI,
-        "scope": "internal",
-        "state": state,
-        "code_challenge": challenge,
-        "code_challenge_method": "S256"
-    })
-    auth_url = f"{AUTH_URL}?{auth_params}"
-    
-    # Open browser
-    print(f"\n[3/5] Opening browser for Robinhood login...")
-    print(f"  If it doesn't open, go to:\n  {auth_url}\n")
-    webbrowser.open(auth_url)
-    
-    # Wait for callback
-    print("  Waiting for authorization (up to 2 minutes)...")
-    thread.join(timeout=120)
-    
-    if auth_code_result["error"]:
-        print(f"\n  ✗ Authorization error: {auth_code_result['error']}")
-        sys.exit(1)
-    
-    if not auth_code_result["code"]:
-        print("\n  ✗ Timed out waiting for authorization")
-        sys.exit(1)
-    
-    print(f"  ✓ Authorization code received")
-    
-    # Exchange for token
-    token_data = exchange_token(client_id, auth_code_result["code"], verifier)
-    if not token_data:
-        sys.exit(1)
-    
-    # Save token for later use
-    token_path = "/Users/chris/code/trading-pipeline/robinhood-mcp/token.json"
-    with open(token_path, "w") as f:
-        json.dump({
-            "client_id": client_id,
-            "access_token": token_data.get("access_token"),
-            "refresh_token": token_data.get("refresh_token"),
-            "expires_in": token_data.get("expires_in"),
-            "token_type": token_data.get("token_type"),
-        }, f, indent=2)
-    print(f"  Token saved to {token_path}")
-    
-    # Discover tools
-    discover_tools(token_data["access_token"])
-    
-    print(f"\n{'='*60}")
-    print("  Done! Token saved. Ready to integrate with pipeline.")
-    print(f"{'='*60}")
-
-if __name__ == "__main__":
-    main()
-
-```
-
----
