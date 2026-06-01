@@ -14,8 +14,19 @@ Usage:
 """
 import json
 import os
+import sys
 from datetime import datetime
 from pathlib import Path
+
+# Harden stdout/stderr so emoji and other non-ASCII chars in log prints can never
+# raise UnicodeEncodeError ("utf-8 codec can't encode ... surrogates") on hosts
+# with a non-UTF-8 locale (cron/launchd with LANG=C, etc.). A print failure here
+# was silently blocking otherwise-valid orders in the cross-reference tape check.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
 
 from dotenv import load_dotenv
 
@@ -60,10 +71,10 @@ def _cross_reference_price(ticker: str, prior_close: float, suspect_price: float
             dev_from_current = abs(suspect_price - current_tape) / current_tape if current_tape > 0 else 999
 
             if dev_from_open < 0.015 or dev_from_current < 0.015:
-                print(f"  [CrossRef] \u2705 Real Breakout: Broker quote ${suspect_price:.2f} verified by today's tape (Open: ${today_open:.2f}, Live: ${current_tape:.2f}).")
+                print(f"  [CrossRef] \U00002705 Real Breakout: Broker quote ${suspect_price:.2f} verified by today's tape (Open: ${today_open:.2f}, Live: ${current_tape:.2f}).")
                 trusted = suspect_price
             else:
-                print(f"  [CrossRef] \ud83d\udeab Anomaly Confirmed: Broker quote ${suspect_price:.2f} diverges wildly from today's tape (Open: ${today_open:.2f}, Live: ${current_tape:.2f}).")
+                print(f"  [CrossRef] \U0001F6AB Anomaly Confirmed: Broker quote ${suspect_price:.2f} diverges wildly from today's tape (Open: ${today_open:.2f}, Live: ${current_tape:.2f}).")
                 trusted = current_tape  # Fallback to the live yfinance tape
         else:
             print(f"  [CrossRef] No intraday tape available to verify {ticker}.")
