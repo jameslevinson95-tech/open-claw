@@ -43,7 +43,9 @@ AGENT5_TIME = "15:30"          # Agent 5 - Position Monitor
 # Risk Parameters (scaled to $10K account)
 PER_TRADE_RISK_CAP = 150.00    # $150 max risk per trade (1.5% of $10K)
 SESSION_RISK_BUDGET = 1000.00  # $1,000 max session risk (10% of $10K)
-THEME_CAP = 1                  # Max 1 position per theme per session (tweak #5)
+THEME_CAP = 1                  # DEPRECATED: no longer enforced. Capping at order-generation
+                               # time is meaningless since an order doesn't guarantee a fill.
+                               # Concentration handled by correlation veto + heat budgets.
 
 # Screener Rules
 SCREENER_MIN_MARKET_CAP = 100_000_000  # $100M minimum

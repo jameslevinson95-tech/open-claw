@@ -7,7 +7,9 @@ Changes from v2:
 - ATR-based stop calculation: 14-day ATR with conviction-scaled multipliers
 - Correlation veto fix: min_periods=20, no double-dropna
 - Formula: Target = Allocation_Cap * Conviction_Mod * Vol_Mod * Posture_Mod * Contrarian_Penalty
-- Theme cap enforced: 1 position per theme, keep higher conviction if duplicates
+- Theme cap removed: capping at order-generation time is meaningless since an order
+  being generated does not guarantee it fills. Concentration is handled by the
+  correlation veto + heat/dry-powder budgets instead.
 - Uses prior close price from 7:55 AM pre-flight (not live)
 - Generates Markdown tear sheet for manual execution at 9:30 AM
 """
@@ -33,7 +35,6 @@ from config import (
     DRY_POWDER_FLOOR,
     POSTURE_TABLE,
     SESSION_RISK_BUDGET,
-    THEME_CAP,
     MAX_PORTFOLIO_HEAT_PCT,
     HEAT_WARNING_PCT,
     normalize_regime,
@@ -440,7 +441,6 @@ def run_agent4b(
     print(f"[Agent 4B] Risk stack: BASE_RISK=${BASE_RISK} | MAX=${MAX_RISK_PER_TRADE} | MIN=${MIN_RISK_PER_TRADE}")
 
     trade_orders = []
-    theme_tracker = {}
     # Seed with live portfolio tickers for correlation checks against existing positions
     accepted_tickers = live_tickers.copy() if live_tickers else []
     session_risk_used = 0.0
@@ -480,12 +480,9 @@ def run_agent4b(
             trade_orders.append(_reject_trade(ticker, "Invalid price data"))
             continue
 
-        # Theme cap check
-        if theme in theme_tracker:
-            existing = theme_tracker[theme]
-            print(f"  [Agent 4B] {ticker}: Theme '{theme}' already taken by {existing}. Dropping.")
-            trade_orders.append(_reject_trade(ticker, f"Theme cap: '{theme}' used by {existing}"))
-            continue
+        # Theme cap removed: capping by theme at order-generation time is meaningless
+        # because an order being generated does not mean it fills. We let correlation
+        # veto + heat/dry-powder budgets handle real concentration risk instead.
 
         # Correlation veto
         if correlation_veto(ticker, accepted_tickers, threshold=0.70):
@@ -560,7 +557,6 @@ def run_agent4b(
         }
 
         trade_orders.append(order)
-        theme_tracker[theme] = ticker
         accepted_tickers.append(ticker)
         session_risk_used += risk_actual
         total_allocated += position_value
