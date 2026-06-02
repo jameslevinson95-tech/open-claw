@@ -183,10 +183,12 @@ def load_open_positions() -> list:
     Falls back to agent4_orders.json if Alpaca is unreachable.
     Enriches with stop_loss from agent4_orders.json when available.
     """
-    # Primary: Read from broker (Robinhood or Alpaca via factory)
+    # Primary: Read from Alpaca (source of truth for the recap — holds the
+    # full book). Robinhood is the real-money execution account and only
+    # mirrors a subset, so forcing Alpaca here keeps the daily recap complete.
     try:
         from broker_factory import get_broker
-        broker = get_broker()
+        broker = get_broker("alpaca")
         broker_positions = broker.get_positions()
         if broker_positions:
             # Enrich with stop/theme data from agent4 orders if available
