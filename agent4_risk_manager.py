@@ -424,9 +424,15 @@ def run_agent4b(
     if account_value is None:
         try:
             broker_acct = get_broker().get_account_summary()
-            account_value = float(broker_acct["equity"])
-            buying_power = float(broker_acct.get("buying_power", account_value))
-            print(f"[Agent 4B] Live equity: ${account_value:,.2f} | Buying Power: ${buying_power:,.2f}")
+            live_equity = float(broker_acct["equity"])
+            buying_power = float(broker_acct.get("buying_power", live_equity))
+            # Planning floor: while the funding transfer is still settling, size
+            # positions against at least ACCOUNT_SIZE ($10k target). Buying power
+            # stays at the REAL available cash so execution never overdraws.
+            account_value = max(live_equity, float(ACCOUNT_SIZE))
+            if account_value > live_equity:
+                print(f"[Agent 4B] Live equity ${live_equity:,.2f} below target — planning against ACCOUNT_SIZE=${float(ACCOUNT_SIZE):,.2f} (transfer settling)")
+            print(f"[Agent 4B] Planning equity: ${account_value:,.2f} | Real buying power: ${buying_power:,.2f}")
         except Exception as e:
             print(f"[Agent 4B] Could not fetch live equity ({e}) — falling back to ACCOUNT_SIZE=${ACCOUNT_SIZE}")
             account_value = float(ACCOUNT_SIZE)

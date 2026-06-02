@@ -46,8 +46,8 @@ def _check_schwab():
 def _robinhood_quotes(tickers: list) -> dict:
     """Fetch quotes from Robinhood MCP if a token exists."""
     try:
-        from robinhood_broker import RobinhoodBroker
-        broker = RobinhoodBroker()
+        from broker_factory import get_broker
+        broker = get_broker("robinhood")  # cached singleton — reuses MCP session
         return broker.get_quotes(tickers)
     except Exception:
         return {}
