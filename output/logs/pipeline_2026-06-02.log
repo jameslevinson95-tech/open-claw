@@ -1,0 +1,10 @@
+=============================================
+🌅 Open Claw Automated Pipeline — 2026-06-02
+Started: Tue Jun  2 07:55:00 EDT 2026
+=============================================
+Traceback (most recent call last):
+  File "/Users/chris/code/trading-pipeline/orchestrator.py", line 29, in <module>
+    from preflight import run_preflight, format_macro_for_prompt
+  File "/Users/chris/code/trading-pipeline/preflight.py", line 16, in <module>
+    import yfinance as yf
+ModuleNotFoundError: No module named 'yfinance'

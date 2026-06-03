@@ -13,6 +13,11 @@ import os
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
+import socket
+# Global safety net: never let a hung Yahoo/HTTP socket freeze the whole pipeline.
+# yfinance's yf.download() has no per-call timeout, so we set a default at the socket layer.
+socket.setdefaulttimeout(30)
+
 import yfinance as yf
 
 from config import SCREENER_MIN_MARKET_CAP, SCREENER_MIN_PRICE
@@ -60,6 +65,60 @@ except Exception as e:
     FEDWATCH_AVAILABLE = False
     print(f"[Pre-Flight] FedWatch Module: UNAVAILABLE ({e})")
 
+
+def _yf_download_shim(ticker, start=None, end=None, progress=False, **kwargs):
+    """
+    Drop-in replacement for yf.download(ticker, start=, end=) that is
+    Schwab-FIRST (via market_data.fetch_historical_bars) and only falls back
+    to Yahoo for symbols Schwab can't serve (e.g. 2YY=F).
+
+    Returns a pandas DataFrame with columns Open/High/Low/Close/Volume and a
+    DatetimeIndex, matching the shape downstream code expects from yfinance.
+    Returns an EMPTY DataFrame on failure so existing `data.empty` checks work.
+    """
+    import pandas as pd
+
+    # Estimate the lookback window in days from start/end if given.
+    days = 30
+    try:
+        if start is not None and end is not None:
+            days = max((end - start).days, 5)
+        elif start is not None:
+            days = max((datetime.now() - start).days, 5)
+    except Exception:
+        days = 30
+
+    bars = None
+    if MARKET_DATA_AVAILABLE:
+        try:
+            res = mdata.fetch_historical_bars([ticker], days=days, timeframe="day")
+            entry = res.get(ticker, {}) if isinstance(res, dict) else {}
+            if entry.get("count", 0) > 0:
+                bars = entry["bars"]
+        except Exception:
+            bars = None
+
+    # Last-resort: raw yfinance (only if Schwab path produced nothing).
+    if not bars:
+        try:
+            return yf.download(ticker, start=start, end=end, progress=progress, **kwargs)
+        except Exception:
+            return pd.DataFrame()
+
+    # Build a DataFrame that mimics yfinance output.
+    try:
+        idx = pd.to_datetime([b["date"] for b in bars])
+        df = pd.DataFrame({
+            "Open": [b["open"] for b in bars],
+            "High": [b["high"] for b in bars],
+            "Low": [b["low"] for b in bars],
+            "Close": [b["close"] for b in bars],
+            "Volume": [b["volume"] for b in bars],
+        }, index=idx)
+        return df
+    except Exception:
+        return pd.DataFrame()
+
 OUTPUT_DIR = "output"
 
 ASSEMBLY_STALE_HOURS = 18  # Assembly data older than this triggers fresh fetch from public APIs
@@ -105,7 +164,7 @@ def _fetch_prior_close_yfinance(tickers: list) -> dict:
 
     for ticker in tickers:
         try:
-            data = yf.download(ticker, start=start, end=end, progress=False)
+            data = _yf_download_shim(ticker, start=start, end=end, progress=False)
             if data.empty:
                 results[ticker] = {"error": f"No data for {ticker}"}
                 continue
@@ -163,7 +222,7 @@ def fetch_macro_data() -> dict:
 
     for name, ticker in yf_tickers.items():
         try:
-            data = yf.download(ticker, start=start, end=end, progress=False)
+            data = _yf_download_shim(ticker, start=start, end=end, progress=False)
             if data.empty:
                 macro[name] = {"error": f"No data for {ticker}"}
                 continue
@@ -237,7 +296,7 @@ def fetch_move_index() -> dict:
     try:
         end = datetime.now()
         start = end - timedelta(days=30)
-        data = yf.download("^MOVE", start=start, end=end, progress=False)
+        data = _yf_download_shim("^MOVE", start=start, end=end, progress=False)
         if not data.empty and len(data) >= 5:
             # MOVE pre-market noise filter (same as VIX)
             import pytz
@@ -483,7 +542,7 @@ def fetch_sector_breadth() -> dict:
 
     for etf, name in sector_etfs.items():
         try:
-            data = yf.download(etf, start=start, end=end, progress=False)
+            data = _yf_download_shim(etf, start=start, end=end, progress=False)
             if data.empty or len(data) < 20:
                 continue
 
@@ -651,7 +710,7 @@ def _enrich_prior_close(tickers_data: list) -> list:
 
     for entry in tickers_data:
         try:
-            data = yf.download(entry["ticker"], start=start, end=end, progress=False)
+            data = _yf_download_shim(entry["ticker"], start=start, end=end, progress=False)
             if not data.empty:
                 entry["prior_close"] = round(float(data["Close"].iloc[-1].item()), 2)
         except Exception:
@@ -968,7 +1027,7 @@ def fetch_fresh_sentiment_fallback() -> dict:
         start = end - timedelta(days=5)
 
         # VIX for market volatility component
-        vix = yf.download("^VIX", start=start, end=end, progress=False)
+        vix = _yf_download_shim("^VIX", start=start, end=end, progress=False)
         if not vix.empty:
             vix_val = float(vix["Close"].iloc[-1].item())
             components["vix_value"] = round(vix_val, 2)
@@ -979,7 +1038,7 @@ def fetch_fresh_sentiment_fallback() -> dict:
             else: components["market_volatility_vix"] = 5
 
         # S&P 500 momentum (125-day)
-        spy = yf.download("SPY", start=end - timedelta(days=180), end=end, progress=False)
+        spy = _yf_download_shim("SPY", start=end - timedelta(days=180), end=end, progress=False)
         if not spy.empty and len(spy) > 125:
             current_spy = float(spy["Close"].iloc[-1].item())
             spy_125d = float(spy["Close"].iloc[-125].item())
@@ -991,8 +1050,8 @@ def fetch_fresh_sentiment_fallback() -> dict:
             else: components["sp500_momentum_125d"] = 10
 
         # Junk bond demand: HYG vs LQD spread
-        hyg = yf.download("HYG", start=start, end=end, progress=False)
-        lqd = yf.download("LQD", start=start, end=end, progress=False)
+        hyg = _yf_download_shim("HYG", start=start, end=end, progress=False)
+        lqd = _yf_download_shim("LQD", start=start, end=end, progress=False)
         if not hyg.empty and not lqd.empty:
             hyg_ret = float(hyg["Close"].pct_change().iloc[-1].item())
             lqd_ret = float(lqd["Close"].pct_change().iloc[-1].item())
@@ -1003,7 +1062,7 @@ def fetch_fresh_sentiment_fallback() -> dict:
             else: components["junk_bond_demand"] = 20
 
         # Safe haven demand: TLT relative to SPY
-        tlt = yf.download("TLT", start=start, end=end, progress=False)
+        tlt = _yf_download_shim("TLT", start=start, end=end, progress=False)
         if not tlt.empty and not spy.empty:
             tlt_ret = float(tlt["Close"].pct_change().iloc[-1].item())
             spy_ret_1d = float(spy["Close"].pct_change().iloc[-1].item())

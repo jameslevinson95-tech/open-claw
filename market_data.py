@@ -195,16 +195,43 @@ def fetch_latest_quotes(tickers: list) -> dict:
 
 def fetch_historical_bars(tickers: list, days: int = 30, timeframe: str = "day") -> dict:
     """
-    Fetch historical OHLCV bars. Uses Yahoo Finance (best free source for this).
+    Fetch historical OHLCV daily bars.
+
+    Schwab-first (covers stocks, ETFs, and indices like $VIX/$MOVE), with
+    Yahoo Finance as a last-resort fallback per-ticker. For daily bars Schwab
+    is the authoritative source now; Yahoo only fires if Schwab returns empty.
     """
-    yf = _yf_import()
     results = {}
+
+    # Schwab only serves daily/intraday candles we care about for daily bars.
+    schwab_first = (timeframe == "day") and _check_schwab()
+
+    if schwab_first:
+        try:
+            from schwab_data import fetch_schwab_history
+            for ticker in tickers:
+                h = fetch_schwab_history(ticker, days=days, frequency_type="daily")
+                if h.get("count", 0) > 0:
+                    results[ticker] = {
+                        "bars": h["bars"],
+                        "count": h["count"],
+                        "source": "schwab",
+                    }
+                # leave missing tickers to the Yahoo fallback below
+        except Exception as e:
+            print(f"[MarketData] Schwab history failed ({e}) — falling back to yfinance")
+
+    # Determine which tickers still need data (Yahoo fallback only for gaps)
+    missing = [t for t in tickers if t not in results]
+    if not missing:
+        return results
+
+    yf = _yf_import()
 
     period_map = {
         7: "7d", 14: "14d", 30: "1mo", 60: "2mo", 90: "3mo",
         180: "6mo", 365: "1y",
     }
-    # Find closest period
     period = "1mo"
     for d, p in sorted(period_map.items()):
         if days <= d:
@@ -215,7 +242,7 @@ def fetch_historical_bars(tickers: list, days: int = 30, timeframe: str = "day")
 
     interval = {"day": "1d", "hour": "1h", "minute": "1m"}.get(timeframe, "1d")
 
-    for ticker in tickers:
+    for ticker in missing:
         try:
             hist = yf.Ticker(ticker).history(period=period, interval=interval)
             if hist.empty:

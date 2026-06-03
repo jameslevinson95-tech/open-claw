@@ -434,25 +434,56 @@ def filter_corporate_actions(screener: list) -> tuple:
     Prevents hallucinated gaps and broken VaR math from adjusted historical prices.
     Uses DataProvider (Massive/Polygon splits endpoint) instead of yfinance.
     """
+    import time as _time
     from data_provider import get_provider
     dp = get_provider()
 
     print(f"[Corp Actions] Checking {len(screener)} tickers for recent splits...")
     filtered, removed = [], []
 
+    # Circuit breaker: split-checking is a non-fatal safeguard. If the splits
+    # data source (Massive) is down/slow, don't let it stall the whole pipeline.
+    # Trip after too many consecutive failures OR after a total time budget,
+    # then pass the remaining tickers through unchecked.
+    MAX_CONSECUTIVE_FAILURES = 5
+    TIME_BUDGET_SEC = 45
+    start_t = _time.time()
+    consecutive_failures = 0
+    breaker_tripped = False
+
     for entry in screener:
         ticker = entry.get("ticker")
+
+        if breaker_tripped:
+            # Source is unhealthy — pass remaining tickers without checking.
+            filtered.append(entry)
+            continue
+
+        if _time.time() - start_t > TIME_BUDGET_SEC:
+            print(f"[Corp Actions] ⏱ Time budget exceeded — skipping split check for remaining tickers (data source slow).")
+            breaker_tripped = True
+            filtered.append(entry)
+            continue
+
         try:
             splits = dp.get_corporate_actions(ticker, since_days=7)
+            consecutive_failures = 0  # success (even if empty) resets the counter
             if splits:
                 split_info = splits[0]
                 print(f"  [Corp Actions] {ticker} -- Recent split detected ({split_info.get('execution_date', '?')})")
                 removed.append({"ticker": ticker, "reason": "Recent corporate action/split", "detail": split_info})
                 continue
         except Exception as e:
+            consecutive_failures += 1
             print(f"  [Corp Actions] {ticker}: split check failed ({e}) -- passing")
+            if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+                print(f"[Corp Actions] ⚠ {consecutive_failures} consecutive failures — data source appears down. "
+                      f"Skipping split check for remaining tickers.")
+                breaker_tripped = True
         filtered.append(entry)
 
+    if breaker_tripped:
+        print(f"[Corp Actions] Split check ended early (source unhealthy). Checked partial set; rest passed through.")
     if removed:
         print(f"[Corp Actions] Filtered {len(removed)} tickers with recent splits")
     else:

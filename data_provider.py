@@ -233,7 +233,9 @@ class DataProvider:
         params = params or {}
         params["apiKey"] = self._massive_key
         url = f"{self._massive_base}{endpoint}"
-        resp = requests.get(url, params=params, timeout=15)
+        # 5s timeout: corp-action/split checks are non-fatal (caller passes on
+        # failure), so don't let a slow/down Massive API stall the whole pipeline.
+        resp = requests.get(url, params=params, timeout=5)
 
         if resp.status_code == 403:
             logger.warning(f"Massive 403 (not entitled): {endpoint}")
@@ -241,7 +243,7 @@ class DataProvider:
         if resp.status_code == 429:
             logger.warning(f"Massive 429 (rate limited): {endpoint}")
             time.sleep(12)
-            resp = requests.get(url, params=params, timeout=15)
+            resp = requests.get(url, params=params, timeout=5)
 
         resp.raise_for_status()
         return resp.json()

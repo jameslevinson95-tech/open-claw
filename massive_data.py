@@ -431,16 +431,45 @@ def calculate_technicals_local(ticker: str, period: str = "6mo") -> dict:
     Returns:
         dict with all indicators, or dict with "error" key on failure.
     """
-    import yfinance as yf
     import pandas as pd
 
-    try:
-        df = yf.download(ticker, period=period, progress=False, auto_adjust=True)
-    except Exception as e:
-        return {"ticker": ticker, "error": f"yfinance download failed: {e}", "source": "local_calculation"}
+    # Map yfinance period string -> approximate calendar days for Schwab.
+    _period_days = {
+        "1mo": 30, "2mo": 60, "3mo": 90, "6mo": 180,
+        "1y": 365, "2y": 730, "ytd": 365,
+    }
+    days = _period_days.get(period, 180)
 
-    if df.empty or len(df) < 50:
-        return {"ticker": ticker, "error": f"Insufficient data ({len(df)} bars, need >=50)", "source": "local_calculation"}
+    df = None
+    # Schwab-FIRST via the unified market_data layer (handles index symbols too).
+    try:
+        import market_data as _mdata
+        res = _mdata.fetch_historical_bars([ticker], days=days, timeframe="day")
+        entry = res.get(ticker, {}) if isinstance(res, dict) else {}
+        bars = entry.get("bars") if entry.get("count", 0) > 0 else None
+        if bars:
+            idx = pd.to_datetime([b["date"] for b in bars])
+            df = pd.DataFrame({
+                "Open": [b["open"] for b in bars],
+                "High": [b["high"] for b in bars],
+                "Low": [b["low"] for b in bars],
+                "Close": [b["close"] for b in bars],
+                "Volume": [b["volume"] for b in bars],
+            }, index=idx)
+    except Exception:
+        df = None
+
+    # Last-resort fallback: raw yfinance.
+    if df is None or df.empty:
+        try:
+            import yfinance as yf
+            df = yf.download(ticker, period=period, progress=False, auto_adjust=True)
+        except Exception as e:
+            return {"ticker": ticker, "error": f"history download failed: {e}", "source": "local_calculation"}
+
+    if df is None or df.empty or len(df) < 50:
+        n = 0 if df is None else len(df)
+        return {"ticker": ticker, "error": f"Insufficient data ({n} bars, need >=50)", "source": "local_calculation"}
 
     # Flatten MultiIndex columns if yfinance returns them (e.g. ("Close", "SPY"))
     if isinstance(df.columns, pd.MultiIndex):

@@ -155,8 +155,119 @@ def fetch_schwab_quotes(tickers: list) -> dict:
     return result
 
 
+# Symbol remapping: Yahoo-style index tickers -> Schwab index tickers.
+# Schwab uses a leading "$" for cash indices (e.g. $VIX, $MOVE) and does NOT
+# recognize Yahoo's "^" prefix or bare names. Map the ones we actually use.
+_SCHWAB_SYMBOL_MAP = {
+    "^VIX": "$VIX", "VIX": "$VIX",
+    "^MOVE": "$MOVE", "MOVE": "$MOVE",
+    "^VXN": "$VXN", "VXN": "$VXN",
+    "^TNX": "$TNX", "TNX": "$TNX",
+}
+
+
+# Schwab quotes Treasury yield indices as (yield % * 10), e.g. $TNX = 44.55
+# means a 4.455% 10-year yield. Yahoo's ^TNX returns 4.455 directly. Divide
+# these by 10 so downstream math (yield-curve spread) stays on one scale.
+_SCHWAB_SCALE = {
+    "$TNX": 0.1, "$TYX": 0.1, "$FVX": 0.1, "$IRX": 0.1,
+}
+
+
+def _map_symbol(sym: str) -> str:
+    """Translate a Yahoo-style symbol to its Schwab equivalent."""
+    return _SCHWAB_SYMBOL_MAP.get(sym, sym)
+
+
+def fetch_schwab_history(symbol: str, days: int = 30, frequency_type: str = "daily") -> dict:
+    """
+    Fetch historical daily OHLCV candles from Schwab's price-history endpoint.
+
+    Handles index symbol remapping (^VIX -> $VIX, ^MOVE -> $MOVE, etc.).
+
+    Returns dict:
+        {"symbol": <schwab_symbol>, "bars": [{date, open, high, low, close, volume}, ...],
+         "count": N, "source": "schwab"}
+    Returns {"bars": [], "count": 0, "error": ...} on failure.
+    """
+    access_token = _load_token()
+    if not access_token:
+        return {"bars": [], "count": 0, "error": "no_token"}
+
+    schwab_sym = _map_symbol(symbol)
+
+    # Pick the smallest periodType window that covers `days`.
+    # Schwab periodType=month supports period in {1,2,3,6}; year for longer.
+    if days <= 5:
+        period_type, period = "day", 5
+    elif days <= 30:
+        period_type, period = "month", 1
+    elif days <= 60:
+        period_type, period = "month", 2
+    elif days <= 90:
+        period_type, period = "month", 3
+    elif days <= 180:
+        period_type, period = "month", 6
+    else:
+        period_type, period = "year", 1
+
+    params = {
+        "symbol": schwab_sym,
+        "periodType": period_type,
+        "period": period,
+        "frequencyType": frequency_type,
+        "frequency": 1,
+    }
+
+    def _do_request(tok):
+        return requests.get(
+            "https://api.schwabapi.com/marketdata/v1/pricehistory",
+            headers={"Authorization": f"Bearer {tok}"},
+            params=params,
+            timeout=10,
+        )
+
+    try:
+        resp = _do_request(access_token)
+        if resp.status_code == 401:
+            _token_cache["access_token"] = None
+            _token_cache["expires_at"] = 0
+            access_token = _load_token()
+            if access_token:
+                resp = _do_request(access_token)
+
+        if resp.status_code != 200:
+            return {"symbol": schwab_sym, "bars": [], "count": 0,
+                    "error": f"http_{resp.status_code}: {resp.text[:120]}"}
+
+        data = resp.json()
+        candles = data.get("candles", [])
+        scale = _SCHWAB_SCALE.get(schwab_sym, 1.0)
+        bars = []
+        for c in candles:
+            ts = c.get("datetime", 0) / 1000.0  # ms epoch -> s
+            from datetime import datetime as _dt
+            bars.append({
+                "date": _dt.utcfromtimestamp(ts).strftime("%Y-%m-%d"),
+                "open": round(float(c.get("open", 0)) * scale, 4),
+                "high": round(float(c.get("high", 0)) * scale, 4),
+                "low": round(float(c.get("low", 0)) * scale, 4),
+                "close": round(float(c.get("close", 0)) * scale, 4),
+                "volume": int(c.get("volume", 0)),
+            })
+        return {"symbol": schwab_sym, "bars": bars, "count": len(bars), "source": "schwab"}
+    except Exception as e:
+        return {"symbol": schwab_sym, "bars": [], "count": 0, "error": str(e)}
+
+
 if __name__ == "__main__":
     import sys
-    tickers = sys.argv[1:] or ["BAC", "QCOM", "AAPL"]
-    quotes = fetch_schwab_quotes(tickers)
-    print(json.dumps(quotes, indent=2, default=str))
+    if len(sys.argv) > 1 and sys.argv[1] == "history":
+        sym = sys.argv[2] if len(sys.argv) > 2 else "SPY"
+        h = fetch_schwab_history(sym, days=30)
+        print(json.dumps({"symbol": h["symbol"], "count": h["count"],
+                          "last": h["bars"][-1] if h["bars"] else None}, indent=2, default=str))
+    else:
+        tickers = sys.argv[1:] or ["BAC", "QCOM", "AAPL"]
+        quotes = fetch_schwab_quotes(tickers)
+        print(json.dumps(quotes, indent=2, default=str))

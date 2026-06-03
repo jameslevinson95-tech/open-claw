@@ -1,0 +1,28 @@
+=============================================
+🌅 Open Claw Automated Pipeline — 2026-06-03
+Started: Wed Jun  3 07:55:00 EDT 2026
+=============================================
+Traceback (most recent call last):
+  File "/Users/chris/code/trading-pipeline/orchestrator.py", line 29, in <module>
+    from preflight import run_preflight, format_macro_for_prompt
+  File "/Users/chris/code/trading-pipeline/preflight.py", line 16, in <module>
+    import yfinance as yf
+ModuleNotFoundError: No module named 'yfinance'
+=============================================
+🌅 Open Claw Automated Pipeline — 2026-06-03
+Started: Wed Jun  3 09:32:31 EDT 2026
+=============================================
+/opt/homebrew/Cellar/python@3.14/3.14.3_1/Frameworks/Python.framework/Versions/3.14/lib/python3.14/concurrent/futures/thread.py:73: RuntimeWarning: [Pre-Flight] Finviz screener failed — falling back to hardcoded universe
+  return fn(*args, **kwargs)
+HTTP Error 401: {"finance":{"result":null,"error":{"code":"Unauthorized","description":"Invalid Crumb"}}}
+=============================================
+🌅 Open Claw Automated Pipeline — 2026-06-03
+Started: Wed Jun  3 09:35:16 EDT 2026
+=============================================
+/opt/homebrew/Cellar/python@3.14/3.14.3_1/Frameworks/Python.framework/Versions/3.14/lib/python3.14/concurrent/futures/thread.py:73: RuntimeWarning: [Pre-Flight] Finviz screener failed — falling back to hardcoded universe
+  return fn(*args, **kwargs)
+HTTP Error 401: {"finance":{"result":null,"error":{"code":"Unauthorized","description":"User is unable to access this feature - https://bit.ly/yahoo-finance-api-feedback"}}}
+=============================================
+🌅 Open Claw Automated Pipeline — 2026-06-03
+Started: Wed Jun  3 09:38:08 EDT 2026
+=============================================
