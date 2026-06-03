@@ -19,3 +19,9 @@ schwab_exchange_token.sh
 output/execution_ledger.db
 output/execution_engine.log
 output/broker_state.lock
+
+# Env backups & logs (may contain secrets / noise)
+.env.bak*
+.env.*.bak
+logs/
+output/logs/

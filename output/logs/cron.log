@@ -1,2 +1,0 @@
-./run_pipeline_auto.sh: line 36: 36026 Killed: 9               python3 "$SCRIPT_DIR/orchestrator.py" morning >> "$LOG_FILE" 2>&1
-./run_pipeline_auto.sh: line 36: 36417 Killed: 9               python3 "$SCRIPT_DIR/orchestrator.py" morning >> "$LOG_FILE" 2>&1
