@@ -177,17 +177,41 @@ class DataProvider:
 
         raise DataUnavailable(f"No index data available for {symbol}")
 
+    # Class-level health flag: once the Massive splits endpoint looks down,
+    # stop hammering it (and skip the rate-limiter wait) for the rest of the run.
+    _corp_actions_failures = 0
+    _corp_actions_disabled = False
+    _CORP_ACTIONS_FAIL_LIMIT = 3
+
     def get_corporate_actions(self, ticker: str, since_days: int = 7) -> list:
         """
         Recent splits/dividends.
         Fallback: Massive → [] with log warning.
+
+        Self-disables after a few consecutive failures so a down/slow Massive
+        endpoint (free tier is 5 calls/min) can't stall the pipeline for minutes.
         """
+        # Source already deemed unhealthy this run — skip immediately.
+        if DataProvider._corp_actions_disabled:
+            return []
+
         # 1. Massive splits endpoint
         if self._massive_key:
             try:
-                return self._massive_splits(ticker, since_days)
+                result = self._massive_splits(ticker, since_days)
+                DataProvider._corp_actions_failures = 0  # healthy response resets
+                return result
             except Exception as e:
+                DataProvider._corp_actions_failures += 1
                 logger.warning(f"Massive splits failed for {ticker}: {e}")
+                if DataProvider._corp_actions_failures >= DataProvider._CORP_ACTIONS_FAIL_LIMIT:
+                    DataProvider._corp_actions_disabled = True
+                    logger.warning(
+                        f"[DataProvider] Corp-action source disabled after "
+                        f"{DataProvider._corp_actions_failures} failures — "
+                        f"skipping split checks for the rest of this run."
+                    )
+                return []
 
         logger.warning(f"[DataProvider] No corporate action data available for {ticker}")
         return []
