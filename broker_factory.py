@@ -56,17 +56,26 @@ def get_broker(broker_name: str = None, *, fresh: bool = False):
         elif name == "alpaca":
             return _get_alpaca()
         elif name == "auto":
-            # Try Robinhood first (real money), fall back to Alpaca (paper)
+            # Resolve to Robinhood (real money). We intentionally do NOT silently
+            # fall back to Alpaca paper: a quiet RH->paper fallback meant real-intent
+            # trades were being routed into the paper account on any RH hiccup,
+            # producing phantom positions (e.g. the ORCL incident, 2026-06-03).
+            # Fail LOUD instead. To trade paper, set BROKER=alpaca explicitly.
+            token_path = Path(__file__).parent / "robinhood-mcp" / "token.json"
+            if not token_path.exists():
+                raise RuntimeError(
+                    "BROKER=auto resolved to Robinhood but robinhood-mcp/token.json "
+                    "is missing. Refusing to silently fall back to Alpaca paper. "
+                    "Re-auth Robinhood, or set BROKER=alpaca to paper-trade on purpose."
+                )
             try:
-                token_path = Path(__file__).parent / "robinhood-mcp" / "token.json"
-                if token_path.exists():
-                    return _get_robinhood()
+                return _get_robinhood()
             except Exception as e:
-                print(f"[BrokerFactory] Robinhood unavailable ({e}), trying Alpaca...")
-            try:
-                return _get_alpaca()
-            except Exception as e:
-                raise RuntimeError(f"No broker available. Robinhood and Alpaca both failed: {e}")
+                raise RuntimeError(
+                    f"BROKER=auto: Robinhood broker failed to initialize ({e}). "
+                    "Refusing to silently fall back to Alpaca paper. "
+                    "Set BROKER=alpaca to paper-trade on purpose."
+                )
         else:
             raise ValueError(f"Unknown broker: {name}. Use 'robinhood', 'alpaca', or 'auto'.")
 
