@@ -1,10 +1,10 @@
 # OPEN CLAW TRADING PIPELINE — FULL CODEBASE DUMP
 
-Generated: 2026-05-28 22:06:09 ET
+Generated: 2026-06-03 22:20:43 ET
 
 Repo: https://github.com/jameslevinson95-tech/open-claw
 
-## Files Included (35)
+## Files Included (34)
 
 - `agent1_macro_director.py` (15,264 bytes)
 - `agent2_fundamental_screener.py` (29,808 bytes)
@@ -262,11 +262,10 @@ Agent 5: Monitor at 3:30 PM → hold/trim/close decisions
 ---
 
 ## agent1_macro_director.py
-
 ```python
 """
 Agent 1: Macro Director — v2 (Jamie's Golden Path tweaks)
-Model: Claude (Anthropic)
+Model: Claude Sonnet 4.6 (Anthropic)
 Role: Classify the current market regime and issue a directive.
 
 Changes from v1:
@@ -461,7 +460,7 @@ Respond with ONLY the JSON directive, no other text."""
             import anthropic
             client = anthropic.Anthropic(api_key=anthropic_key)
             response = client.messages.create(
-                model="claude-3-5-sonnet-latest",
+                model="claude-sonnet-4-6",
                 max_tokens=16000,
                 temperature=0.0,
                 system=SYSTEM_PROMPT,
@@ -585,13 +584,9 @@ if __name__ == "__main__":
         with open("output/agent1_directive.json", "w") as f:
             json.dump(result["directive"], f, indent=2)
         print(f"\n[Agent 1] Directive saved to output/agent1_directive.json")
-
 ```
 
----
-
 ## agent2_fundamental_screener.py
-
 ```python
 """
 Agent 2: Fundamental Screener — v4.0 (Gemini Deep Research Max)
@@ -600,7 +595,7 @@ Role: Given Agent 1's directive + SCREENER_UNIVERSE + FUNDAMENTAL_DATA
       (all pre-fetched by Python), select 1-3 tickers with rigorous analysis.
 
 Changes from v3.0:
-- Switched from Claude Opus 4.8 to Gemini Deep Research Max
+- Switched from Claude Opus 4.7 to Gemini Deep Research Max
 - Uses Interactions API (async) for comprehensive research synthesis
 - Deep Research Max: maximum comprehensiveness, accuracy-critical investigations
 - Python pre-fetches ALL fundamental data — model does NOT fetch or browse
@@ -1282,13 +1277,9 @@ if __name__ == "__main__":
         with open("output/agent2_candidates.json", "w") as f:
             json.dump(result, f, indent=2, default=str)
         print(f"\n[Agent 2] Candidates saved to output/agent2_candidates.json")
-
 ```
 
----
-
 ## agent3_synthesizer.py
-
 ```python
 """
 Agent 3: Qualitative Synthesizer — v3.0
@@ -1322,7 +1313,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Opus for synthesis — nuanced judgment on qualitative signals
-MODEL = "claude-opus-4-7"
+MODEL = "claude-opus-4-8"
 MAX_RETRIES = 3
 RETRY_DELAY = 5
 
@@ -1586,7 +1577,7 @@ Perform your synthesis and respond with ONLY the JSON output."""
                     model=MODEL,
                     max_tokens=16000,
                     temperature=1,
-                    thinking={"type": "enabled", "budget_tokens": 10000},
+                    thinking={"type": "adaptive"},
                     system=SYSTEM_PROMPT,
                     messages=[{"role": "user", "content": user_message}],
                 )
@@ -1822,7 +1813,7 @@ def format_agent3_for_slack(result: dict) -> str:
     lines = [
         f"🧪 *AGENT 3: QUALITATIVE SYNTHESIZER*",
         f"> *Survived Synthesis:* {len(surviving)}/{len(evaluations)}",
-        f"> *Model:* Claude Opus 4.8 (Adaptive Thinking)",
+        f"> *Model:* Claude Opus 4.8 (High Thinking)",
         f"",
     ]
 
@@ -1885,13 +1876,9 @@ if __name__ == "__main__":
             with open("output/agent2_candidates.json", "w") as f:
                 json.dump(result["updated_agent2_result"], f, indent=2, default=str)
         print(f"\n[Agent 3] Results saved to output/agent3_verified.json")
-
 ```
 
----
-
 ## agent4_risk_manager.py
-
 ```python
 """
 Agent 4: Risk Manager — v3 (ATR-based stops, no LLM dependency)
@@ -1902,7 +1889,9 @@ Changes from v2:
 - ATR-based stop calculation: 14-day ATR with conviction-scaled multipliers
 - Correlation veto fix: min_periods=20, no double-dropna
 - Formula: Target = Allocation_Cap * Conviction_Mod * Vol_Mod * Posture_Mod * Contrarian_Penalty
-- Theme cap enforced: 1 position per theme, keep higher conviction if duplicates
+- Theme cap removed: capping at order-generation time is meaningless since an order
+  being generated does not guarantee it fills. Concentration is handled by the
+  correlation veto + heat/dry-powder budgets instead.
 - Uses prior close price from 7:55 AM pre-flight (not live)
 - Generates Markdown tear sheet for manual execution at 9:30 AM
 """
@@ -1928,7 +1917,6 @@ from config import (
     DRY_POWDER_FLOOR,
     POSTURE_TABLE,
     SESSION_RISK_BUDGET,
-    THEME_CAP,
     MAX_PORTFOLIO_HEAT_PCT,
     HEAT_WARNING_PCT,
     normalize_regime,
@@ -2318,9 +2306,15 @@ def run_agent4b(
     if account_value is None:
         try:
             broker_acct = get_broker().get_account_summary()
-            account_value = float(broker_acct["equity"])
-            buying_power = float(broker_acct.get("buying_power", account_value))
-            print(f"[Agent 4B] Live equity: ${account_value:,.2f} | Buying Power: ${buying_power:,.2f}")
+            live_equity = float(broker_acct["equity"])
+            buying_power = float(broker_acct.get("buying_power", live_equity))
+            # Planning floor: while the funding transfer is still settling, size
+            # positions against at least ACCOUNT_SIZE ($10k target). Buying power
+            # stays at the REAL available cash so execution never overdraws.
+            account_value = max(live_equity, float(ACCOUNT_SIZE))
+            if account_value > live_equity:
+                print(f"[Agent 4B] Live equity ${live_equity:,.2f} below target — planning against ACCOUNT_SIZE=${float(ACCOUNT_SIZE):,.2f} (transfer settling)")
+            print(f"[Agent 4B] Planning equity: ${account_value:,.2f} | Real buying power: ${buying_power:,.2f}")
         except Exception as e:
             print(f"[Agent 4B] Could not fetch live equity ({e}) — falling back to ACCOUNT_SIZE=${ACCOUNT_SIZE}")
             account_value = float(ACCOUNT_SIZE)
@@ -2335,7 +2329,6 @@ def run_agent4b(
     print(f"[Agent 4B] Risk stack: BASE_RISK=${BASE_RISK} | MAX=${MAX_RISK_PER_TRADE} | MIN=${MIN_RISK_PER_TRADE}")
 
     trade_orders = []
-    theme_tracker = {}
     # Seed with live portfolio tickers for correlation checks against existing positions
     accepted_tickers = live_tickers.copy() if live_tickers else []
     session_risk_used = 0.0
@@ -2375,12 +2368,9 @@ def run_agent4b(
             trade_orders.append(_reject_trade(ticker, "Invalid price data"))
             continue
 
-        # Theme cap check
-        if theme in theme_tracker:
-            existing = theme_tracker[theme]
-            print(f"  [Agent 4B] {ticker}: Theme '{theme}' already taken by {existing}. Dropping.")
-            trade_orders.append(_reject_trade(ticker, f"Theme cap: '{theme}' used by {existing}"))
-            continue
+        # Theme cap removed: capping by theme at order-generation time is meaningless
+        # because an order being generated does not mean it fills. We let correlation
+        # veto + heat/dry-powder budgets handle real concentration risk instead.
 
         # Correlation veto
         if correlation_veto(ticker, accepted_tickers, threshold=0.70):
@@ -2455,7 +2445,6 @@ def run_agent4b(
         }
 
         trade_orders.append(order)
-        theme_tracker[theme] = ticker
         accepted_tickers.append(ticker)
         session_risk_used += risk_actual
         total_allocated += position_value
@@ -2760,17 +2749,13 @@ if __name__ == "__main__":
         with open("output/agent4_orders.json", "w") as f:
             json.dump(result, f, indent=2, default=str)
         print(f"\n[Agent 4] Orders saved to output/agent4_orders.json")
-
 ```
 
----
-
 ## agent5_position_monitor.py
-
 ```python
 """
 Agent 5: Position Monitor — v3 (Python trailing stops + Claude thesis monitor)
-Model: Claude Opus 4.8 (Anthropic) with adaptive thinking
+Model: Claude Sonnet 4.6 (Anthropic) with adaptive thinking
 Role: Runs at 3:30 PM ET to review open positions and decide hold/trim/close.
 
 Architecture:
@@ -2792,8 +2777,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Haiku for fast thesis drift classification — no extended thinking needed
-MODEL = "claude-3-5-haiku-latest"
+# Sonnet 4.6 with adaptive thinking for thesis drift classification
+MODEL = "claude-sonnet-4-6"
 MAX_RETRIES = 3
 RETRY_DELAY = 5
 
@@ -2953,10 +2938,12 @@ def load_open_positions() -> list:
     Falls back to agent4_orders.json if Alpaca is unreachable.
     Enriches with stop_loss from agent4_orders.json when available.
     """
-    # Primary: Read from broker (Robinhood or Alpaca via factory)
+    # Primary: Read from Alpaca (source of truth for the recap — holds the
+    # full book). Robinhood is the real-money execution account and only
+    # mirrors a subset, so forcing Alpaca here keeps the daily recap complete.
     try:
         from broker_factory import get_broker
-        broker = get_broker()
+        broker = get_broker("alpaca")
         broker_positions = broker.get_positions()
         if broker_positions:
             # Enrich with stop/theme data from agent4 orders if available
@@ -3228,7 +3215,8 @@ Respond with ONLY the JSON output."""
             response = client.messages.create(
                 model=MODEL,
                 max_tokens=16000,
-                temperature=0.0,
+                temperature=1,
+                thinking={"type": "adaptive"},
                 system=SYSTEM_PROMPT,
                 messages=[{"role": "user", "content": user_message}],
             )
@@ -3526,13 +3514,9 @@ if __name__ == "__main__":
         with open("output/agent5_decisions.json", "w") as f:
             json.dump(result, f, indent=2, default=str)
         print(f"\n[Agent 5] Decisions saved to output/agent5_decisions.json")
-
 ```
 
----
-
 ## alpaca_data.py
-
 ```python
 """
 Alpaca Market Data Module — Replaces Yahoo Finance for price data.
@@ -3886,13 +3870,9 @@ if __name__ == "__main__":
         print(f"   Today's bar: O={db['open']} H={db['high']} L={db['low']} C={db['close']} V={db['volume']:,}")
 
     print("\n✅ Alpaca Market Data module working!")
-
 ```
 
----
-
 ## assembly_scraper.py
-
 ```python
 """
 Assembly Private Scraper — Browser-based extraction.
@@ -4111,13 +4091,9 @@ if __name__ == "__main__":
     else:
         print("Usage: python assembly_scraper.py load")
         print("  (Assembly data must be scraped via browser and saved to output/assembly_data.json)")
-
 ```
 
----
-
 ## broker.py
-
 ```python
 """
 Broker Module — Alpaca Paper Trading Integration
@@ -4135,8 +4111,19 @@ Usage:
 """
 import json
 import os
+import sys
 from datetime import datetime
 from pathlib import Path
+
+# Harden stdout/stderr so emoji and other non-ASCII chars in log prints can never
+# raise UnicodeEncodeError ("utf-8 codec can't encode ... surrogates") on hosts
+# with a non-UTF-8 locale (cron/launchd with LANG=C, etc.). A print failure here
+# was silently blocking otherwise-valid orders in the cross-reference tape check.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
 
 from dotenv import load_dotenv
 
@@ -4181,10 +4168,10 @@ def _cross_reference_price(ticker: str, prior_close: float, suspect_price: float
             dev_from_current = abs(suspect_price - current_tape) / current_tape if current_tape > 0 else 999
 
             if dev_from_open < 0.015 or dev_from_current < 0.015:
-                print(f"  [CrossRef] \u2705 Real Breakout: Broker quote ${suspect_price:.2f} verified by today's tape (Open: ${today_open:.2f}, Live: ${current_tape:.2f}).")
+                print(f"  [CrossRef] \U00002705 Real Breakout: Broker quote ${suspect_price:.2f} verified by today's tape (Open: ${today_open:.2f}, Live: ${current_tape:.2f}).")
                 trusted = suspect_price
             else:
-                print(f"  [CrossRef] \ud83d\udeab Anomaly Confirmed: Broker quote ${suspect_price:.2f} diverges wildly from today's tape (Open: ${today_open:.2f}, Live: ${current_tape:.2f}).")
+                print(f"  [CrossRef] \U0001F6AB Anomaly Confirmed: Broker quote ${suspect_price:.2f} diverges wildly from today's tape (Open: ${today_open:.2f}, Live: ${current_tape:.2f}).")
                 trusted = current_tape  # Fallback to the live yfinance tape
         else:
             print(f"  [CrossRef] No intraday tape available to verify {ticker}.")
@@ -4624,13 +4611,9 @@ class AlpacaBroker:
             } for o in orders]
         except Exception as e:
             return [{"error": str(e)}]
-
 ```
 
----
-
 ## broker_factory.py
-
 ```python
 """
 Broker Factory — Switch between Robinhood and Alpaca execution.
@@ -4659,36 +4642,72 @@ from pathlib import Path
 # Default broker — set via BROKER env var or auto-detect
 DEFAULT_BROKER = os.environ.get("BROKER", "auto")
 
+# Process-level singleton cache. The Robinhood broker does a 3-round-trip MCP
+# handshake (initialize + initialized notification + account discovery) in its
+# __init__, so creating a fresh instance per get_broker() call was costing
+# ~12+ network round-trips per pipeline run. Caching reuses one live MCP
+# session for the lifetime of the process. Key is the RESOLVED broker name.
+_BROKER_CACHE = {}
 
-def get_broker(broker_name: str = None):
+
+def reset_broker_cache():
+    """Drop cached broker instances (e.g. after a token refresh or in tests)."""
+    _BROKER_CACHE.clear()
+
+
+def get_broker(broker_name: str = None, *, fresh: bool = False):
     """
-    Get a broker instance.
-    
+    Get a broker instance (cached per-process by default).
+
     Args:
         broker_name: "robinhood", "alpaca", or "auto" (default).
                      Auto tries Robinhood first, falls back to Alpaca.
+        fresh: If True, bypass the cache and build a new instance (and
+               replace the cached one). Use for forced reconnects.
     """
     name = (broker_name or DEFAULT_BROKER).lower().strip()
 
-    if name == "robinhood":
-        return _get_robinhood()
-    elif name == "alpaca":
-        return _get_alpaca()
-    elif name == "auto":
-        # Try Robinhood first (real money), fall back to Alpaca (paper)
-        try:
-            token_path = Path(__file__).parent / "robinhood-mcp" / "token.json"
-            if token_path.exists():
-                return _get_robinhood()
-        except Exception as e:
-            print(f"[BrokerFactory] Robinhood unavailable ({e}), trying Alpaca...")
-
-        try:
+    def _build():
+        if name == "robinhood":
+            return _get_robinhood()
+        elif name == "alpaca":
             return _get_alpaca()
-        except Exception as e:
-            raise RuntimeError(f"No broker available. Robinhood and Alpaca both failed: {e}")
-    else:
-        raise ValueError(f"Unknown broker: {name}. Use 'robinhood', 'alpaca', or 'auto'.")
+        elif name == "auto":
+            # Resolve to Robinhood (real money). We intentionally do NOT silently
+            # fall back to Alpaca paper: a quiet RH->paper fallback meant real-intent
+            # trades were being routed into the paper account on any RH hiccup,
+            # producing phantom positions (e.g. the ORCL incident, 2026-06-03).
+            # Fail LOUD instead. To trade paper, set BROKER=alpaca explicitly.
+            token_path = Path(__file__).parent / "robinhood-mcp" / "token.json"
+            if not token_path.exists():
+                raise RuntimeError(
+                    "BROKER=auto resolved to Robinhood but robinhood-mcp/token.json "
+                    "is missing. Refusing to silently fall back to Alpaca paper. "
+                    "Re-auth Robinhood, or set BROKER=alpaca to paper-trade on purpose."
+                )
+            try:
+                return _get_robinhood()
+            except Exception as e:
+                raise RuntimeError(
+                    f"BROKER=auto: Robinhood broker failed to initialize ({e}). "
+                    "Refusing to silently fall back to Alpaca paper. "
+                    "Set BROKER=alpaca to paper-trade on purpose."
+                )
+        else:
+            raise ValueError(f"Unknown broker: {name}. Use 'robinhood', 'alpaca', or 'auto'.")
+
+    if fresh:
+        broker = _build()
+        _BROKER_CACHE[name] = broker
+        return broker
+
+    cached = _BROKER_CACHE.get(name)
+    if cached is not None:
+        return cached
+
+    broker = _build()
+    _BROKER_CACHE[name] = broker
+    return broker
 
 
 def _get_robinhood():
@@ -4699,13 +4718,9 @@ def _get_robinhood():
 def _get_alpaca():
     from broker import AlpacaBroker
     return AlpacaBroker()
-
 ```
 
----
-
 ## config.py
-
 ```python
 """
 Trading Pipeline Configuration — "Golden Path" v2
@@ -4718,13 +4733,12 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).parent / ".env")
 
 # Account
-# Robinhood agentic account: $500 funded, sizing to represent ~$5,500 remaining
-# budget (out of $10K total project allowance, ~$4K already deployed elsewhere).
-# Scale factor: $500 / $5,500 ≈ 9.1% — pipeline sizes as if $500 is the full account,
-# so all risk parameters below are calibrated to this amount.
-ACCOUNT_SIZE = 500  # $500 Robinhood agentic account
+# Robinhood agentic account: REAL RUN — $10,000 total ($9,500 deposited 2026-05-31
+# + ~$500 existing cash). Prior runs were test runs sized to a $500 sandbox.
+# All risk parameters below are calibrated to the full $10K account.
+ACCOUNT_SIZE = 10_000  # $10K Robinhood agentic account (real run)
 ALPACA_PAPER_BUDGET = 10_000  # $10K paper trading budget (Alpaca mirror)
-DRY_POWDER_FLOOR = 0.20  # Never deploy beyond 80% ($400 max deployed)
+DRY_POWDER_FLOOR = 0.20  # Never deploy beyond 80% ($8,000 max deployed)
 
 # Alpaca
 ALPACA_USERNAME = os.environ.get("ALPACA_USERNAME", "")
@@ -4750,10 +4764,12 @@ TEARSHEET_TIME = "08:18"       # Deliver tear sheet
 AGENT5_PREFLIGHT_TIME = "15:25"  # Agent 5 pre-flight price snapshot
 AGENT5_TIME = "15:30"          # Agent 5 - Position Monitor
 
-# Risk Parameters (scaled to $500 account)
-PER_TRADE_RISK_CAP = 7.50      # $7.50 max risk per trade (1.5% of $500)
-SESSION_RISK_BUDGET = 50.00    # $50 max session risk (10% of $500)
-THEME_CAP = 1                  # Max 1 position per theme per session (tweak #5)
+# Risk Parameters (scaled to $10K account)
+PER_TRADE_RISK_CAP = 150.00    # $150 max risk per trade (1.5% of $10K)
+SESSION_RISK_BUDGET = 1000.00  # $1,000 max session risk (10% of $10K)
+THEME_CAP = 1                  # DEPRECATED: no longer enforced. Capping at order-generation
+                               # time is meaningless since an order doesn't guarantee a fill.
+                               # Concentration handled by correlation veto + heat budgets.
 
 # Screener Rules
 SCREENER_MIN_MARKET_CAP = 100_000_000  # $100M minimum
@@ -4820,10 +4836,10 @@ def normalize_vol_regime(s: str) -> str:
         f"Unknown vol_regime: {s!r} (expected one of {list(_VOL_CANONICAL)})"
     )
 
-# Risk-first sizing constants (scaled to $500 account)
-BASE_RISK = 7.50               # Per-trade $ at neutral conviction (1.5% of $500)
-MAX_RISK_PER_TRADE = 10.00     # Hard ceiling regardless of multiplier stack
-MIN_RISK_PER_TRADE = 2.50      # Below this, skip (regime says don't trade)
+# Risk-first sizing constants (scaled to $10K account)
+BASE_RISK = 150.00             # Per-trade $ at neutral conviction (1.5% of $10K)
+MAX_RISK_PER_TRADE = 200.00    # Hard ceiling regardless of multiplier stack (2.0%)
+MIN_RISK_PER_TRADE = 50.00     # Below this, skip (regime says don't trade) (0.5%)
 MAX_ALLOCATION_PCT = 0.25      # Share-count cap as % of account
 
 # Tier risk multipliers (replaces numeric conviction_mod)
@@ -4873,13 +4889,9 @@ FRED_API_KEY = os.environ.get("FRED_API_KEY", "")
 # Massive (Polygon-compatible) Market Data API
 # Free tier: historical bars, technical indicators (SMA, EMA, RSI, MACD), 5 calls/min
 MASSIVE_API_KEY = os.environ.get("MASSIVE_API_KEY", "")
-
 ```
 
----
-
 ## data_fetcher_v1_deprecated.py
-
 ```python
 """
 Market Data Fetcher
@@ -4981,13 +4993,9 @@ if __name__ == "__main__":
     data = fetch_macro_data()
     print(json.dumps(data, indent=2))
     print("\n" + format_macro_for_prompt(data))
-
 ```
 
----
-
 ## data_provider.py
-
 ```python
 """
 data_provider.py — Unified Data Provider Abstraction
@@ -5168,17 +5176,41 @@ class DataProvider:
 
         raise DataUnavailable(f"No index data available for {symbol}")
 
+    # Class-level health flag: once the Massive splits endpoint looks down,
+    # stop hammering it (and skip the rate-limiter wait) for the rest of the run.
+    _corp_actions_failures = 0
+    _corp_actions_disabled = False
+    _CORP_ACTIONS_FAIL_LIMIT = 3
+
     def get_corporate_actions(self, ticker: str, since_days: int = 7) -> list:
         """
         Recent splits/dividends.
         Fallback: Massive → [] with log warning.
+
+        Self-disables after a few consecutive failures so a down/slow Massive
+        endpoint (free tier is 5 calls/min) can't stall the pipeline for minutes.
         """
+        # Source already deemed unhealthy this run — skip immediately.
+        if DataProvider._corp_actions_disabled:
+            return []
+
         # 1. Massive splits endpoint
         if self._massive_key:
             try:
-                return self._massive_splits(ticker, since_days)
+                result = self._massive_splits(ticker, since_days)
+                DataProvider._corp_actions_failures = 0  # healthy response resets
+                return result
             except Exception as e:
+                DataProvider._corp_actions_failures += 1
                 logger.warning(f"Massive splits failed for {ticker}: {e}")
+                if DataProvider._corp_actions_failures >= DataProvider._CORP_ACTIONS_FAIL_LIMIT:
+                    DataProvider._corp_actions_disabled = True
+                    logger.warning(
+                        f"[DataProvider] Corp-action source disabled after "
+                        f"{DataProvider._corp_actions_failures} failures — "
+                        f"skipping split checks for the rest of this run."
+                    )
+                return []
 
         logger.warning(f"[DataProvider] No corporate action data available for {ticker}")
         return []
@@ -5224,7 +5256,9 @@ class DataProvider:
         params = params or {}
         params["apiKey"] = self._massive_key
         url = f"{self._massive_base}{endpoint}"
-        resp = requests.get(url, params=params, timeout=15)
+        # 5s timeout: corp-action/split checks are non-fatal (caller passes on
+        # failure), so don't let a slow/down Massive API stall the whole pipeline.
+        resp = requests.get(url, params=params, timeout=5)
 
         if resp.status_code == 403:
             logger.warning(f"Massive 403 (not entitled): {endpoint}")
@@ -5232,7 +5266,7 @@ class DataProvider:
         if resp.status_code == 429:
             logger.warning(f"Massive 429 (rate limited): {endpoint}")
             time.sleep(12)
-            resp = requests.get(url, params=params, timeout=15)
+            resp = requests.get(url, params=params, timeout=5)
 
         resp.raise_for_status()
         return resp.json()
@@ -5412,13 +5446,9 @@ def set_provider(provider: DataProvider):
     """Override the default DataProvider (for testing)."""
     global _default_provider
     _default_provider = provider
-
 ```
 
----
-
 ## discord_fetch.py
-
 ```python
 """
 Discord Smart Money Fetch — Pulls recent messages from curated Discord channels
@@ -5713,13 +5743,9 @@ if __name__ == "__main__":
 
     print(f"[Discord] Fetching messages from last {args.hours} hours...")
     result = fetch_discord_mentions(tickers=args.tickers, hours=args.hours)
-
 ```
 
----
-
 ## execution_engine.py
-
 ```python
 """
 execution_engine.py — Stateful Execution Ledger & Daemon
@@ -6574,13 +6600,9 @@ if __name__ == "__main__":
     print(f"Active trades: {len(engine.get_active_trades())}")
     print(f"Execution log: {len(engine.get_execution_log())} entries")
     print("\n✅ Execution Engine initialized!")
-
 ```
 
----
-
 ## fedwatch.py
-
 ```python
 """
 FedWatch Calculator — Derives FOMC rate expectations from Fed Funds futures.
@@ -6876,13 +6898,9 @@ if __name__ == "__main__":
     data = fetch_fedwatch()
     save_fedwatch(data)
     print(format_fedwatch_for_prompt(data))
-
 ```
 
----
-
 ## flash_crash_daemon.py
-
 ```python
 """
 Flash-Crash Daemon — Lightweight intraday safety net (NO LLM)
@@ -7289,13 +7307,9 @@ def run_daemon():
 
 if __name__ == "__main__":
     run_daemon()
-
 ```
 
----
-
 ## itc_data.py
-
 ```python
 """
 ITC (Into The Cryptoverse) Data Fetcher
@@ -7691,13 +7705,9 @@ if __name__ == "__main__":
     else:
         print("No ITC data found. Run the browser scraper first.")
         print("To test parsing, pass a snapshot text file as argument.")
-
 ```
 
----
-
 ## market_data.py
-
 ```python
 """
 Unified Market Data Module — Schwab primary, Yahoo Finance fallback.
@@ -7747,8 +7757,8 @@ def _check_schwab():
 def _robinhood_quotes(tickers: list) -> dict:
     """Fetch quotes from Robinhood MCP if a token exists."""
     try:
-        from robinhood_broker import RobinhoodBroker
-        broker = RobinhoodBroker()
+        from broker_factory import get_broker
+        broker = get_broker("robinhood")  # cached singleton — reuses MCP session
         return broker.get_quotes(tickers)
     except Exception:
         return {}
@@ -7896,16 +7906,43 @@ def fetch_latest_quotes(tickers: list) -> dict:
 
 def fetch_historical_bars(tickers: list, days: int = 30, timeframe: str = "day") -> dict:
     """
-    Fetch historical OHLCV bars. Uses Yahoo Finance (best free source for this).
+    Fetch historical OHLCV daily bars.
+
+    Schwab-first (covers stocks, ETFs, and indices like $VIX/$MOVE), with
+    Yahoo Finance as a last-resort fallback per-ticker. For daily bars Schwab
+    is the authoritative source now; Yahoo only fires if Schwab returns empty.
     """
-    yf = _yf_import()
     results = {}
+
+    # Schwab only serves daily/intraday candles we care about for daily bars.
+    schwab_first = (timeframe == "day") and _check_schwab()
+
+    if schwab_first:
+        try:
+            from schwab_data import fetch_schwab_history
+            for ticker in tickers:
+                h = fetch_schwab_history(ticker, days=days, frequency_type="daily")
+                if h.get("count", 0) > 0:
+                    results[ticker] = {
+                        "bars": h["bars"],
+                        "count": h["count"],
+                        "source": "schwab",
+                    }
+                # leave missing tickers to the Yahoo fallback below
+        except Exception as e:
+            print(f"[MarketData] Schwab history failed ({e}) — falling back to yfinance")
+
+    # Determine which tickers still need data (Yahoo fallback only for gaps)
+    missing = [t for t in tickers if t not in results]
+    if not missing:
+        return results
+
+    yf = _yf_import()
 
     period_map = {
         7: "7d", 14: "14d", 30: "1mo", 60: "2mo", 90: "3mo",
         180: "6mo", 365: "1y",
     }
-    # Find closest period
     period = "1mo"
     for d, p in sorted(period_map.items()):
         if days <= d:
@@ -7916,7 +7953,7 @@ def fetch_historical_bars(tickers: list, days: int = 30, timeframe: str = "day")
 
     interval = {"day": "1d", "hour": "1h", "minute": "1m"}.get(timeframe, "1d")
 
-    for ticker in tickers:
+    for ticker in missing:
         try:
             hist = yf.Ticker(ticker).history(period=period, interval=interval)
             if hist.empty:
@@ -8053,13 +8090,9 @@ if __name__ == "__main__":
         print(f"   {bar['date']}: O={bar['open']} H={bar['high']} L={bar['low']} C={bar['close']} V={bar['volume']:,}")
 
     print("\n✅ Unified Market Data module working!")
-
 ```
 
----
-
 ## massive_data.py
-
 ```python
 """
 Massive Market Data Module — Polygon-compatible API for stocks, options, and technical indicators.
@@ -8494,16 +8527,45 @@ def calculate_technicals_local(ticker: str, period: str = "6mo") -> dict:
     Returns:
         dict with all indicators, or dict with "error" key on failure.
     """
-    import yfinance as yf
     import pandas as pd
 
-    try:
-        df = yf.download(ticker, period=period, progress=False, auto_adjust=True)
-    except Exception as e:
-        return {"ticker": ticker, "error": f"yfinance download failed: {e}", "source": "local_calculation"}
+    # Map yfinance period string -> approximate calendar days for Schwab.
+    _period_days = {
+        "1mo": 30, "2mo": 60, "3mo": 90, "6mo": 180,
+        "1y": 365, "2y": 730, "ytd": 365,
+    }
+    days = _period_days.get(period, 180)
 
-    if df.empty or len(df) < 50:
-        return {"ticker": ticker, "error": f"Insufficient data ({len(df)} bars, need >=50)", "source": "local_calculation"}
+    df = None
+    # Schwab-FIRST via the unified market_data layer (handles index symbols too).
+    try:
+        import market_data as _mdata
+        res = _mdata.fetch_historical_bars([ticker], days=days, timeframe="day")
+        entry = res.get(ticker, {}) if isinstance(res, dict) else {}
+        bars = entry.get("bars") if entry.get("count", 0) > 0 else None
+        if bars:
+            idx = pd.to_datetime([b["date"] for b in bars])
+            df = pd.DataFrame({
+                "Open": [b["open"] for b in bars],
+                "High": [b["high"] for b in bars],
+                "Low": [b["low"] for b in bars],
+                "Close": [b["close"] for b in bars],
+                "Volume": [b["volume"] for b in bars],
+            }, index=idx)
+    except Exception:
+        df = None
+
+    # Last-resort fallback: raw yfinance.
+    if df is None or df.empty:
+        try:
+            import yfinance as yf
+            df = yf.download(ticker, period=period, progress=False, auto_adjust=True)
+        except Exception as e:
+            return {"ticker": ticker, "error": f"history download failed: {e}", "source": "local_calculation"}
+
+    if df is None or df.empty or len(df) < 50:
+        n = 0 if df is None else len(df)
+        return {"ticker": ticker, "error": f"Insufficient data ({n} bars, need >=50)", "source": "local_calculation"}
 
     # Flatten MultiIndex columns if yfinance returns them (e.g. ("Close", "SPY"))
     if isinstance(df.columns, pd.MultiIndex):
@@ -9100,13 +9162,9 @@ if __name__ == "__main__":
         print(f"   ERROR: {btc}")
 
     print("\n✅ Massive Market Data module working (all endpoints)!")
-
 ```
 
----
-
 ## orchestrator.py
-
 ```python
 """
 Open Claw Orchestrator — "Golden Path" v2
@@ -9987,13 +10045,9 @@ if __name__ == "__main__":
     else:
         print(f"Unknown mode: {mode}")
         print("Usage: python3 orchestrator.py [morning|monitor|resume|execute|full]")
-
 ```
 
----
-
 ## performance_review.py
-
 ```python
 """
 Open Claw - Performance Review Engine
@@ -10551,13 +10605,9 @@ if __name__ == "__main__":
         print(generate_monthly_params())
     else:
         run_all_reviews()
-
 ```
 
----
-
 ## preflight.py
-
 ```python
 """
 Pre-Flight Data Fetch — runs at 7:55 AM ET
@@ -10573,6 +10623,11 @@ import json
 import os
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
+
+import socket
+# Global safety net: never let a hung Yahoo/HTTP socket freeze the whole pipeline.
+# yfinance's yf.download() has no per-call timeout, so we set a default at the socket layer.
+socket.setdefaulttimeout(30)
 
 import yfinance as yf
 
@@ -10621,6 +10676,60 @@ except Exception as e:
     FEDWATCH_AVAILABLE = False
     print(f"[Pre-Flight] FedWatch Module: UNAVAILABLE ({e})")
 
+
+def _yf_download_shim(ticker, start=None, end=None, progress=False, **kwargs):
+    """
+    Drop-in replacement for yf.download(ticker, start=, end=) that is
+    Schwab-FIRST (via market_data.fetch_historical_bars) and only falls back
+    to Yahoo for symbols Schwab can't serve (e.g. 2YY=F).
+
+    Returns a pandas DataFrame with columns Open/High/Low/Close/Volume and a
+    DatetimeIndex, matching the shape downstream code expects from yfinance.
+    Returns an EMPTY DataFrame on failure so existing `data.empty` checks work.
+    """
+    import pandas as pd
+
+    # Estimate the lookback window in days from start/end if given.
+    days = 30
+    try:
+        if start is not None and end is not None:
+            days = max((end - start).days, 5)
+        elif start is not None:
+            days = max((datetime.now() - start).days, 5)
+    except Exception:
+        days = 30
+
+    bars = None
+    if MARKET_DATA_AVAILABLE:
+        try:
+            res = mdata.fetch_historical_bars([ticker], days=days, timeframe="day")
+            entry = res.get(ticker, {}) if isinstance(res, dict) else {}
+            if entry.get("count", 0) > 0:
+                bars = entry["bars"]
+        except Exception:
+            bars = None
+
+    # Last-resort: raw yfinance (only if Schwab path produced nothing).
+    if not bars:
+        try:
+            return yf.download(ticker, start=start, end=end, progress=progress, **kwargs)
+        except Exception:
+            return pd.DataFrame()
+
+    # Build a DataFrame that mimics yfinance output.
+    try:
+        idx = pd.to_datetime([b["date"] for b in bars])
+        df = pd.DataFrame({
+            "Open": [b["open"] for b in bars],
+            "High": [b["high"] for b in bars],
+            "Low": [b["low"] for b in bars],
+            "Close": [b["close"] for b in bars],
+            "Volume": [b["volume"] for b in bars],
+        }, index=idx)
+        return df
+    except Exception:
+        return pd.DataFrame()
+
 OUTPUT_DIR = "output"
 
 ASSEMBLY_STALE_HOURS = 18  # Assembly data older than this triggers fresh fetch from public APIs
@@ -10666,7 +10775,7 @@ def _fetch_prior_close_yfinance(tickers: list) -> dict:
 
     for ticker in tickers:
         try:
-            data = yf.download(ticker, start=start, end=end, progress=False)
+            data = _yf_download_shim(ticker, start=start, end=end, progress=False)
             if data.empty:
                 results[ticker] = {"error": f"No data for {ticker}"}
                 continue
@@ -10724,7 +10833,7 @@ def fetch_macro_data() -> dict:
 
     for name, ticker in yf_tickers.items():
         try:
-            data = yf.download(ticker, start=start, end=end, progress=False)
+            data = _yf_download_shim(ticker, start=start, end=end, progress=False)
             if data.empty:
                 macro[name] = {"error": f"No data for {ticker}"}
                 continue
@@ -10798,7 +10907,7 @@ def fetch_move_index() -> dict:
     try:
         end = datetime.now()
         start = end - timedelta(days=30)
-        data = yf.download("^MOVE", start=start, end=end, progress=False)
+        data = _yf_download_shim("^MOVE", start=start, end=end, progress=False)
         if not data.empty and len(data) >= 5:
             # MOVE pre-market noise filter (same as VIX)
             import pytz
@@ -11044,7 +11153,7 @@ def fetch_sector_breadth() -> dict:
 
     for etf, name in sector_etfs.items():
         try:
-            data = yf.download(etf, start=start, end=end, progress=False)
+            data = _yf_download_shim(etf, start=start, end=end, progress=False)
             if data.empty or len(data) < 20:
                 continue
 
@@ -11212,7 +11321,7 @@ def _enrich_prior_close(tickers_data: list) -> list:
 
     for entry in tickers_data:
         try:
-            data = yf.download(entry["ticker"], start=start, end=end, progress=False)
+            data = _yf_download_shim(entry["ticker"], start=start, end=end, progress=False)
             if not data.empty:
                 entry["prior_close"] = round(float(data["Close"].iloc[-1].item()), 2)
         except Exception:
@@ -11529,7 +11638,7 @@ def fetch_fresh_sentiment_fallback() -> dict:
         start = end - timedelta(days=5)
 
         # VIX for market volatility component
-        vix = yf.download("^VIX", start=start, end=end, progress=False)
+        vix = _yf_download_shim("^VIX", start=start, end=end, progress=False)
         if not vix.empty:
             vix_val = float(vix["Close"].iloc[-1].item())
             components["vix_value"] = round(vix_val, 2)
@@ -11540,7 +11649,7 @@ def fetch_fresh_sentiment_fallback() -> dict:
             else: components["market_volatility_vix"] = 5
 
         # S&P 500 momentum (125-day)
-        spy = yf.download("SPY", start=end - timedelta(days=180), end=end, progress=False)
+        spy = _yf_download_shim("SPY", start=end - timedelta(days=180), end=end, progress=False)
         if not spy.empty and len(spy) > 125:
             current_spy = float(spy["Close"].iloc[-1].item())
             spy_125d = float(spy["Close"].iloc[-125].item())
@@ -11552,8 +11661,8 @@ def fetch_fresh_sentiment_fallback() -> dict:
             else: components["sp500_momentum_125d"] = 10
 
         # Junk bond demand: HYG vs LQD spread
-        hyg = yf.download("HYG", start=start, end=end, progress=False)
-        lqd = yf.download("LQD", start=start, end=end, progress=False)
+        hyg = _yf_download_shim("HYG", start=start, end=end, progress=False)
+        lqd = _yf_download_shim("LQD", start=start, end=end, progress=False)
         if not hyg.empty and not lqd.empty:
             hyg_ret = float(hyg["Close"].pct_change().iloc[-1].item())
             lqd_ret = float(lqd["Close"].pct_change().iloc[-1].item())
@@ -11564,7 +11673,7 @@ def fetch_fresh_sentiment_fallback() -> dict:
             else: components["junk_bond_demand"] = 20
 
         # Safe haven demand: TLT relative to SPY
-        tlt = yf.download("TLT", start=start, end=end, progress=False)
+        tlt = _yf_download_shim("TLT", start=start, end=end, progress=False)
         if not tlt.empty and not spy.empty:
             tlt_ret = float(tlt["Close"].pct_change().iloc[-1].item())
             spy_ret_1d = float(spy["Close"].pct_change().iloc[-1].item())
@@ -11760,13 +11869,9 @@ if __name__ == "__main__":
     print("\n" + format_macro_for_prompt(data["macro"]))
     print(f"\nScreener: {len(data['screener_universe'])} tickers")
     print(f"Smart Money: {data['smart_money']['status']}")
-
 ```
 
----
-
 ## robinhood_broker.py
-
 ```python
 """
 Robinhood Broker Module — Agentic Trading via MCP
@@ -12414,13 +12519,9 @@ if __name__ == "__main__":
     print(f"   {json.dumps(review, indent=2)[:500]}")
 
     print("\n✅ Robinhood Broker module working!")
-
 ```
 
----
-
 ## run_archiver.py
-
 ```python
 #!/usr/bin/env python3
 """
@@ -12597,13 +12698,9 @@ if __name__ == "__main__":
             print(f"  - {k}")
     else:
         archive_run(label=args.label)
-
 ```
 
----
-
 ## run_execution_daemon.py
-
 ```python
 #!/usr/bin/env python3
 """
@@ -12631,13 +12728,9 @@ if __name__ == "__main__":
 
     engine = ExecutionEngine()
     engine.run_reconciliation_loop()
-
 ```
 
----
-
 ## safeguards.py
-
 ```python
 """
 Pipeline Safeguards — Production hardening for Open Claw.
@@ -13075,25 +13168,56 @@ def filter_corporate_actions(screener: list) -> tuple:
     Prevents hallucinated gaps and broken VaR math from adjusted historical prices.
     Uses DataProvider (Massive/Polygon splits endpoint) instead of yfinance.
     """
+    import time as _time
     from data_provider import get_provider
     dp = get_provider()
 
     print(f"[Corp Actions] Checking {len(screener)} tickers for recent splits...")
     filtered, removed = [], []
 
+    # Circuit breaker: split-checking is a non-fatal safeguard. If the splits
+    # data source (Massive) is down/slow, don't let it stall the whole pipeline.
+    # Trip after too many consecutive failures OR after a total time budget,
+    # then pass the remaining tickers through unchecked.
+    MAX_CONSECUTIVE_FAILURES = 5
+    TIME_BUDGET_SEC = 45
+    start_t = _time.time()
+    consecutive_failures = 0
+    breaker_tripped = False
+
     for entry in screener:
         ticker = entry.get("ticker")
+
+        if breaker_tripped:
+            # Source is unhealthy — pass remaining tickers without checking.
+            filtered.append(entry)
+            continue
+
+        if _time.time() - start_t > TIME_BUDGET_SEC:
+            print(f"[Corp Actions] ⏱ Time budget exceeded — skipping split check for remaining tickers (data source slow).")
+            breaker_tripped = True
+            filtered.append(entry)
+            continue
+
         try:
             splits = dp.get_corporate_actions(ticker, since_days=7)
+            consecutive_failures = 0  # success (even if empty) resets the counter
             if splits:
                 split_info = splits[0]
                 print(f"  [Corp Actions] {ticker} -- Recent split detected ({split_info.get('execution_date', '?')})")
                 removed.append({"ticker": ticker, "reason": "Recent corporate action/split", "detail": split_info})
                 continue
         except Exception as e:
+            consecutive_failures += 1
             print(f"  [Corp Actions] {ticker}: split check failed ({e}) -- passing")
+            if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+                print(f"[Corp Actions] ⚠ {consecutive_failures} consecutive failures — data source appears down. "
+                      f"Skipping split check for remaining tickers.")
+                breaker_tripped = True
         filtered.append(entry)
 
+    if breaker_tripped:
+        print(f"[Corp Actions] Split check ended early (source unhealthy). Checked partial set; rest passed through.")
     if removed:
         print(f"[Corp Actions] Filtered {len(removed)} tickers with recent splits")
     else:
@@ -13261,127 +13385,9 @@ if __name__ == "__main__":
     print(f"   10000 shares of $150 stock with 500K ADV: {cap2}")
     
     print("\n✅ Safeguards module ready!")
-
 ```
-
----
-
-## schwab_auth_server.py
-
-```python
-"""
-Temporary local HTTPS server to catch the Schwab OAuth callback.
-Captures the auth code and exchanges it for tokens automatically.
-
-Usage: python3 schwab_auth_server.py
-Then open the auth URL in a browser, log in, and it handles the rest.
-"""
-import http.server
-import ssl
-import json
-import base64
-import requests
-import subprocess
-import sys
-import os
-from urllib.parse import urlparse, parse_qs
-from pathlib import Path
-from dotenv import load_dotenv
-
-load_dotenv(Path(__file__).parent / ".env")
-
-APP_KEY = os.environ["SCHWAB_APP_KEY"]
-APP_SECRET = os.environ["SCHWAB_APP_SECRET"]
-CALLBACK_URL = "https://127.0.0.1/"
-TOKEN_PATH = Path(__file__).parent / "schwab_token.json"
-
-class CallbackHandler(http.server.BaseHTTPRequestHandler):
-    def do_GET(self):
-        parsed = urlparse(self.path)
-        params = parse_qs(parsed.query)
-        
-        if "code" not in params:
-            self.send_response(400)
-            self.end_headers()
-            self.wfile.write(b"No auth code found in callback")
-            return
-        
-        auth_code = params["code"][0]
-        print(f"\n[+] Got auth code: {auth_code[:20]}...")
-        
-        # Exchange immediately
-        credentials = base64.b64encode(f"{APP_KEY}:{APP_SECRET}".encode()).decode()
-        resp = requests.post(
-            "https://api.schwabapi.com/v1/oauth/token",
-            headers={
-                "Authorization": f"Basic {credentials}",
-                "Content-Type": "application/x-www-form-urlencoded",
-            },
-            data={
-                "grant_type": "authorization_code",
-                "code": auth_code,
-                "redirect_uri": CALLBACK_URL,
-            },
-        )
-        
-        if resp.status_code == 200:
-            token_data = resp.json()
-            TOKEN_PATH.write_text(json.dumps(token_data, indent=2))
-            print(f"[+] Token saved to {TOKEN_PATH}")
-            print(f"[+] Access token expires in: {token_data.get('expires_in')}s")
-            
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html")
-            self.end_headers()
-            self.wfile.write(b"<html><body><h1>Success!</h1><p>Schwab API token saved. You can close this tab.</p></body></html>")
-            
-            # Shutdown after success
-            import threading
-            threading.Thread(target=self.server.shutdown).start()
-        else:
-            print(f"[-] Token exchange failed: {resp.status_code} {resp.text}")
-            self.send_response(500)
-            self.send_header("Content-Type", "text/html")
-            self.end_headers()
-            self.wfile.write(f"<html><body><h1>Error</h1><pre>{resp.text}</pre></body></html>".encode())
-    
-    def log_message(self, format, *args):
-        pass  # Suppress default logging
-
-# Generate self-signed cert for HTTPS
-CERT_PATH = Path(__file__).parent / "schwab_localhost.pem"
-KEY_PATH = Path(__file__).parent / "schwab_localhost.key"
-if not CERT_PATH.exists():
-    subprocess.run([
-        "openssl", "req", "-x509", "-newkey", "rsa:2048",
-        "-keyout", str(KEY_PATH), "-out", str(CERT_PATH),
-        "-days", "365", "-nodes",
-        "-subj", "/CN=127.0.0.1"
-    ], capture_output=True)
-
-server = http.server.HTTPServer(("127.0.0.1", 443), CallbackHandler)
-context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-context.load_cert_chain(str(CERT_PATH), str(KEY_PATH))
-server.socket = context.wrap_socket(server.socket, server_side=True)
-
-auth_url = f"https://api.schwabapi.com/v1/oauth/authorize?client_id={APP_KEY}&redirect_uri=https%3A//127.0.0.1/&response_type=code"
-print(f"[*] Listening on https://127.0.0.1:443")
-print(f"[*] Opening auth URL in browser...")
-os.system(f'open "{auth_url}"')
-print(f"[*] Waiting for callback...")
-
-try:
-    server.serve_forever()
-except KeyboardInterrupt:
-    pass
-print("[*] Done.")
-
-```
-
----
 
 ## schwab_data.py
-
 ```python
 """
 Schwab Market Data module — cross-reference quote source.
@@ -13540,18 +13546,125 @@ def fetch_schwab_quotes(tickers: list) -> dict:
     return result
 
 
+# Symbol remapping: Yahoo-style index tickers -> Schwab index tickers.
+# Schwab uses a leading "$" for cash indices (e.g. $VIX, $MOVE) and does NOT
+# recognize Yahoo's "^" prefix or bare names. Map the ones we actually use.
+_SCHWAB_SYMBOL_MAP = {
+    "^VIX": "$VIX", "VIX": "$VIX",
+    "^MOVE": "$MOVE", "MOVE": "$MOVE",
+    "^VXN": "$VXN", "VXN": "$VXN",
+    "^TNX": "$TNX", "TNX": "$TNX",
+}
+
+
+# Schwab quotes Treasury yield indices as (yield % * 10), e.g. $TNX = 44.55
+# means a 4.455% 10-year yield. Yahoo's ^TNX returns 4.455 directly. Divide
+# these by 10 so downstream math (yield-curve spread) stays on one scale.
+_SCHWAB_SCALE = {
+    "$TNX": 0.1, "$TYX": 0.1, "$FVX": 0.1, "$IRX": 0.1,
+}
+
+
+def _map_symbol(sym: str) -> str:
+    """Translate a Yahoo-style symbol to its Schwab equivalent."""
+    return _SCHWAB_SYMBOL_MAP.get(sym, sym)
+
+
+def fetch_schwab_history(symbol: str, days: int = 30, frequency_type: str = "daily") -> dict:
+    """
+    Fetch historical daily OHLCV candles from Schwab's price-history endpoint.
+
+    Handles index symbol remapping (^VIX -> $VIX, ^MOVE -> $MOVE, etc.).
+
+    Returns dict:
+        {"symbol": <schwab_symbol>, "bars": [{date, open, high, low, close, volume}, ...],
+         "count": N, "source": "schwab"}
+    Returns {"bars": [], "count": 0, "error": ...} on failure.
+    """
+    access_token = _load_token()
+    if not access_token:
+        return {"bars": [], "count": 0, "error": "no_token"}
+
+    schwab_sym = _map_symbol(symbol)
+
+    # Pick the smallest periodType window that covers `days`.
+    # Schwab periodType=month supports period in {1,2,3,6}; year for longer.
+    if days <= 5:
+        period_type, period = "day", 5
+    elif days <= 30:
+        period_type, period = "month", 1
+    elif days <= 60:
+        period_type, period = "month", 2
+    elif days <= 90:
+        period_type, period = "month", 3
+    elif days <= 180:
+        period_type, period = "month", 6
+    else:
+        period_type, period = "year", 1
+
+    params = {
+        "symbol": schwab_sym,
+        "periodType": period_type,
+        "period": period,
+        "frequencyType": frequency_type,
+        "frequency": 1,
+    }
+
+    def _do_request(tok):
+        return requests.get(
+            "https://api.schwabapi.com/marketdata/v1/pricehistory",
+            headers={"Authorization": f"Bearer {tok}"},
+            params=params,
+            timeout=10,
+        )
+
+    try:
+        resp = _do_request(access_token)
+        if resp.status_code == 401:
+            _token_cache["access_token"] = None
+            _token_cache["expires_at"] = 0
+            access_token = _load_token()
+            if access_token:
+                resp = _do_request(access_token)
+
+        if resp.status_code != 200:
+            return {"symbol": schwab_sym, "bars": [], "count": 0,
+                    "error": f"http_{resp.status_code}: {resp.text[:120]}"}
+
+        data = resp.json()
+        candles = data.get("candles", [])
+        scale = _SCHWAB_SCALE.get(schwab_sym, 1.0)
+        bars = []
+        for c in candles:
+            ts = c.get("datetime", 0) / 1000.0  # ms epoch -> s
+            from datetime import datetime as _dt
+            bars.append({
+                "date": _dt.utcfromtimestamp(ts).strftime("%Y-%m-%d"),
+                "open": round(float(c.get("open", 0)) * scale, 4),
+                "high": round(float(c.get("high", 0)) * scale, 4),
+                "low": round(float(c.get("low", 0)) * scale, 4),
+                "close": round(float(c.get("close", 0)) * scale, 4),
+                "volume": int(c.get("volume", 0)),
+            })
+        return {"symbol": schwab_sym, "bars": bars, "count": len(bars), "source": "schwab"}
+    except Exception as e:
+        return {"symbol": schwab_sym, "bars": [], "count": 0, "error": str(e)}
+
+
 if __name__ == "__main__":
     import sys
-    tickers = sys.argv[1:] or ["BAC", "QCOM", "AAPL"]
-    quotes = fetch_schwab_quotes(tickers)
-    print(json.dumps(quotes, indent=2, default=str))
-
+    if len(sys.argv) > 1 and sys.argv[1] == "history":
+        sym = sys.argv[2] if len(sys.argv) > 2 else "SPY"
+        h = fetch_schwab_history(sym, days=30)
+        print(json.dumps({"symbol": h["symbol"], "count": h["count"],
+                          "last": h["bars"][-1] if h["bars"] else None}, indent=2, default=str))
+    else:
+        tickers = sys.argv[1:] or ["BAC", "QCOM", "AAPL"]
+        quotes = fetch_schwab_quotes(tickers)
+        print(json.dumps(quotes, indent=2, default=str))
 ```
 
----
-
 ## schwab_reauth.py
-
 ```python
 #!/usr/bin/env python3
 """
@@ -13704,13 +13817,9 @@ def main():
 if __name__ == "__main__":
     success = main()
     exit(0 if success else 1)
-
 ```
 
----
-
 ## test_data_provider.py
-
 ```python
 """
 Tests for DataProvider abstraction and risk math.
@@ -13939,13 +14048,9 @@ class TestIndexFallback:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
-
 ```
 
----
-
 ## trade_journal.py
-
 ```python
 """
 Trade Journal — Feedback CSV for the Open Claw pipeline.
@@ -14108,13 +14213,9 @@ def build_trade_record(
         "agent2_thesis_short": trade_order.get("thesis", "")[:100],
         "notes": notes,
     }
-
 ```
 
----
-
 ## vwap_gate.py
-
 ```python
 """
 Open Claw — VWAP Execution Gate
@@ -14224,13 +14325,9 @@ def vwap_gate(trade_orders: list[dict]) -> tuple[list[dict], list[dict]]:
             rejected.append(order)
 
     return approved, rejected
-
 ```
 
----
-
 ## watchlist.py
-
 ```python
 """
 Open Claw — Watchlist Bench
@@ -14492,13 +14589,9 @@ def promote_ready_candidates() -> list[dict]:
         wl._save()
 
     return candidates
-
 ```
 
----
-
 ## weekly_review.py
-
 ```python
 #!/usr/bin/env python3
 """
@@ -14625,13 +14718,9 @@ if __name__ == "__main__":
     parser.add_argument("--since", help="Only include trades after this date (YYYY-MM-DD)")
     args = parser.parse_args()
     run_review(args.since)
-
 ```
 
----
-
 ## x_fetch.py
-
 ```python
 """
 X/Twitter Smart Money Fetch — Official X Developer API
@@ -14946,5 +15035,5 @@ if __name__ == "__main__":
         print("Usage:")
         print("  python3 x_fetch.py MSFT JPM        # Specific tickers")
         print("  python3 x_fetch.py --from-agent2    # Read from Agent 2 output")
-
 ```
+
