@@ -137,22 +137,41 @@ class RobinhoodBroker:
             return json.loads(body) if body.strip() else None
 
     def _call_tool(self, tool_name, arguments=None):
-        """Call an MCP tool and return the parsed result."""
+        """Call an MCP tool and return the parsed result.
+
+        Surfaces MCP-level errors instead of silently returning None/empty so that
+        order placement can never be falsely recorded as 'submitted'. On error the
+        return is {"__mcp_error__": True, "message": <text>}.
+        """
         resp = self._mcp_request("tools/call", {
             "name": tool_name,
             "arguments": arguments or {},
         })
         if not resp:
-            return None
+            return {"__mcp_error__": True, "message": "empty MCP response"}
 
-        content = resp.get("result", {}).get("content", [])
+        # JSON-RPC level error
+        if isinstance(resp, dict) and resp.get("error"):
+            return {"__mcp_error__": True, "message": json.dumps(resp["error"])}
+
+        result = resp.get("result", {}) if isinstance(resp, dict) else {}
+        is_error = bool(result.get("isError"))
+        content = result.get("content", [])
         for item in content:
             if item.get("type") == "text":
+                txt = item["text"]
                 try:
-                    parsed = json.loads(item["text"])
-                    return parsed.get("data", parsed)
+                    parsed = json.loads(txt)
                 except json.JSONDecodeError:
-                    return item["text"]
+                    if is_error:
+                        return {"__mcp_error__": True, "message": txt}
+                    return txt
+                if is_error:
+                    return {"__mcp_error__": True, "message": txt,
+                            "data": parsed.get("data", parsed)}
+                return parsed.get("data", parsed)
+        if is_error:
+            return {"__mcp_error__": True, "message": json.dumps(content)}
         return content
 
     def _init_mcp(self):
@@ -341,7 +360,43 @@ class RobinhoodBroker:
         if stop_price:
             args["stop_price"] = str(stop_price)
 
-        return self._call_tool("place_equity_order", args)
+        result = self._call_tool("place_equity_order", args)
+        return self._normalize_order_result(result)
+
+    @staticmethod
+    def _normalize_order_result(result) -> dict:
+        """Normalize a place_equity_order response into a flat dict with a
+        reliable order_id and an explicit `ok` flag.
+
+        The Robinhood MCP returns the order under data.order (which _call_tool
+        unwraps to result['order']). The order UUID lives at result['order']['id'].
+        Previous code looked for result['order_id']/result['id'] which are absent,
+        so every fill recorded order_id=null. This fixes that and refuses to
+        report success when no order object/id came back.
+        """
+        if not isinstance(result, dict):
+            return {"ok": False, "order_id": None,
+                    "error": f"unexpected order result: {result!r}"}
+        if result.get("__mcp_error__"):
+            return {"ok": False, "order_id": None,
+                    "error": result.get("message", "MCP error")}
+        order = result.get("order") if isinstance(result.get("order"), dict) else None
+        order_id = None
+        state = None
+        if order:
+            order_id = order.get("id")
+            state = order.get("state")
+        # fall back to legacy/top-level shapes just in case
+        order_id = order_id or result.get("order_id") or result.get("id")
+        ok = bool(order_id) and state not in ("rejected", "failed", "voided", "cancelled")
+        return {
+            "ok": ok,
+            "order_id": order_id,
+            "state": state,
+            "order": order,
+            "raw": result,
+            "error": None if ok else f"no order_id returned (state={state})",
+        }
 
     def execute_tear_sheet(self, trade_orders: list, max_gap_pct: float = 0.02) -> list:
         """
@@ -451,22 +506,67 @@ class RobinhoodBroker:
                     if alerts:
                         print(f"  [RH-Broker] ⚠️ {ticker} pre-trade alerts: {alerts}")
 
-                # Place the order
+                # Place the order, with one retry if the broker didn't accept it.
+                # RULE: an approved trade must end with a real Robinhood order_id.
+                # We never record "submitted" without one.
                 result = self.place_order(
                     ticker, "buy", "limit",
                     quantity=str(shares),
                     limit_price=str(limit_price),
                     time_in_force="gfd",
                 )
+                order_id = result.get("order_id") if isinstance(result, dict) else None
 
-                order_id = None
-                if isinstance(result, dict):
-                    order_id = result.get("order_id") or result.get("id")
+                if not order_id:
+                    err = result.get("error") if isinstance(result, dict) else str(result)
+                    print(f"  [RH-Broker] ⚠️ {ticker}: first submit returned no order_id ({err}) — retrying once")
+                    # Re-quote and retry as a marketable limit so it actually fills.
+                    try:
+                        rq = self.get_quotes([ticker]).get(ticker, {})
+                        retry_ask = rq.get("ask") or rq.get("mid") or rq.get("last") or live_ask
+                        if retry_ask and retry_ask > 0:
+                            limit_price = round(retry_ask * 1.003, 2)
+                            if stop_price and stop_price > 0 and risk_budget > 0:
+                                rps = retry_ask - stop_price
+                                if rps > 0:
+                                    shares = round(risk_budget / rps, 6)
+                    except Exception as rqe:
+                        print(f"  [RH-Broker] retry re-quote failed: {rqe}")
+                    result = self.place_order(
+                        ticker, "buy", "limit",
+                        quantity=str(shares),
+                        limit_price=str(limit_price),
+                        time_in_force="gfd",
+                    )
+                    order_id = result.get("order_id") if isinstance(result, dict) else None
 
+                if not order_id:
+                    err = result.get("error") if isinstance(result, dict) else str(result)
+                    print(f"  [RH-Broker] ❌ {ticker}: NOT FILLED — broker rejected order ({err})")
+                    fills.append({
+                        "ticker": ticker,
+                        "status": "failed",
+                        "order_id": None,
+                        "shares": shares,
+                        "planned_shares": planned_shares,
+                        "order_type": "limit",
+                        "limit_price": limit_price,
+                        "pricing_mode": pricing_mode,
+                        "live_ask": live_ask if live_ask > 0 else None,
+                        "planned_entry": planned_entry,
+                        "risk_budget": risk_budget,
+                        "stop_price": stop_price,
+                        "broker": "robinhood",
+                        "error": err,
+                    })
+                    continue
+
+                print(f"  [RH-Broker] ✅ {ticker}: order placed — id={order_id} state={result.get('state')}")
                 fills.append({
                     "ticker": ticker,
                     "status": "submitted",
                     "order_id": order_id,
+                    "order_state": result.get("state"),
                     "shares": shares,
                     "planned_shares": planned_shares,
                     "order_type": "limit",
