@@ -407,24 +407,67 @@ def filter_earnings_tickers(screener: list) -> tuple:
     print(f"[Earnings Screen] Checking {len(tickers)} tickers for upcoming earnings...")
     earnings = fetch_earnings_dates(tickers)
     
+    # Circuit breaker: if a huge fraction of the universe is being removed ONLY
+    # because the earnings-date source failed to fetch (not because of real
+    # earnings proximity), the data source is broken — don't nuke the whole day.
+    # yfinance's calendar endpoint is flaky/rate-limited and intermittently
+    # returns None for every ticker, which previously fail-closed the entire
+    # universe to 0 and produced no trades (see 2026-06-04 incident).
+    FAIL_CLOSED_REASONS = ("no_date_parsed_fail_closed",
+                           "no_earnings_data_fail_closed",
+                           "fetch_error_fail_closed")
+    BREAKER_THRESHOLD = 0.70  # if >70% of universe is fetch-failure removals
+
+    def _is_fetch_failure(info: dict) -> bool:
+        r = (info.get("reason") or "")
+        return any(r.startswith(fc) for fc in FAIL_CLOSED_REASONS)
+
+    total = len(tickers)
+    unsafe = [t for t in tickers if not earnings.get(t, {}).get("safe", True)]
+    fetch_failures = [t for t in unsafe if _is_fetch_failure(earnings.get(t, {}))]
+    real_earnings = [t for t in unsafe if not _is_fetch_failure(earnings.get(t, {}))]
+
+    source_broken = (
+        total > 0
+        and len(fetch_failures) / total >= BREAKER_THRESHOLD
+        and len(fetch_failures) >= len(unsafe)  # essentially all removals are fetch fails
+    )
+
+    if source_broken:
+        print(f"[Earnings Screen] ⚠️ CIRCUIT BREAKER TRIPPED — {len(fetch_failures)}/{total} "
+              f"tickers fail-closed on DATA FETCH (source broken, not real earnings). "
+              f"Passing through with earnings_unverified flag instead of nuking the universe.")
+
     removed = []
     filtered = []
-    
+
     for entry in screener:
         ticker = entry.get("ticker")
         if ticker and ticker in earnings:
             info = earnings[ticker]
             if not info.get("safe", True):
-                removed.append({"ticker": ticker, **info})
-                print(f"[Earnings Screen] 🚫 {ticker} — {info['reason']}")
-                continue
+                # Real earnings proximity → always remove (binary-event protection).
+                if not _is_fetch_failure(info):
+                    removed.append({"ticker": ticker, **info})
+                    print(f"[Earnings Screen] 🚫 {ticker} — {info['reason']}")
+                    continue
+                # Fetch failure: if breaker tripped, pass through (flagged);
+                # otherwise keep the original conservative fail-closed behavior.
+                if source_broken:
+                    entry = {**entry, "earnings_unverified": True}
+                else:
+                    removed.append({"ticker": ticker, **info})
+                    print(f"[Earnings Screen] 🚫 {ticker} — {info['reason']}")
+                    continue
         filtered.append(entry)
-    
+
     if removed:
-        print(f"[Earnings Screen] Filtered {len(removed)} tickers with upcoming earnings")
+        print(f"[Earnings Screen] Filtered {len(removed)} tickers "
+              f"({len(real_earnings)} real earnings, "
+              f"{len(removed) - len(real_earnings)} fetch-fail)")
     else:
         print(f"[Earnings Screen] ✅ All tickers clear of near-term earnings")
-    
+
     return filtered, removed
 
 
