@@ -363,6 +363,43 @@ class RobinhoodBroker:
         result = self._call_tool("place_equity_order", args)
         return self._normalize_order_result(result)
 
+    def get_order(self, order_id: str) -> dict:
+        """Fetch a single equity order's current state via get_equity_orders."""
+        r = self._call_tool("get_equity_orders", {"account_number": self._agentic_account})
+        if not isinstance(r, dict) or r.get("__mcp_error__"):
+            return {"ok": False, "error": (r or {}).get("message", "fetch failed")}
+        orders = r.get("orders") if isinstance(r.get("orders"), list) else (r if isinstance(r, list) else [])
+        for o in orders:
+            if isinstance(o, dict) and o.get("id") == order_id:
+                return {"ok": True, "state": o.get("state"),
+                        "filled": o.get("cumulative_quantity"),
+                        "avg_price": o.get("average_price"), "order": o}
+        return {"ok": False, "error": "order not found"}
+
+    def wait_for_fill(self, order_id: str, timeout: int = 90, interval: int = 5) -> dict:
+        """Poll an order until it fills (or terminal/timeout). Returns last status."""
+        terminal = {"filled", "cancelled", "rejected", "failed", "voided"}
+        last = {}
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            last = self.get_order(order_id)
+            state = last.get("state")
+            if state in terminal:
+                return last
+            time.sleep(interval)
+        return last
+
+    def place_stop(self, ticker: str, qty, stop_price: float,
+                   time_in_force: str = "gtc") -> dict:
+        """Place a protective stop-market SELL order."""
+        args = {
+            "account_number": self._agentic_account,
+            "symbol": ticker, "side": "sell", "type": "stop_market",
+            "quantity": str(int(qty)), "stop_price": str(round(float(stop_price), 2)),
+            "time_in_force": time_in_force, "ref_id": str(uuid.uuid4()),
+        }
+        return self._normalize_order_result(self._call_tool("place_equity_order", args))
+
     @staticmethod
     def _normalize_order_result(result) -> dict:
         """Normalize a place_equity_order response into a flat dict with a
@@ -580,10 +617,30 @@ class RobinhoodBroker:
                 })
                 print(f"  [RH-Broker] ✅ BUY {shares} {ticker} @ limit ${limit_price} ({pricing_mode})")
 
-                # Note: Robinhood MCP doesn't support bracket/OTO orders.
-                # Stop-loss orders need to be placed separately after fill confirmation.
+                # Robinhood MCP doesn't support bracket/OTO orders, so place the
+                # protective stop separately AFTER the entry fills. Poll, then arm.
                 if stop_price and stop_price > 0:
-                    print(f"  [RH-Broker] ⏳ Stop-loss ${stop_price:.2f} pending — will place after fill")
+                    print(f"  [RH-Broker] ⏳ Waiting for {ticker} fill to arm stop ${stop_price:.2f}...")
+                    status = self.wait_for_fill(order_id, timeout=90, interval=5)
+                    filled_qty = 0
+                    try:
+                        filled_qty = int(float(status.get("filled") or 0))
+                    except (TypeError, ValueError):
+                        filled_qty = 0
+                    if status.get("state") == "filled" and filled_qty > 0:
+                        stop_res = self.place_stop(ticker, filled_qty, stop_price)
+                        if stop_res.get("ok"):
+                            fills[-1]["stop_order_id"] = stop_res.get("order_id")
+                            fills[-1]["stop_armed"] = True
+                            print(f"  [RH-Broker] 🛡️ Stop armed: SELL {filled_qty} {ticker} @ ${stop_price:.2f} stop (id={stop_res.get('order_id')})")
+                        else:
+                            fills[-1]["stop_armed"] = False
+                            fills[-1]["stop_error"] = stop_res.get("error")
+                            print(f"  [RH-Broker] ⚠️ Stop FAILED for {ticker}: {stop_res.get('error')} — PLACE MANUALLY")
+                    else:
+                        fills[-1]["stop_armed"] = False
+                        fills[-1]["stop_error"] = f"entry not filled (state={status.get('state')})"
+                        print(f"  [RH-Broker] ⚠️ {ticker} not filled (state={status.get('state')}) — stop NOT armed")
 
             except Exception as e:
                 fills.append({"ticker": ticker, "status": "error", "error": str(e)})
