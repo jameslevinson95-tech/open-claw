@@ -391,11 +391,21 @@ class RobinhoodBroker:
 
     def place_stop(self, ticker: str, qty, stop_price: float,
                    time_in_force: str = "gtc") -> dict:
-        """Place a protective stop-market SELL order."""
+        """Place a protective stop-market SELL order.
+
+        Robinhood supports fractional shares, so we must NOT int()-truncate the
+        quantity (that would leave a fractional sliver of the position unhedged,
+        e.g. int(10.47) -> 10 leaves 0.47 sh uncovered). Round to 6 dp (RH's
+        fractional precision) and strip trailing zeros.
+        """
+        qty_str = ("%.6f" % float(qty)).rstrip("0").rstrip(".")
+        if not qty_str or float(qty_str) <= 0:
+            return {"ok": False, "order_id": None,
+                    "error": f"invalid stop qty {qty!r}"}
         args = {
             "account_number": self._agentic_account,
             "symbol": ticker, "side": "sell", "type": "stop_market",
-            "quantity": str(int(qty)), "stop_price": str(round(float(stop_price), 2)),
+            "quantity": qty_str, "stop_price": str(round(float(stop_price), 2)),
             "time_in_force": time_in_force, "ref_id": str(uuid.uuid4()),
         }
         return self._normalize_order_result(self._call_tool("place_equity_order", args))
@@ -622,17 +632,19 @@ class RobinhoodBroker:
                 if stop_price and stop_price > 0:
                     print(f"  [RH-Broker] ⏳ Waiting for {ticker} fill to arm stop ${stop_price:.2f}...")
                     status = self.wait_for_fill(order_id, timeout=90, interval=5)
-                    filled_qty = 0
+                    filled_qty = 0.0
                     try:
-                        filled_qty = int(float(status.get("filled") or 0))
+                        # Keep the FULL fractional fill qty so the stop covers the
+                        # entire position (no int() truncation leaving a sliver).
+                        filled_qty = float(status.get("filled") or 0)
                     except (TypeError, ValueError):
-                        filled_qty = 0
+                        filled_qty = 0.0
                     if status.get("state") == "filled" and filled_qty > 0:
                         stop_res = self.place_stop(ticker, filled_qty, stop_price)
                         if stop_res.get("ok"):
                             fills[-1]["stop_order_id"] = stop_res.get("order_id")
                             fills[-1]["stop_armed"] = True
-                            print(f"  [RH-Broker] 🛡️ Stop armed: SELL {filled_qty} {ticker} @ ${stop_price:.2f} stop (id={stop_res.get('order_id')})")
+                            print(f"  [RH-Broker] 🛡️ Stop armed: SELL {filled_qty:g} {ticker} @ ${stop_price:.2f} stop (id={stop_res.get('order_id')})")
                         else:
                             fills[-1]["stop_armed"] = False
                             fills[-1]["stop_error"] = stop_res.get("error")
