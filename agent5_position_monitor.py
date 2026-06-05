@@ -357,14 +357,61 @@ def calculate_trailing_stops(positions: list, snapshot: dict) -> list:
         elif stored_hwm_stop > 0 and new_stop == stored_hwm_stop:
             trailing_note += f" [HWM held at ${stored_hwm_stop}]"
 
-        # Update HWM state for this ticker
+        # Update HWM state for this ticker. Preserve any existing scaled_fraction
+        # so a prior day's scale-out isn't forgotten on the next snapshot.
         hwm_state[ticker] = {
             "hwm_stop": new_stop,
             "hwm_price": max(current_price, stored_hwm_price),
+            "scaled_fraction": stored.get("scaled_fraction", 0.0),
             "last_updated": datetime.now().isoformat(),
         }
 
-        # Check if stop is hit
+        # ━━━ R-MULTIPLE SCALE-OUT ━━━
+        # R = initial per-share risk = entry - original_stop. We scale at
+        # R-multiples rather than flat %, so 1R means the same thing on VOO and
+        # URA. scaled_fraction (persisted) tracks cumulative fraction of the
+        # ORIGINAL position already sold across prior days.
+        from config import SCALE_LADDER, MIN_SHARES_TO_SCALE
+
+        scale_action = None
+        scale_trim_pct = None
+        scale_note = ""
+        r_multiple = None
+
+        already_sold = stored.get("scaled_fraction", 0.0)
+        per_share_R = entry_price - original_stop
+
+        # Require a REAL stop anchor (0 < stop < entry) so R is meaningful.
+        # A missing/zero stop (fallback path) yields per_share_R == entry, a
+        # bogus huge R — skip scaling entirely there (no scale, no crash).
+        if original_stop > 0 and per_share_R > 0 and shares >= MIN_SHARES_TO_SCALE:
+            r_multiple = round((current_price - entry_price) / per_share_R, 2)
+
+            # Highest cumulative fraction whose R threshold is satisfied now.
+            target_sold = 0.0
+            for r_threshold, cum_fraction in SCALE_LADDER:
+                if r_multiple >= r_threshold:
+                    target_sold = max(target_sold, cum_fraction)
+
+            # Only act if we owe MORE selling than we've already done.
+            if target_sold > already_sold + 1e-6:
+                remaining_of_original = max(1.0 - already_sold, 1e-6)
+                incremental = target_sold - already_sold
+                # Express the increment as a pct of CURRENT holdings (what the
+                # broker trims against).
+                scale_trim_pct = int(round((incremental / remaining_of_original) * 100))
+                scale_trim_pct = max(1, min(scale_trim_pct, 99))
+                scale_action = "TRIM"
+                scale_note = (f"+{r_multiple}R reached → scale to {int(target_sold*100)}% sold "
+                              f"(trim {scale_trim_pct}% of current)")
+                # Once we start scaling, never let the stop sit below breakeven.
+                new_stop = max(new_stop, entry_price)
+                new_stop = round(new_stop, 2)
+                # Persist the new cumulative fraction sold for this ticker.
+                hwm_state[ticker]["scaled_fraction"] = max(already_sold, target_sold)
+                hwm_state[ticker]["hwm_stop"] = new_stop
+
+        # Check if stop is hit (mechanical CLOSE supersedes any scale-out).
         mechanical_action = "HOLD"
         if current_price <= new_stop:
             mechanical_action = "CLOSE"
@@ -379,6 +426,10 @@ def calculate_trailing_stops(positions: list, snapshot: dict) -> list:
             "new_stop": new_stop,
             "mechanical_action": mechanical_action,
             "trailing_stop_note": trailing_note,
+            "r_multiple": r_multiple,
+            "scale_action": scale_action,
+            "scale_trim_pct": scale_trim_pct,
+            "scale_note": scale_note,
             "intraday": price_data,
         })
 
@@ -637,7 +688,8 @@ def run_agent5(positions: list = None, snapshot: dict = None) -> dict:
             thesis_status = "INTACT"
             thesis_override = None
 
-        # Merge logic
+        # Merge logic. Priority: crisis > mechanical stop > thesis break > scale-out > hold.
+        trim_pct = None
         if crisis_liquidation:
             action = "CLOSE"
             reasoning = "CRISIS_LIQUIDATION — all positions closed."
@@ -649,6 +701,12 @@ def run_agent5(positions: list = None, snapshot: dict = None) -> dict:
         elif thesis_override == "CLOSE":
             action = "CLOSE"
             reasoning = f"THESIS OVERRIDE: {thesis_review.get('thesis_assessment', 'Thesis broken per Claude review.')}"
+        elif pos.get("scale_action") == "TRIM":
+            action = "TRIM"
+            trim_pct = pos.get("scale_trim_pct", 33)
+            reasoning = f"SCALE-OUT: {pos.get('scale_note', '')}"
+            if thesis_status == "DEGRADED":
+                reasoning += f" | ⚠️ Thesis DEGRADED: {thesis_review.get('thesis_assessment', '')}"
         else:
             action = "HOLD"
             parts = [pos["trailing_stop_note"]]
@@ -670,11 +728,11 @@ def run_agent5(positions: list = None, snapshot: dict = None) -> dict:
             "mechanical_action": mechanical,
             "thesis_status": thesis_status,
             "thesis_override": thesis_override,
-            "trim_pct": None,
+            "trim_pct": trim_pct,
             "reasoning": reasoning,
         })
 
-        action_emoji = {"HOLD": "✅", "CLOSE": "🚪"}.get(action, "❓")
+        action_emoji = {"HOLD": "✅", "TRIM": "✂️", "CLOSE": "🚪"}.get(action, "❓")
         print(f"  {action_emoji} {ticker}: {action} — {reasoning[:80]}")
 
     portfolio_summary = ""

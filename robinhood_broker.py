@@ -649,6 +649,42 @@ class RobinhoodBroker:
                             fills[-1]["stop_armed"] = False
                             fills[-1]["stop_error"] = stop_res.get("error")
                             print(f"  [RH-Broker] ⚠️ Stop FAILED for {ticker}: {stop_res.get('error')} — PLACE MANUALLY")
+                        # ── +6R take-profit leg (intraday spike capture) ──
+                        # RH has no OTO/bracket, so we place a SEPARATE GTC limit
+                        # sell at entry + BRACKET_TP_R_MULTIPLE * per-share-risk,
+                        # for the FULL filled qty. This is the only profit-taking
+                        # that fires intraday; Agent 5's +2R/+4R scale-outs run at
+                        # 3:30. On a partial scale-out, atomic_trim cancels this
+                        # leg and re-arms a fresh stop on the remainder.
+                        #
+                        # NOTE: both the stop and this TP encumber the same
+                        # shares. RH allows the resting stop + a resting limit on
+                        # the same lot; if your account rejects the double-hold,
+                        # the TP submit just logs an error and the position rides
+                        # on the stop alone (no crash).
+                        try:
+                            from config import BRACKET_TP_R_MULTIPLE
+                            entry_fill = float(status.get("avg_price") or limit_price)
+                            per_share_risk = max(entry_fill - stop_price, 0.01)
+                            tp_price = round(entry_fill + BRACKET_TP_R_MULTIPLE * per_share_risk, 2)
+                            tp_res = self.place_order(
+                                ticker, "sell", "limit",
+                                quantity=str(filled_qty),
+                                limit_price=str(tp_price),
+                                time_in_force="gtc",
+                            )
+                            tp_id = tp_res.get("order_id") if isinstance(tp_res, dict) else None
+                            if tp_id:
+                                fills[-1]["take_profit_price"] = tp_price
+                                fills[-1]["take_profit_order_id"] = tp_id
+                                print(f"  [RH-Broker] 🎯 TP armed: SELL {filled_qty:g} {ticker} @ ${tp_price:.2f} limit (+{BRACKET_TP_R_MULTIPLE:g}R, id={tp_id})")
+                            else:
+                                err = tp_res.get("error") if isinstance(tp_res, dict) else str(tp_res)
+                                fills[-1]["take_profit_error"] = err
+                                print(f"  [RH-Broker] ⚠️ TP leg not placed for {ticker} ({err}) — riding on stop only")
+                        except Exception as tpe:
+                            fills[-1]["take_profit_error"] = str(tpe)
+                            print(f"  [RH-Broker] ⚠️ TP leg error for {ticker}: {tpe} — riding on stop only")
                     else:
                         fills[-1]["stop_armed"] = False
                         fills[-1]["stop_error"] = f"entry not filled (state={status.get('state')})"
@@ -764,18 +800,18 @@ class RobinhoodBroker:
                 results.append(result)
 
             elif action == "TRIM":
-                trim_pct = d.get("trim_pct", 50) / 100
-                positions = self.get_positions()
-                pos = next((p for p in positions if p["ticker"] == ticker), None)
-                if pos:
-                    # For trim: atomic liquidate the full position then re-enter the remainder
-                    # Simpler approach: update stop and let the position ride at smaller size
-                    new_stop = d.get("new_stop", d.get("current_price", 0))
-                    if new_stop > 0:
-                        engine.update_stop(ticker, new_stop, reason="Agent5_TRIM")
-                    results.append({"ticker": ticker, "action": "TRIM", "new_stop": new_stop, "status": "stop_tightened"})
-                else:
-                    results.append({"ticker": ticker, "action": "TRIM", "status": "no_position"})
+                # Real partial scale-out: cancel encumbering sell legs → wait for
+                # release → market-sell the tranche → re-arm a stop on the
+                # remainder. trim_pct is a fraction of CURRENT holdings (Agent 5
+                # already nets out tranches sold on prior days).
+                trim_pct = d.get("trim_pct")
+                if trim_pct is None:
+                    trim_pct = 33  # safety default; Agent 5 normally supplies this
+                new_stop = d.get("new_stop") or d.get("current_price") or 0
+                result = engine.atomic_trim(
+                    ticker, trim_pct=trim_pct, new_stop=new_stop, reason="Agent5_TRIM"
+                )
+                results.append(result)
 
         return results
 
