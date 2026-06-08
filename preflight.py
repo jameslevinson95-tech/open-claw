@@ -1113,20 +1113,56 @@ def fetch_fresh_sentiment_fallback() -> dict:
     except Exception as e:
         print(f"[Pre-Flight] Component fallback fetch error: {e}")
 
+    # Compute synthetic composite from available components.
+    # GUARD: require a minimum number of components so a single stale/empty
+    # yfinance pull can't produce a confidently-wrong composite from 1 value.
+    MIN_COMPONENTS = 3  # of the 4 score components (excl. vix_value)
     result["components"] = components
-
-    # Compute synthetic composite from available components
     if components:
         scores = [v for k, v in components.items() if k != "vix_value" and isinstance(v, (int, float))]
-        if scores:
+        if len(scores) >= MIN_COMPONENTS:
             composite = round(sum(scores) / len(scores))
             result["composite_score"] = composite
+            result["component_count"] = len(scores)
             if composite >= 75: result["composite_label"] = "Extreme Greed"
             elif composite >= 55: result["composite_label"] = "Greed"
             elif composite >= 45: result["composite_label"] = "Neutral"
             elif composite >= 25: result["composite_label"] = "Fear"
             else: result["composite_label"] = "Extreme Fear"
             print(f"[Pre-Flight] Synthetic composite: {composite} ({result['composite_label']}) from {len(scores)} components")
+        else:
+            print(f"[Pre-Flight] \u26a0\ufe0f Only {len(scores)}/{MIN_COMPONENTS}+ sentiment components fetched — composite suppressed (insufficient data)")
+
+    # --- Last-good cache + freshness fallback ---
+    # If this fetch didn't produce a usable composite (yfinance stale/down),
+    # fall back to the last-good cached sentiment rather than emitting a
+    # partial/garbage result. Cache successful fetches for next time.
+    SENT_CACHE = f"{OUTPUT_DIR}/sentiment_cache.json"
+    if result.get("composite_score") is not None:
+        try:
+            with open(SENT_CACHE, "w") as cf:
+                json.dump(result, cf, indent=2)
+        except Exception:
+            pass  # best-effort
+    else:
+        # Live fetch insufficient -> try cache
+        if os.path.exists(SENT_CACHE):
+            try:
+                with open(SENT_CACHE) as cf:
+                    cached = json.load(cf)
+                if cached.get("composite_score") is not None:
+                    cached_age = "unknown"
+                    try:
+                        ct = datetime.fromisoformat(cached.get("timestamp", "").split("+")[0])
+                        cached_age = f"{(datetime.now() - ct).total_seconds()/3600:.1f}h"
+                    except Exception:
+                        pass
+                    cached["source"] = "public_market_data (cached last-good)"
+                    cached["from_cache"] = True
+                    print(f"[Pre-Flight] \u26a0\ufe0f Live sentiment insufficient — using last-good cache (age {cached_age})")
+                    return cached
+            except Exception as e:
+                print(f"[Pre-Flight] Sentiment cache read failed: {e}")
 
     return result
 

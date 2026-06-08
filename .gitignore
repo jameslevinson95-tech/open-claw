@@ -26,3 +26,4 @@ output/broker_state.lock
 logs/
 output/logs/
 output/dix_cache.csv
+output/sentiment_cache.json
