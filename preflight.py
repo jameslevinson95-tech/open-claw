@@ -366,23 +366,59 @@ def fetch_dix() -> dict:
     """
     import csv
     import io
+    import time
     import requests
 
     URL = "https://squeezemetrics.com/monitor/static/DIX.csv"
-    try:
-        resp = requests.get(
-            URL,
-            timeout=10,
-            headers={"User-Agent": "open-claw/1.0 (research)"},
-        )
-        resp.raise_for_status()
-    except requests.HTTPError as e:
-        return {"error": f"DIX HTTP {e.response.status_code} from squeezemetrics"}
-    except requests.RequestException as e:
-        return {"error": f"DIX fetch failed: {e}"}
+    CACHE_PATH = f"{OUTPUT_DIR}/dix_cache.csv"
+    MAX_RETRIES = 3
+
+    # --- Fetch with retry + backoff; cache last-good CSV on success ---
+    # squeezemetrics' free CSV intermittently times out / rate-limits (~1 in 3
+    # morning fetches whiffed historically -> "67% available"). Retry first,
+    # then fall back to the last-good cached CSV so we use yesterday's value
+    # instead of returning empty.
+    csv_text = None
+    last_err = None
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            resp = requests.get(
+                URL,
+                timeout=15,
+                headers={"User-Agent": "open-claw/1.0 (research)"},
+            )
+            resp.raise_for_status()
+            csv_text = resp.text
+            # Cache the raw last-good CSV for future fallback
+            try:
+                with open(CACHE_PATH, "w") as cf:
+                    cf.write(csv_text)
+            except Exception:
+                pass  # cache write is best-effort
+            break
+        except requests.HTTPError as e:
+            last_err = f"DIX HTTP {e.response.status_code} from squeezemetrics"
+        except requests.RequestException as e:
+            last_err = f"DIX fetch failed: {e}"
+        if attempt < MAX_RETRIES:
+            time.sleep(2 * attempt)  # 2s, 4s backoff
+
+    # All live attempts failed -> try last-good cache
+    used_cache = False
+    if csv_text is None:
+        if os.path.exists(CACHE_PATH):
+            try:
+                with open(CACHE_PATH) as cf:
+                    csv_text = cf.read()
+                used_cache = True
+                print(f"[Pre-Flight] \u26a0\ufe0f DIX live fetch failed ({last_err}) \u2014 using last-good cached CSV")
+            except Exception as e:
+                return {"error": f"{last_err}; cache read also failed: {e}"}
+        else:
+            return {"error": f"{last_err}; no cache available"}
 
     try:
-        reader = csv.DictReader(io.StringIO(resp.text))
+        reader = csv.DictReader(io.StringIO(csv_text))
         # Normalize column keys to lowercase
         rows = [{k.lower(): v for k, v in r.items()} for r in reader]
     except Exception as e:
@@ -461,7 +497,9 @@ def fetch_dix() -> dict:
     out = {
         "current": round(latest, 2),
         "date": date_str,
-        "source": "squeezemetrics.com/monitor/static/DIX.csv",
+        "source": "squeezemetrics.com/monitor/static/DIX.csv"
+                  + (" (cached last-good)" if used_cache else ""),
+        "from_cache": used_cache,
         "interpretation": interpretation,
     }
     if gex_data:

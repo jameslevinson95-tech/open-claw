@@ -25,3 +25,4 @@ output/broker_state.lock
 .env.*.bak
 logs/
 output/logs/
+output/dix_cache.csv
