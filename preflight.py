@@ -1056,7 +1056,7 @@ def fetch_fresh_sentiment_fallback() -> dict:
     Uses CNN Fear & Greed API + yfinance for the same indicators Assembly provides.
     """
     import requests
-    result = {"timestamp": datetime.now().isoformat(), "source": "public_api_fallback"}
+    result = {"timestamp": datetime.now().isoformat(), "source": "public_market_data"}
 
     # 2. Sub-components from yfinance
     components = {}
@@ -1186,37 +1186,28 @@ def run_preflight(themes: Optional[List[str]] = None) -> dict:
     #   d) Then runs Agent 3 with that data
     # X research is MANDATORY — Agent 3 will not bypass.
 
-    # 3. Assembly Private data (sentiment + macro overlay)
-    #    If stale or missing, auto-fetch fresh indicators from public APIs
-    assembly = {}
+    # 3. Market sentiment data (composite + sub-components)
+    #    Sourced live from public market data (CNN Fear&Greed + yfinance proxies)
+    #    every run. The legacy Assembly browser-scrape was retired — it required
+    #    a manual login/snapshot that never ran in the automated pipeline, so it
+    #    always went stale. The live public path is free, deterministic, and
+    #    needs no browser. macro overlay is already covered by fetch_macro_data().
     assembly_path = f"{OUTPUT_DIR}/assembly_data.json"
-    stale = is_assembly_stale(assembly_path)
-
-    if not stale:
-        try:
-            with open(assembly_path) as f:
-                assembly = json.load(f)
-            print(f"[Pre-Flight] Assembly data FRESH — loaded (sentiment: {assembly.get('sentiment', {}).get('composite_score', '?')})")
-        except Exception as e:
-            print(f"[Pre-Flight] Assembly data load failed: {e}")
-            stale = True
-
-    if stale:
-        print("[Pre-Flight] Assembly data STALE or missing — fetching fresh indicators from public APIs...")
-        fresh_sentiment = fetch_fresh_sentiment_fallback()
-        assembly = {
-            "timestamp": datetime.now().isoformat(),
-            "source": "public_api_fallback",
-            "sentiment": fresh_sentiment,
-            "macro": {},  # macro already covered by fetch_macro_data() above
-        }
-        # Save the fresh fallback so agents can reference it
-        try:
-            with open(assembly_path, "w") as f:
-                json.dump(assembly, f, indent=2)
-            print(f"[Pre-Flight] Fresh fallback data saved (sentiment: {fresh_sentiment.get('composite_score', '?')})")
-        except Exception as e:
-            print(f"[Pre-Flight] Could not save fallback data: {e}")
+    print("[Pre-Flight] Fetching live market sentiment from public market data...")
+    fresh_sentiment = fetch_fresh_sentiment_fallback()
+    fresh_sentiment["source"] = "public_market_data"
+    assembly = {
+        "timestamp": datetime.now().isoformat(),
+        "source": "public_market_data",
+        "sentiment": fresh_sentiment,
+        "macro": {},  # macro already covered by fetch_macro_data() above
+    }
+    try:
+        with open(assembly_path, "w") as f:
+            json.dump(assembly, f, indent=2)
+        print(f"[Pre-Flight] Market sentiment saved (composite: {fresh_sentiment.get('composite_score', '?')} / {fresh_sentiment.get('composite_label', '?')})")
+    except Exception as e:
+        print(f"[Pre-Flight] Could not save sentiment data: {e}")
 
     # 4a. Filter out tickers with recent stock splits
     from safeguards import filter_corporate_actions

@@ -138,7 +138,7 @@ def audit_data_sources():
         "massive_technicals": {"name": "Massive API (Technicals)", "icon": "📈", "cost": "Free tier (5 calls/min)", "role": "Server-side RSI, MACD, SMA, EMA"},
         "massive_macro": {"name": "Massive API (Macro/Economy)", "icon": "🏛️", "cost": "Free tier", "role": "Treasury yields, inflation, labor market"},
         "massive_fundamentals": {"name": "Massive API (Fundamentals)", "icon": "📊", "cost": "Free tier", "role": "Financials, dividends, ticker details"},
-        "assembly": {"name": "Assembly/FRED Macro", "icon": "🏦", "cost": "Free", "role": "Sentiment composite, cross-asset rotation, sector RS"},
+        "assembly": {"name": "Market Sentiment (CNN F&G + yfinance)", "icon": "🏦", "cost": "Free", "role": "Sentiment composite, sub-component breadth"},
         "squeezemetrics": {"name": "SqueezMetrics DIX", "icon": "🌊", "cost": "Free (CSV)", "role": "Dark pool index — institutional accumulation/distribution"},
         "finviz": {"name": "Finviz Screener", "icon": "🔍", "cost": "Free (finvizfinance)", "role": "Dynamic stock screening (momentum, sectors, themes)"},
         "yfinance": {"name": "Yahoo Finance", "icon": "📰", "cost": "Free (yfinance)", "role": "Fallback price data, sector breadth, VIX"},
@@ -228,16 +228,24 @@ def audit_data_sources():
             except Exception:
                 pass
 
-        # Assembly freshness
+        # Market sentiment freshness
+        # public_market_data = live CNN F&G + yfinance proxies (the current,
+        # intended source). Legacy public_api_fallback also counts as fresh
+        # since it's the same live public data under the old label. Anything
+        # else (e.g. an empty/missing file) counts as stale.
         assembly_file = os.path.join(run_dir, "assembly_data.json")
         if os.path.exists(assembly_file):
             try:
                 with open(assembly_file) as f:
                     asm = json.load(f)
-                if asm.get("source") == "public_api_fallback":
-                    assembly_stale += 1
-                else:
+                src = asm.get("source")
+                has_sentiment = bool(asm.get("sentiment", {}).get("composite_score"))
+                if src in ("public_market_data", "public_api_fallback") and has_sentiment:
                     assembly_fresh += 1
+                elif has_sentiment:
+                    assembly_fresh += 1
+                else:
+                    assembly_stale += 1
             except Exception:
                 assembly_stale += 1
 
@@ -291,18 +299,18 @@ def audit_data_sources():
     # Massive Fundamentals (NEW)
     report.append("  📊 *Massive Fundamentals:* 🟢 — _Financials, dividends, ticker details — supplements Finviz_ 💰 Free tier")
 
-    # Assembly
+    # Market Sentiment (live public market data: CNN F&G + yfinance proxies)
     if assembly_fresh + assembly_stale > 0:
         fresh_rate = assembly_fresh / (assembly_fresh + assembly_stale) * 100
-        if fresh_rate >= 70:
-            report.append(f"  🏦 *Assembly/FRED:* 🟢 — _{fresh_rate:.0f}% fresh data ({assembly_fresh}/{assembly_fresh + assembly_stale} runs)_ 💰 Free")
-        elif fresh_rate >= 40:
-            report.append(f"  🏦 *Assembly/FRED:* ⚪ — _{fresh_rate:.0f}% fresh — falling back to public APIs often_ 💰 Free")
+        if fresh_rate >= 90:
+            report.append(f"  🏦 *Market Sentiment:* 🟢 — _{fresh_rate:.0f}% live ({assembly_fresh}/{assembly_fresh + assembly_stale} runs) — CNN F&G + yfinance_ 💰 Free")
+        elif fresh_rate >= 60:
+            report.append(f"  🏦 *Market Sentiment:* ⚪ — _{fresh_rate:.0f}% live — some runs missing sentiment_ 💰 Free")
         else:
-            report.append(f"  🏦 *Assembly/FRED:* 🔴 — _Only {fresh_rate:.0f}% fresh — mostly using fallback. Check Assembly scraper._ 💰 Free")
+            report.append(f"  🏦 *Market Sentiment:* 🔴 — _Only {fresh_rate:.0f}% live — sentiment fetch failing, check CNN F&G / yfinance_ 💰 Free")
     else:
         asm_grade = "🟢" if not missing_data_flags else "🔴"
-        report.append(f"  🏦 *Assembly/FRED:* {asm_grade} — _{'Clean data' if not missing_data_flags else 'Missing DIX/MOVE data'}_ 💰 Free")
+        report.append(f"  🏦 *Market Sentiment:* {asm_grade} — _{'Clean data' if not missing_data_flags else 'Missing DIX/MOVE data'}_ 💰 Free")
 
     # SqueezMetrics DIX
     if dix_success + dix_fail > 0:
@@ -345,7 +353,7 @@ def audit_data_sources():
     report.append("")
     report.append("  *📋 Value Assessment:*")
     report.append("  _HIGH VALUE:_ Massive Macro (unique data), X/Twitter (alpha signal), DIX (institutional flow)")
-    report.append("  _MEDIUM VALUE:_ Massive Technicals (saves compute), Finviz (dynamic screening), Assembly (sentiment)")
+    report.append("  _MEDIUM VALUE:_ Massive Technicals (saves compute), Finviz (dynamic screening), Market Sentiment (CNN F&G)")
     report.append("  _MONITOR:_ Discord (noise?), yfinance (reliability), Schwab (not live yet)")
 
     return "\n".join(report)
