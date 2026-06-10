@@ -14,6 +14,7 @@ Usage:
   broker.close_position("AAPL")
 """
 import json
+import math
 import os
 import uuid
 import time
@@ -264,6 +265,34 @@ class RobinhoodBroker:
                 "unrealized_pl": float(p.get("unrealized_pl", 0)),
                 "unrealized_plpc": float(p.get("unrealized_plpc", 0)),
             })
+
+        # The RH MCP `get_equity_positions` endpoint frequently returns rows
+        # with quantity/avg_buy_price populated but current_price == 0 and
+        # equity == 0 (no live pricing on the positions feed). That made real
+        # open positions look like $0 market value, which the afternoon monitor
+        # interpreted as "flat / no open positions". Backfill missing prices
+        # from the live quotes feed (which is reliable) so downstream logic
+        # sees true market values.
+        stale = [p["ticker"] for p in parsed
+                 if p["ticker"] and p["shares"] != 0 and p["current_price"] <= 0]
+        if stale:
+            try:
+                quotes = self.get_quotes(stale)
+            except Exception as e:
+                print(f"[RH-Broker] price hydration failed for {stale}: {e}")
+                quotes = {}
+            for p in parsed:
+                if p["ticker"] in quotes and p["current_price"] <= 0:
+                    q = quotes[p["ticker"]]
+                    px = q.get("mid") or q.get("last") or q.get("bid") or 0
+                    px = float(px or 0)
+                    if px > 0:
+                        p["current_price"] = px
+                        p["market_value"] = px * p["shares"]
+                        cost = p["avg_entry_price"] * p["shares"]
+                        if cost > 0:
+                            p["unrealized_pl"] = p["market_value"] - cost
+                            p["unrealized_plpc"] = (p["market_value"] - cost) / cost
         return parsed
 
     def get_existing_exposure(self) -> float:
@@ -529,9 +558,13 @@ class RobinhoodBroker:
                         })
                         continue
 
-                    live_shares = round(risk_budget / live_risk_per_share, 6)
-                    if live_shares < 0.001:
-                        fills.append({"ticker": ticker, "status": "rejected", "reason": "Zero shares after re-sizing"})
+                    # Robinhood rejects fractional-share LIMIT orders
+                    # ("Limit order quantity cannot include fractional shares").
+                    # Floor to whole shares — this trims position size slightly,
+                    # which is the conservative/safe direction (lowers risk).
+                    live_shares = math.floor(risk_budget / live_risk_per_share)
+                    if live_shares < 1:
+                        fills.append({"ticker": ticker, "status": "rejected", "reason": "Zero whole shares after re-sizing (risk budget too small for 1 share)"})
                         continue
 
                     limit_price = round(live_ask * 1.0015, 2)
@@ -542,7 +575,11 @@ class RobinhoodBroker:
                         print(f"  [RH-Broker] 📐 {ticker}: Re-sized {planned_shares} → {shares} shares")
                 else:
                     limit_price = round(planned_entry * 1.015, 2)
-                    shares = planned_shares
+                    # Whole shares only for limit orders (RH constraint).
+                    shares = math.floor(planned_shares)
+                    if shares < 1:
+                        fills.append({"ticker": ticker, "status": "rejected", "reason": "Zero whole shares (planned < 1 share)"})
+                        continue
                     pricing_mode = "planned"
 
                 # First: review the order (dry run)
@@ -576,7 +613,7 @@ class RobinhoodBroker:
                             if stop_price and stop_price > 0 and risk_budget > 0:
                                 rps = retry_ask - stop_price
                                 if rps > 0:
-                                    shares = round(risk_budget / rps, 6)
+                                    shares = max(1, math.floor(risk_budget / rps))
                     except Exception as rqe:
                         print(f"  [RH-Broker] retry re-quote failed: {rqe}")
                     result = self.place_order(
