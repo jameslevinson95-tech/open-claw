@@ -13,14 +13,7 @@ load_dotenv(Path(__file__).parent / ".env")
 # + ~$500 existing cash). Prior runs were test runs sized to a $500 sandbox.
 # All risk parameters below are calibrated to the full $10K account.
 ACCOUNT_SIZE = 10_000  # $10K Robinhood agentic account (real run)
-ALPACA_PAPER_BUDGET = 10_000  # $10K paper trading budget (Alpaca mirror)
 DRY_POWDER_FLOOR = 0.20  # Never deploy beyond 80% ($8,000 max deployed)
-
-# Alpaca
-ALPACA_USERNAME = os.environ.get("ALPACA_USERNAME", "")
-ALPACA_API_KEY = os.environ.get("ALPACA_API_KEY", "")
-ALPACA_SECRET_KEY = os.environ.get("ALPACA_SECRET_KEY", "")
-ALPACA_BASE_URL = "https://paper-api.alpaca.markets"  # Paper trading first
 
 # LLM Keys
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
@@ -43,6 +36,18 @@ AGENT5_TIME = "15:30"          # Agent 5 - Position Monitor
 # Risk Parameters (scaled to $10K account)
 PER_TRADE_RISK_CAP = 150.00    # $150 max risk per trade (1.5% of $10K)
 SESSION_RISK_BUDGET = 1000.00  # $1,000 max session risk (10% of $10K)
+
+# ── Profit-taking (added) ──
+# NOTE: BRACKET_TP_R_MULTIPLE drives the resting take-profit leg. Robinhood (the
+# live broker) does NOT support OTO/bracket orders, so on RH this is placed as a
+# separate GTC limit-sell AFTER the entry fills, for the FULL filled qty. It is
+# the only profit-taking that fires intraday; Agent 5's +2R/+4R scale-outs run
+# once daily at 3:30. On the partial-tranche scale-out, that TP leg is cancelled
+# and re-armed on the remainder.
+BRACKET_TP_R_MULTIPLE = 6.0    # take-profit at entry + 6R (runner target / intraday spike)
+SCALE_LADDER = [(2.0, 0.34), (4.0, 0.67)]  # (R-multiple threshold, cumulative fraction of ORIGINAL position sold by then)
+MIN_SHARES_TO_SCALE = 3        # don't scale positions smaller than this (leaves a real runner)
+
 THEME_CAP = 1                  # DEPRECATED: no longer enforced. Capping at order-generation
                                # time is meaningless since an order doesn't guarantee a fill.
                                # Concentration handled by correlation veto + heat budgets.

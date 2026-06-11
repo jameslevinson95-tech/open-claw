@@ -14,6 +14,7 @@ Usage:
   broker.close_position("AAPL")
 """
 import json
+import math
 import os
 import uuid
 import time
@@ -264,6 +265,34 @@ class RobinhoodBroker:
                 "unrealized_pl": float(p.get("unrealized_pl", 0)),
                 "unrealized_plpc": float(p.get("unrealized_plpc", 0)),
             })
+
+        # The RH MCP `get_equity_positions` endpoint frequently returns rows
+        # with quantity/avg_buy_price populated but current_price == 0 and
+        # equity == 0 (no live pricing on the positions feed). That made real
+        # open positions look like $0 market value, which the afternoon monitor
+        # interpreted as "flat / no open positions". Backfill missing prices
+        # from the live quotes feed (which is reliable) so downstream logic
+        # sees true market values.
+        stale = [p["ticker"] for p in parsed
+                 if p["ticker"] and p["shares"] != 0 and p["current_price"] <= 0]
+        if stale:
+            try:
+                quotes = self.get_quotes(stale)
+            except Exception as e:
+                print(f"[RH-Broker] price hydration failed for {stale}: {e}")
+                quotes = {}
+            for p in parsed:
+                if p["ticker"] in quotes and p["current_price"] <= 0:
+                    q = quotes[p["ticker"]]
+                    px = q.get("mid") or q.get("last") or q.get("bid") or 0
+                    px = float(px or 0)
+                    if px > 0:
+                        p["current_price"] = px
+                        p["market_value"] = px * p["shares"]
+                        cost = p["avg_entry_price"] * p["shares"]
+                        if cost > 0:
+                            p["unrealized_pl"] = p["market_value"] - cost
+                            p["unrealized_plpc"] = (p["market_value"] - cost) / cost
         return parsed
 
     def get_existing_exposure(self) -> float:
@@ -529,9 +558,13 @@ class RobinhoodBroker:
                         })
                         continue
 
-                    live_shares = round(risk_budget / live_risk_per_share, 6)
-                    if live_shares < 0.001:
-                        fills.append({"ticker": ticker, "status": "rejected", "reason": "Zero shares after re-sizing"})
+                    # Robinhood rejects fractional-share LIMIT orders
+                    # ("Limit order quantity cannot include fractional shares").
+                    # Floor to whole shares — this trims position size slightly,
+                    # which is the conservative/safe direction (lowers risk).
+                    live_shares = math.floor(risk_budget / live_risk_per_share)
+                    if live_shares < 1:
+                        fills.append({"ticker": ticker, "status": "rejected", "reason": "Zero whole shares after re-sizing (risk budget too small for 1 share)"})
                         continue
 
                     limit_price = round(live_ask * 1.0015, 2)
@@ -542,7 +575,11 @@ class RobinhoodBroker:
                         print(f"  [RH-Broker] 📐 {ticker}: Re-sized {planned_shares} → {shares} shares")
                 else:
                     limit_price = round(planned_entry * 1.015, 2)
-                    shares = planned_shares
+                    # Whole shares only for limit orders (RH constraint).
+                    shares = math.floor(planned_shares)
+                    if shares < 1:
+                        fills.append({"ticker": ticker, "status": "rejected", "reason": "Zero whole shares (planned < 1 share)"})
+                        continue
                     pricing_mode = "planned"
 
                 # First: review the order (dry run)
@@ -576,7 +613,7 @@ class RobinhoodBroker:
                             if stop_price and stop_price > 0 and risk_budget > 0:
                                 rps = retry_ask - stop_price
                                 if rps > 0:
-                                    shares = round(risk_budget / rps, 6)
+                                    shares = max(1, math.floor(risk_budget / rps))
                     except Exception as rqe:
                         print(f"  [RH-Broker] retry re-quote failed: {rqe}")
                     result = self.place_order(
@@ -649,6 +686,42 @@ class RobinhoodBroker:
                             fills[-1]["stop_armed"] = False
                             fills[-1]["stop_error"] = stop_res.get("error")
                             print(f"  [RH-Broker] ⚠️ Stop FAILED for {ticker}: {stop_res.get('error')} — PLACE MANUALLY")
+                        # ── +6R take-profit leg (intraday spike capture) ──
+                        # RH has no OTO/bracket, so we place a SEPARATE GTC limit
+                        # sell at entry + BRACKET_TP_R_MULTIPLE * per-share-risk,
+                        # for the FULL filled qty. This is the only profit-taking
+                        # that fires intraday; Agent 5's +2R/+4R scale-outs run at
+                        # 3:30. On a partial scale-out, atomic_trim cancels this
+                        # leg and re-arms a fresh stop on the remainder.
+                        #
+                        # NOTE: both the stop and this TP encumber the same
+                        # shares. RH allows the resting stop + a resting limit on
+                        # the same lot; if your account rejects the double-hold,
+                        # the TP submit just logs an error and the position rides
+                        # on the stop alone (no crash).
+                        try:
+                            from config import BRACKET_TP_R_MULTIPLE
+                            entry_fill = float(status.get("avg_price") or limit_price)
+                            per_share_risk = max(entry_fill - stop_price, 0.01)
+                            tp_price = round(entry_fill + BRACKET_TP_R_MULTIPLE * per_share_risk, 2)
+                            tp_res = self.place_order(
+                                ticker, "sell", "limit",
+                                quantity=str(filled_qty),
+                                limit_price=str(tp_price),
+                                time_in_force="gtc",
+                            )
+                            tp_id = tp_res.get("order_id") if isinstance(tp_res, dict) else None
+                            if tp_id:
+                                fills[-1]["take_profit_price"] = tp_price
+                                fills[-1]["take_profit_order_id"] = tp_id
+                                print(f"  [RH-Broker] 🎯 TP armed: SELL {filled_qty:g} {ticker} @ ${tp_price:.2f} limit (+{BRACKET_TP_R_MULTIPLE:g}R, id={tp_id})")
+                            else:
+                                err = tp_res.get("error") if isinstance(tp_res, dict) else str(tp_res)
+                                fills[-1]["take_profit_error"] = err
+                                print(f"  [RH-Broker] ⚠️ TP leg not placed for {ticker} ({err}) — riding on stop only")
+                        except Exception as tpe:
+                            fills[-1]["take_profit_error"] = str(tpe)
+                            print(f"  [RH-Broker] ⚠️ TP leg error for {ticker}: {tpe} — riding on stop only")
                     else:
                         fills[-1]["stop_armed"] = False
                         fills[-1]["stop_error"] = f"entry not filled (state={status.get('state')})"
@@ -764,18 +837,18 @@ class RobinhoodBroker:
                 results.append(result)
 
             elif action == "TRIM":
-                trim_pct = d.get("trim_pct", 50) / 100
-                positions = self.get_positions()
-                pos = next((p for p in positions if p["ticker"] == ticker), None)
-                if pos:
-                    # For trim: atomic liquidate the full position then re-enter the remainder
-                    # Simpler approach: update stop and let the position ride at smaller size
-                    new_stop = d.get("new_stop", d.get("current_price", 0))
-                    if new_stop > 0:
-                        engine.update_stop(ticker, new_stop, reason="Agent5_TRIM")
-                    results.append({"ticker": ticker, "action": "TRIM", "new_stop": new_stop, "status": "stop_tightened"})
-                else:
-                    results.append({"ticker": ticker, "action": "TRIM", "status": "no_position"})
+                # Real partial scale-out: cancel encumbering sell legs → wait for
+                # release → market-sell the tranche → re-arm a stop on the
+                # remainder. trim_pct is a fraction of CURRENT holdings (Agent 5
+                # already nets out tranches sold on prior days).
+                trim_pct = d.get("trim_pct")
+                if trim_pct is None:
+                    trim_pct = 33  # safety default; Agent 5 normally supplies this
+                new_stop = d.get("new_stop") or d.get("current_price") or 0
+                result = engine.atomic_trim(
+                    ticker, trim_pct=trim_pct, new_stop=new_stop, reason="Agent5_TRIM"
+                )
+                results.append(result)
 
         return results
 

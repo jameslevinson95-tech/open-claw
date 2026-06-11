@@ -1,11 +1,10 @@
 """
-Broker Factory — Switch between Robinhood and Alpaca execution.
+Broker Factory — Robinhood real-money execution.
 
 Usage:
   from broker_factory import get_broker
-  broker = get_broker()  # Auto-detects based on env/config
-  broker = get_broker("robinhood")  # Force Robinhood
-  broker = get_broker("alpaca")     # Force Alpaca (paper trading)
+  broker = get_broker()             # Robinhood (default)
+  broker = get_broker("robinhood")  # Robinhood (explicit)
 
 Both brokers expose the same interface:
   - get_account_summary()
@@ -43,41 +42,29 @@ def get_broker(broker_name: str = None, *, fresh: bool = False):
     Get a broker instance (cached per-process by default).
 
     Args:
-        broker_name: "robinhood", "alpaca", or "auto" (default).
-                     Auto tries Robinhood first, falls back to Alpaca.
+        broker_name: "robinhood" (default) or "auto" (alias for robinhood).
         fresh: If True, bypass the cache and build a new instance (and
                replace the cached one). Use for forced reconnects.
     """
     name = (broker_name or DEFAULT_BROKER).lower().strip()
 
     def _build():
-        if name == "robinhood":
-            return _get_robinhood()
-        elif name == "alpaca":
-            return _get_alpaca()
-        elif name == "auto":
-            # Resolve to Robinhood (real money). We intentionally do NOT silently
-            # fall back to Alpaca paper: a quiet RH->paper fallback meant real-intent
-            # trades were being routed into the paper account on any RH hiccup,
-            # producing phantom positions (e.g. the ORCL incident, 2026-06-03).
-            # Fail LOUD instead. To trade paper, set BROKER=alpaca explicitly.
+        if name in ("robinhood", "auto"):
+            # Robinhood is the only supported broker (real-money execution).
+            # 'auto' is kept as an alias for backward compatibility and resolves
+            # straight to Robinhood. We fail LOUD if it can't init rather than
+            # silently routing anywhere else.
             token_path = Path(__file__).parent / "robinhood-mcp" / "token.json"
             if not token_path.exists():
                 raise RuntimeError(
-                    "BROKER=auto resolved to Robinhood but robinhood-mcp/token.json "
-                    "is missing. Refusing to silently fall back to Alpaca paper. "
-                    "Re-auth Robinhood, or set BROKER=alpaca to paper-trade on purpose."
+                    "Robinhood broker selected but robinhood-mcp/token.json is "
+                    "missing. Re-auth Robinhood before running the pipeline."
                 )
-            try:
-                return _get_robinhood()
-            except Exception as e:
-                raise RuntimeError(
-                    f"BROKER=auto: Robinhood broker failed to initialize ({e}). "
-                    "Refusing to silently fall back to Alpaca paper. "
-                    "Set BROKER=alpaca to paper-trade on purpose."
-                )
+            return _get_robinhood()
         else:
-            raise ValueError(f"Unknown broker: {name}. Use 'robinhood', 'alpaca', or 'auto'.")
+            raise ValueError(
+                f"Unknown broker: {name}. Only 'robinhood' (or 'auto') is supported."
+            )
 
     if fresh:
         broker = _build()
@@ -96,8 +83,3 @@ def get_broker(broker_name: str = None, *, fresh: bool = False):
 def _get_robinhood():
     from robinhood_broker import RobinhoodBroker
     return RobinhoodBroker()
-
-
-def _get_alpaca():
-    from broker import AlpacaBroker
-    return AlpacaBroker()

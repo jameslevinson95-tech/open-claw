@@ -327,6 +327,145 @@ class ExecutionEngine:
             logger.error(f"Lock timeout during atomic liquidation for {ticker}")
             return {"ticker": ticker, "action": "LIQUIDATION_FAILED", "reason": "lock_timeout"}
 
+    # ── Partial Scale-Out (Agent 5 TRIM) ────────────────────────────
+
+    def atomic_trim(self, ticker: str, trim_pct: float, new_stop: float = None,
+                    reason: str = "Agent5_TRIM") -> dict:
+        """
+        Partial scale-out for the LIVE (Robinhood) account.
+
+        Robinhood resting stop/TP legs encumber the shares they cover. A naive
+        partial sell will either reject (encumbered) or oversell. So we mirror
+        atomic_liquidate's discipline for a TRANCHE:
+
+          1. Cancel ALL resting sell orders for this ticker (stop + any TP leg),
+             which were sized to the OLD full qty.
+          2. Wait for the clearinghouse to release the encumbered shares.
+          3. Market-sell exactly the tranche (always leave >= 1 share runner).
+          4. Re-arm a fresh protective stop on the REMAINDER, and update the
+             ledger so the daemon stays in sync (doesn't double-place a stop).
+
+        trim_pct is a fraction of CURRENT holdings (Agent 5 already accounts for
+        tranches sold on prior days via persistent scaled_fraction state).
+        """
+        try:
+            lock = FileLock(LOCK_PATH, timeout=15)
+            with lock:
+                logger.warning(f"✂️ ATOMIC TRIM: {ticker} ({reason}) trim_pct={trim_pct}")
+
+                # 0. Size the tranche off CURRENT settled holdings.
+                positions = self.broker.get_positions()
+                pos = next((p for p in positions if p["ticker"] == ticker), None)
+                if not pos or float(pos.get("shares", 0)) <= 0:
+                    logger.info(f"  No inventory for {ticker} — nothing to trim")
+                    return {"ticker": ticker, "action": "TRIM", "status": "no_position"}
+
+                cur_shares = int(float(pos["shares"]))
+                if cur_shares < 2:
+                    logger.info(f"  {ticker} only {cur_shares} share(s) — too small to trim")
+                    return {"ticker": ticker, "action": "TRIM", "status": "too_small_to_trim"}
+
+                frac = (trim_pct / 100.0) if trim_pct and trim_pct > 1 else (trim_pct or 0.33)
+                trim_qty = max(1, int(cur_shares * frac))
+                trim_qty = min(trim_qty, cur_shares - 1)  # always leave a runner
+                remaining = cur_shares - trim_qty
+
+                # 1. Cancel resting sell legs (sized to old full qty).
+                all_orders = self.broker.get_orders_today()
+                open_sells = [
+                    o for o in all_orders
+                    if o.get("ticker") == ticker
+                    and str(o.get("side", "")).lower() == "sell"
+                    and o.get("status", "").lower() in ("open", "partially_filled", "queued", "confirmed")
+                ]
+                for o in open_sells:
+                    oid = str(o.get("id") or o.get("order_id"))
+                    try:
+                        self.broker.cancel_order(oid)
+                        logger.info(f"  Cancelled resting sell leg {oid} for {ticker}")
+                    except Exception as e:
+                        logger.error(f"  Cancel failed for {oid}: {e}")
+
+                # 2. Wait for clearinghouse to release encumbered shares (max 10s).
+                if open_sells:
+                    timeout = time.time() + 10
+                    while time.time() < timeout:
+                        remaining_open = [
+                            o for o in self.broker.get_orders_today()
+                            if o.get("ticker") == ticker
+                            and str(o.get("side", "")).lower() == "sell"
+                            and o.get("status", "").lower() in ("open", "partially_filled", "queued", "confirmed")
+                        ]
+                        if not remaining_open:
+                            logger.info(f"  Clearinghouse released encumbered shares for {ticker}")
+                            break
+                        time.sleep(1.5)
+                    else:
+                        logger.error(f"  Timeout waiting for {ticker} sell-leg cancels to clear. "
+                                     "Tranche sell may fail due to encumbered shares.")
+
+                # 3. Market-sell the tranche.
+                res = self.broker.place_order(
+                    ticker=ticker, side="sell", order_type="market",
+                    quantity=str(trim_qty),
+                )
+                sell_id = res.get("order_id") or res.get("id")
+                logger.info(f"  Market SELL tranche {trim_qty} {ticker} routed: {sell_id}")
+                result = {
+                    "ticker": ticker, "action": "TRIM", "status": "submitted",
+                    "trim_qty": trim_qty, "remaining": remaining, "sell_order_id": sell_id,
+                }
+
+                # 4. Re-arm a protective stop on the remainder + sync the ledger.
+                if remaining > 0 and new_stop and new_stop > 0:
+                    try:
+                        # Prefer the broker's place_stop helper (fractional-safe,
+                        # uses stop_market). Fall back to place_order if absent.
+                        if hasattr(self.broker, "place_stop"):
+                            sres = self.broker.place_stop(ticker, remaining, round(new_stop, 2))
+                        else:
+                            sres = self.broker.place_order(
+                                ticker=ticker, side="sell", order_type="stop",
+                                quantity=str(remaining),
+                                stop_price=str(round(new_stop, 2)),
+                                time_in_force="gtc",
+                            )
+                        new_stop_id = sres.get("order_id") or sres.get("id")
+                        if new_stop_id:
+                            result["restop_order_id"] = new_stop_id
+                            result["restop_price"] = round(new_stop, 2)
+                            logger.info(f"  Re-armed stop for {ticker}: {remaining} sh @ ${round(new_stop,2)} (id={new_stop_id})")
+                        else:
+                            result["restop_error"] = "no order_id"
+                            new_stop_id = None
+                    except Exception as e:
+                        new_stop_id = None
+                        result["restop_error"] = str(e)
+                        logger.error(f"  ⚠️ Failed to re-arm stop for {ticker}: {e}")
+
+                    # Keep the ledger consistent so the daemon doesn't fight us:
+                    # update filled_shares to the remainder and point at the new stop
+                    # (or NULL it so the daemon re-places if our re-arm failed).
+                    with sqlite3.connect(DB_PATH, timeout=20.0) as conn:
+                        conn.execute(
+                            """UPDATE active_trades
+                               SET filled_shares = ?, target_stop_price = ?,
+                                   stop_order_id = ?, stop_status = ?, last_updated = ?
+                               WHERE ticker = ? AND closed_at IS NULL""",
+                            (remaining, round(new_stop, 2), new_stop_id,
+                             "open" if new_stop_id else None,
+                             datetime.now().isoformat(), ticker),
+                        )
+                        conn.commit()
+
+                self._log_event("", ticker, "ATOMIC_TRIM",
+                                f"{reason} sold={trim_qty} remaining={remaining} new_stop={new_stop}")
+                return result
+
+        except Timeout:
+            logger.error(f"Lock timeout during atomic trim for {ticker}")
+            return {"ticker": ticker, "action": "TRIM", "status": "lock_timeout"}
+
     # ── Update Stop Price (for trailing / tightening) ────────────────────
 
     def update_stop(self, ticker: str, new_stop_price: float, reason: str = "manual"):

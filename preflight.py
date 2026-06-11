@@ -22,7 +22,7 @@ import yfinance as yf
 
 from config import SCREENER_MIN_MARKET_CAP, SCREENER_MIN_PRICE
 
-# Unified market data — Schwab primary, Yahoo Finance fallback (replaces Alpaca)
+# Unified market data — Schwab primary, Yahoo Finance fallback
 try:
     import market_data as mdata
     MARKET_DATA_AVAILABLE = True
@@ -30,9 +30,6 @@ try:
 except Exception as e:
     MARKET_DATA_AVAILABLE = False
     print(f"[Pre-Flight] Unified Market Data: UNAVAILABLE ({e}) — using yfinance directly")
-
-# Legacy alias for backward compat
-ALPACA_AVAILABLE = MARKET_DATA_AVAILABLE
 
 # Massive (Polygon-compatible) — technical indicators (SMA, RSI, MACD)
 try:
@@ -366,23 +363,59 @@ def fetch_dix() -> dict:
     """
     import csv
     import io
+    import time
     import requests
 
     URL = "https://squeezemetrics.com/monitor/static/DIX.csv"
-    try:
-        resp = requests.get(
-            URL,
-            timeout=10,
-            headers={"User-Agent": "open-claw/1.0 (research)"},
-        )
-        resp.raise_for_status()
-    except requests.HTTPError as e:
-        return {"error": f"DIX HTTP {e.response.status_code} from squeezemetrics"}
-    except requests.RequestException as e:
-        return {"error": f"DIX fetch failed: {e}"}
+    CACHE_PATH = f"{OUTPUT_DIR}/dix_cache.csv"
+    MAX_RETRIES = 3
+
+    # --- Fetch with retry + backoff; cache last-good CSV on success ---
+    # squeezemetrics' free CSV intermittently times out / rate-limits (~1 in 3
+    # morning fetches whiffed historically -> "67% available"). Retry first,
+    # then fall back to the last-good cached CSV so we use yesterday's value
+    # instead of returning empty.
+    csv_text = None
+    last_err = None
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            resp = requests.get(
+                URL,
+                timeout=15,
+                headers={"User-Agent": "open-claw/1.0 (research)"},
+            )
+            resp.raise_for_status()
+            csv_text = resp.text
+            # Cache the raw last-good CSV for future fallback
+            try:
+                with open(CACHE_PATH, "w") as cf:
+                    cf.write(csv_text)
+            except Exception:
+                pass  # cache write is best-effort
+            break
+        except requests.HTTPError as e:
+            last_err = f"DIX HTTP {e.response.status_code} from squeezemetrics"
+        except requests.RequestException as e:
+            last_err = f"DIX fetch failed: {e}"
+        if attempt < MAX_RETRIES:
+            time.sleep(2 * attempt)  # 2s, 4s backoff
+
+    # All live attempts failed -> try last-good cache
+    used_cache = False
+    if csv_text is None:
+        if os.path.exists(CACHE_PATH):
+            try:
+                with open(CACHE_PATH) as cf:
+                    csv_text = cf.read()
+                used_cache = True
+                print(f"[Pre-Flight] \u26a0\ufe0f DIX live fetch failed ({last_err}) \u2014 using last-good cached CSV")
+            except Exception as e:
+                return {"error": f"{last_err}; cache read also failed: {e}"}
+        else:
+            return {"error": f"{last_err}; no cache available"}
 
     try:
-        reader = csv.DictReader(io.StringIO(resp.text))
+        reader = csv.DictReader(io.StringIO(csv_text))
         # Normalize column keys to lowercase
         rows = [{k.lower(): v for k, v in r.items()} for r in reader]
     except Exception as e:
@@ -461,7 +494,9 @@ def fetch_dix() -> dict:
     out = {
         "current": round(latest, 2),
         "date": date_str,
-        "source": "squeezemetrics.com/monitor/static/DIX.csv",
+        "source": "squeezemetrics.com/monitor/static/DIX.csv"
+                  + (" (cached last-good)" if used_cache else ""),
+        "from_cache": used_cache,
         "interpretation": interpretation,
     }
     if gex_data:
@@ -1018,7 +1053,7 @@ def fetch_fresh_sentiment_fallback() -> dict:
     Uses CNN Fear & Greed API + yfinance for the same indicators Assembly provides.
     """
     import requests
-    result = {"timestamp": datetime.now().isoformat(), "source": "public_api_fallback"}
+    result = {"timestamp": datetime.now().isoformat(), "source": "public_market_data"}
 
     # 2. Sub-components from yfinance
     components = {}
@@ -1075,20 +1110,56 @@ def fetch_fresh_sentiment_fallback() -> dict:
     except Exception as e:
         print(f"[Pre-Flight] Component fallback fetch error: {e}")
 
+    # Compute synthetic composite from available components.
+    # GUARD: require a minimum number of components so a single stale/empty
+    # yfinance pull can't produce a confidently-wrong composite from 1 value.
+    MIN_COMPONENTS = 3  # of the 4 score components (excl. vix_value)
     result["components"] = components
-
-    # Compute synthetic composite from available components
     if components:
         scores = [v for k, v in components.items() if k != "vix_value" and isinstance(v, (int, float))]
-        if scores:
+        if len(scores) >= MIN_COMPONENTS:
             composite = round(sum(scores) / len(scores))
             result["composite_score"] = composite
+            result["component_count"] = len(scores)
             if composite >= 75: result["composite_label"] = "Extreme Greed"
             elif composite >= 55: result["composite_label"] = "Greed"
             elif composite >= 45: result["composite_label"] = "Neutral"
             elif composite >= 25: result["composite_label"] = "Fear"
             else: result["composite_label"] = "Extreme Fear"
             print(f"[Pre-Flight] Synthetic composite: {composite} ({result['composite_label']}) from {len(scores)} components")
+        else:
+            print(f"[Pre-Flight] \u26a0\ufe0f Only {len(scores)}/{MIN_COMPONENTS}+ sentiment components fetched — composite suppressed (insufficient data)")
+
+    # --- Last-good cache + freshness fallback ---
+    # If this fetch didn't produce a usable composite (yfinance stale/down),
+    # fall back to the last-good cached sentiment rather than emitting a
+    # partial/garbage result. Cache successful fetches for next time.
+    SENT_CACHE = f"{OUTPUT_DIR}/sentiment_cache.json"
+    if result.get("composite_score") is not None:
+        try:
+            with open(SENT_CACHE, "w") as cf:
+                json.dump(result, cf, indent=2)
+        except Exception:
+            pass  # best-effort
+    else:
+        # Live fetch insufficient -> try cache
+        if os.path.exists(SENT_CACHE):
+            try:
+                with open(SENT_CACHE) as cf:
+                    cached = json.load(cf)
+                if cached.get("composite_score") is not None:
+                    cached_age = "unknown"
+                    try:
+                        ct = datetime.fromisoformat(cached.get("timestamp", "").split("+")[0])
+                        cached_age = f"{(datetime.now() - ct).total_seconds()/3600:.1f}h"
+                    except Exception:
+                        pass
+                    cached["source"] = "public_market_data (cached last-good)"
+                    cached["from_cache"] = True
+                    print(f"[Pre-Flight] \u26a0\ufe0f Live sentiment insufficient — using last-good cache (age {cached_age})")
+                    return cached
+            except Exception as e:
+                print(f"[Pre-Flight] Sentiment cache read failed: {e}")
 
     return result
 
@@ -1148,37 +1219,28 @@ def run_preflight(themes: Optional[List[str]] = None) -> dict:
     #   d) Then runs Agent 3 with that data
     # X research is MANDATORY — Agent 3 will not bypass.
 
-    # 3. Assembly Private data (sentiment + macro overlay)
-    #    If stale or missing, auto-fetch fresh indicators from public APIs
-    assembly = {}
+    # 3. Market sentiment data (composite + sub-components)
+    #    Sourced live from public market data (CNN Fear&Greed + yfinance proxies)
+    #    every run. The legacy Assembly browser-scrape was retired — it required
+    #    a manual login/snapshot that never ran in the automated pipeline, so it
+    #    always went stale. The live public path is free, deterministic, and
+    #    needs no browser. macro overlay is already covered by fetch_macro_data().
     assembly_path = f"{OUTPUT_DIR}/assembly_data.json"
-    stale = is_assembly_stale(assembly_path)
-
-    if not stale:
-        try:
-            with open(assembly_path) as f:
-                assembly = json.load(f)
-            print(f"[Pre-Flight] Assembly data FRESH — loaded (sentiment: {assembly.get('sentiment', {}).get('composite_score', '?')})")
-        except Exception as e:
-            print(f"[Pre-Flight] Assembly data load failed: {e}")
-            stale = True
-
-    if stale:
-        print("[Pre-Flight] Assembly data STALE or missing — fetching fresh indicators from public APIs...")
-        fresh_sentiment = fetch_fresh_sentiment_fallback()
-        assembly = {
-            "timestamp": datetime.now().isoformat(),
-            "source": "public_api_fallback",
-            "sentiment": fresh_sentiment,
-            "macro": {},  # macro already covered by fetch_macro_data() above
-        }
-        # Save the fresh fallback so agents can reference it
-        try:
-            with open(assembly_path, "w") as f:
-                json.dump(assembly, f, indent=2)
-            print(f"[Pre-Flight] Fresh fallback data saved (sentiment: {fresh_sentiment.get('composite_score', '?')})")
-        except Exception as e:
-            print(f"[Pre-Flight] Could not save fallback data: {e}")
+    print("[Pre-Flight] Fetching live market sentiment from public market data...")
+    fresh_sentiment = fetch_fresh_sentiment_fallback()
+    fresh_sentiment["source"] = "public_market_data"
+    assembly = {
+        "timestamp": datetime.now().isoformat(),
+        "source": "public_market_data",
+        "sentiment": fresh_sentiment,
+        "macro": {},  # macro already covered by fetch_macro_data() above
+    }
+    try:
+        with open(assembly_path, "w") as f:
+            json.dump(assembly, f, indent=2)
+        print(f"[Pre-Flight] Market sentiment saved (composite: {fresh_sentiment.get('composite_score', '?')} / {fresh_sentiment.get('composite_label', '?')})")
+    except Exception as e:
+        print(f"[Pre-Flight] Could not save sentiment data: {e}")
 
     # 4a. Filter out tickers with recent stock splits
     from safeguards import filter_corporate_actions

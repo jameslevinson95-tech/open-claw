@@ -555,7 +555,7 @@ def run_agent2(directive: dict = None, screener_universe: list = None) -> dict:
     print("[Agent 2] Pre-fetching fundamental data for entire screener universe...")
     fundamental_data = prefetch_fundamental_data(screener_universe)
 
-    # Fetch current Alpaca positions to avoid portfolio blindness
+    # Fetch current broker positions to avoid portfolio blindness
     try:
         from broker_factory import get_broker
         broker = get_broker()

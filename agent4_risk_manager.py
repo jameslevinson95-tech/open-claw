@@ -212,7 +212,7 @@ def calculate_portfolio_heat() -> dict:
         positions = broker.get_positions()
         account = broker.get_account_summary()
     except Exception as e:
-        print(f"[Heat] ERROR connecting to Alpaca: {e}")
+        print(f"[Heat] ERROR connecting to broker: {e}")
         return {
             "total_heat_dollars": 0.0,
             "heat_pct_of_equity": 0.0,
@@ -384,7 +384,7 @@ def run_agent4b(
         existing_exposure: dollar value of already-open positions carried from prior sessions.
         remaining_heat_budget: max additional risk dollars allowed before portfolio heat cap is hit.
                                None means no heat constraint (backward compat).
-        account_value: live account equity. If None, fetches from Alpaca (fallback to ACCOUNT_SIZE).
+        account_value: live account equity. If None, fetches from broker (fallback to ACCOUNT_SIZE).
     """
     regime_raw = directive.get("regime", "")
     vol_raw = directive.get("vol_regime", "")
