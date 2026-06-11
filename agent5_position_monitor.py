@@ -179,16 +179,17 @@ def fetch_breaking_news(tickers: list) -> dict:
 
 def load_open_positions() -> list:
     """
-    Load open positions from Alpaca (source of truth).
-    Falls back to agent4_orders.json if Alpaca is unreachable.
+    Load open positions from Robinhood (source of truth — the real-money book).
+    Falls back to agent4_orders.json if Robinhood is unreachable.
     Enriches with stop_loss from agent4_orders.json when available.
     """
-    # Primary: Read from Alpaca (source of truth for the recap — holds the
-    # full book). Robinhood is the real-money execution account and only
-    # mirrors a subset, so forcing Alpaca here keeps the daily recap complete.
+    # Primary: Read from Robinhood (the real-money execution account, which now
+    # holds the full book). Previously this read from Alpaca paper as "source of
+    # truth", but that paper account does not reflect actual holdings and caused
+    # the recap to misreport positions.
     try:
         from broker_factory import get_broker
-        broker = get_broker("alpaca")
+        broker = get_broker("robinhood")
         broker_positions = broker.get_positions()
         if broker_positions:
             # Enrich with stop/theme data from agent4 orders if available
@@ -223,10 +224,10 @@ def load_open_positions() -> list:
                     "unrealized_plpc": p.get("unrealized_plpc", 0),
                     "market_value": p.get("market_value", 0),
                 })
-            print(f"[Agent 5] Loaded {len(positions)} positions from Alpaca")
+            print(f"[Agent 5] Loaded {len(positions)} positions from Robinhood")
             return positions
     except Exception as e:
-        print(f"[Agent 5] Alpaca read failed, falling back to orders file: {e}")
+        print(f"[Agent 5] Robinhood read failed, falling back to orders file: {e}")
 
     # Fallback: Read from agent4_orders.json
     orders_path = "output/agent4_orders.json"

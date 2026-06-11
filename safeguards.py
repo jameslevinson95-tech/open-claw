@@ -27,50 +27,127 @@ COOLDOWN_TRADING_DAYS = 5  # Min trading days before re-entry after a loss
 # 1. MARKET CALENDAR CHECK — Holiday Trap Prevention
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+def _nyse_holidays(year: int) -> set:
+    """Compute NYSE full-day market holidays for a given year (observed dates).
+
+    Pure-Python US-market calendar so we don't depend on a broker API or an
+    external package. Covers the standard NYSE holiday schedule.
+    """
+    from datetime import date, timedelta
+
+    def observed(d: date) -> date:
+        # If holiday falls on Saturday -> observed Friday; Sunday -> Monday.
+        if d.weekday() == 5:
+            return d - timedelta(days=1)
+        if d.weekday() == 6:
+            return d + timedelta(days=1)
+        return d
+
+    def nth_weekday(year, month, weekday, n):
+        # n-th given weekday of month (weekday: Mon=0..Sun=6).
+        d = date(year, month, 1)
+        offset = (weekday - d.weekday()) % 7
+        return d + timedelta(days=offset + 7 * (n - 1))
+
+    def last_weekday(year, month, weekday):
+        # Last given weekday of the month.
+        if month == 12:
+            nxt = date(year + 1, 1, 1)
+        else:
+            nxt = date(year, month + 1, 1)
+        d = nxt - timedelta(days=1)
+        while d.weekday() != weekday:
+            d -= timedelta(days=1)
+        return d
+
+    def easter(year):
+        # Anonymous Gregorian algorithm (Meeus/Jones/Butcher).
+        a = year % 19
+        b = year // 100
+        c = year % 100
+        d = b // 4
+        e = b % 4
+        f = (b + 8) // 25
+        g = (b - f + 1) // 3
+        h = (19 * a + b - d - g + 15) % 30
+        i = c // 4
+        k = c % 4
+        l = (32 + 2 * e + 2 * i - h - k) % 7
+        m = (a + 11 * h + 22 * l) // 451
+        month = (h + l - 7 * m + 114) // 31
+        day = ((h + l - 7 * m + 114) % 31) + 1
+        return date(year, month, day)
+
+    hol = set()
+    hol.add(observed(date(year, 1, 1)))                 # New Year's Day
+    hol.add(nth_weekday(year, 1, 0, 3))                 # MLK Day (3rd Mon Jan)
+    hol.add(nth_weekday(year, 2, 0, 3))                 # Presidents' Day (3rd Mon Feb)
+    hol.add(easter(year) - timedelta(days=2))           # Good Friday
+    hol.add(last_weekday(year, 5, 0))                   # Memorial Day (last Mon May)
+    hol.add(observed(date(year, 6, 19)))               # Juneteenth
+    hol.add(observed(date(year, 7, 4)))                # Independence Day
+    hol.add(nth_weekday(year, 9, 0, 1))                # Labor Day (1st Mon Sep)
+    hol.add(nth_weekday(year, 11, 3, 4))               # Thanksgiving (4th Thu Nov)
+    hol.add(observed(date(year, 12, 25)))              # Christmas
+    return hol
+
+
 def is_market_open_today() -> dict:
     """
-    Check if the US stock market is open today via Alpaca's Clock API.
-    Returns dict with is_open, next_open, next_close, and should_run.
-    
-    should_run = True if market is open OR will open today.
+    Check if the US stock market (NYSE) is open today using a self-contained
+    NYSE calendar (no broker API / external package required).
+    Returns dict with is_open, should_run, and reason.
+
+    should_run = True if today is a regular NYSE trading day.
+    Note: this is a date-level (calendar) check, not an intraday clock; the
+    pipeline runs are scheduled within market hours, so a day-level gate is
+    sufficient to block weekends/holidays.
     """
     try:
-        from alpaca.trading.client import TradingClient
-        
-        api_key = os.environ.get("ALPACA_API_KEY", "")
-        secret_key = os.environ.get("ALPACA_SECRET_KEY", "")
-        
-        if not api_key or not secret_key:
-            print("[Safeguard] ⚠️ No Alpaca keys — cannot check market calendar. Proceeding anyway.")
-            return {"is_open": None, "should_run": False, "reason": "no_alpaca_keys_fail_closed"}
-        
-        client = TradingClient(api_key, secret_key, paper=True)
-        clock = client.get_clock()
-        
-        today = datetime.now().date()
-        next_open_date = clock.next_open.date() if clock.next_open else None
-        
-        result = {
-            "is_open": clock.is_open,
-            "next_open": clock.next_open.isoformat() if clock.next_open else None,
-            "next_close": clock.next_close.isoformat() if clock.next_close else None,
-            "timestamp": datetime.now().isoformat(),
+        from datetime import time as _time
+        now = datetime.now()
+        today = now.date()
+
+        # Weekend?
+        if today.weekday() >= 5:  # 5 = Sat, 6 = Sun
+            return {
+                "is_open": False,
+                "should_run": False,
+                "reason": "weekend",
+                "timestamp": now.isoformat(),
+            }
+
+        # Holiday?
+        if today in _nyse_holidays(today.year):
+            return {
+                "is_open": False,
+                "should_run": False,
+                "reason": "market_holiday",
+                "timestamp": now.isoformat(),
+            }
+
+        # Regular trading day. Intraday open = 9:30–16:00 ET (best-effort; the
+        # host is configured to America/New_York for the trading pipeline).
+        market_open = _time(9, 30)
+        market_close = _time(16, 0)
+        is_open_now = market_open <= now.time() <= market_close
+
+        return {
+            "is_open": is_open_now,
+            "should_run": True,
+            "reason": "market_is_open" if is_open_now else "trading_day_outside_hours",
+            "timestamp": now.isoformat(),
         }
-        
-        if clock.is_open:
-            result["should_run"] = True
-            result["reason"] = "market_is_open"
-        elif next_open_date == today:
-            result["should_run"] = True
-            result["reason"] = "market_opens_today"
-        else:
-            result["should_run"] = False
-            result["reason"] = f"market_closed_today_next_open_{next_open_date}"
-        
-        return result
     except Exception as e:
-        print(f"[Safeguard] ⚠️ Clock API check failed: {e}. Proceeding anyway.")
-        return {"is_open": None, "should_run": False, "reason": f"clock_check_failed_fail_closed: {e}"}
+        # Fail OPEN on a regular weekday so a calendar bug never silently blocks
+        # the whole pipeline; weekends/holidays are handled above explicitly.
+        print(f"[Safeguard] ⚠️ Market calendar check errored: {e}. Proceeding (fail-open on weekday).")
+        wd = datetime.now().weekday()
+        return {
+            "is_open": None,
+            "should_run": wd < 5,
+            "reason": f"calendar_check_failed_fail_open_weekday: {e}",
+        }
 
 
 class MarketClosedError(Exception):

@@ -13,14 +13,7 @@ load_dotenv(Path(__file__).parent / ".env")
 # + ~$500 existing cash). Prior runs were test runs sized to a $500 sandbox.
 # All risk parameters below are calibrated to the full $10K account.
 ACCOUNT_SIZE = 10_000  # $10K Robinhood agentic account (real run)
-ALPACA_PAPER_BUDGET = 10_000  # $10K paper trading budget (Alpaca mirror)
 DRY_POWDER_FLOOR = 0.20  # Never deploy beyond 80% ($8,000 max deployed)
-
-# Alpaca
-ALPACA_USERNAME = os.environ.get("ALPACA_USERNAME", "")
-ALPACA_API_KEY = os.environ.get("ALPACA_API_KEY", "")
-ALPACA_SECRET_KEY = os.environ.get("ALPACA_SECRET_KEY", "")
-ALPACA_BASE_URL = "https://paper-api.alpaca.markets"  # Paper trading first
 
 # LLM Keys
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")

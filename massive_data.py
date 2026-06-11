@@ -106,7 +106,7 @@ def fetch_prior_close_batch(tickers: list) -> dict:
     """
     Fetch previous day's close for multiple tickers.
     Note: free tier is 5 calls/min, so this is rate-limited.
-    For large batches, prefer Alpaca. Use Massive for enrichment.
+    For large batches, prefer the unified market_data feed. Use Massive for enrichment.
     """
     results = {}
     for ticker in tickers:

@@ -22,7 +22,7 @@ import yfinance as yf
 
 from config import SCREENER_MIN_MARKET_CAP, SCREENER_MIN_PRICE
 
-# Unified market data — Schwab primary, Yahoo Finance fallback (replaces Alpaca)
+# Unified market data — Schwab primary, Yahoo Finance fallback
 try:
     import market_data as mdata
     MARKET_DATA_AVAILABLE = True
@@ -30,9 +30,6 @@ try:
 except Exception as e:
     MARKET_DATA_AVAILABLE = False
     print(f"[Pre-Flight] Unified Market Data: UNAVAILABLE ({e}) — using yfinance directly")
-
-# Legacy alias for backward compat
-ALPACA_AVAILABLE = MARKET_DATA_AVAILABLE
 
 # Massive (Polygon-compatible) — technical indicators (SMA, RSI, MACD)
 try:

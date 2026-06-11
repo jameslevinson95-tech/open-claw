@@ -324,7 +324,7 @@ def run_daemon():
         broker = get_broker()
         positions = broker.get_positions()
     except Exception as e:
-        print(f"[Daemon] ERROR: Could not connect to Alpaca — {e}")
+        print(f"[Daemon] ERROR: Could not connect to broker — {e}")
         return
 
     if not positions:

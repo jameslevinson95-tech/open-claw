@@ -134,7 +134,7 @@ def audit_data_sources():
     # ── Source registry: what we use, what it costs, what it does ──
     sources = {
         "x_twitter": {"name": "X/Twitter Smart Money", "icon": "🐦", "cost": "Free (x_search via OCPlatform)", "role": "Smart money sentiment, institutional mentions"},
-        "alpaca": {"name": "Alpaca Market Data", "icon": "🦙", "cost": "Free (IEX feed)", "role": "Primary price quotes, prior close, historical bars"},
+        "market_data": {"name": "Unified Market Data (Schwab + Yahoo)", "icon": "📈", "cost": "Free (with brokerage acct)", "role": "Primary price quotes, prior close, historical bars"},
         "massive_technicals": {"name": "Massive API (Technicals)", "icon": "📈", "cost": "Free tier (5 calls/min)", "role": "Server-side RSI, MACD, SMA, EMA"},
         "massive_macro": {"name": "Massive API (Macro/Economy)", "icon": "🏛️", "cost": "Free tier", "role": "Treasury yields, inflation, labor market"},
         "massive_fundamentals": {"name": "Massive API (Fundamentals)", "icon": "📊", "cost": "Free tier", "role": "Financials, dividends, ticker details"},
@@ -153,8 +153,8 @@ def audit_data_sources():
 
     mentions_list = []
     missing_data_flags = []
-    alpaca_success = 0
-    alpaca_fail = 0
+    mdata_success = 0
+    mdata_fail = 0
     massive_tech_success = 0
     massive_tech_fail = 0
     finviz_success = 0
@@ -263,21 +263,21 @@ def audit_data_sources():
         x_grade, x_note = "⚪", "No data yet"
     report.append(f"  🐦 *X/Twitter Smart Money:* {x_grade} — _{x_note}_ 💰 Free")
 
-    # Alpaca
-    alpaca_file = os.path.join(OUTPUT_DIR, "screener_universe.json")
-    if os.path.exists(alpaca_file):
+    # Unified Market Data (Schwab + Yahoo)
+    mdata_file = os.path.join(OUTPUT_DIR, "screener_universe.json")
+    if os.path.exists(mdata_file):
         try:
-            with open(alpaca_file) as f:
+            with open(mdata_file) as f:
                 su = json.load(f)
-            alpaca_tickers = [t for t in su if isinstance(t, dict) and t.get("source") not in ("hardcoded_fallback",)]
-            if alpaca_tickers:
-                report.append(f"  🦙 *Alpaca:* 🟢 — _Primary source for {len(alpaca_tickers)} tickers_ 💰 Free")
+            mdata_tickers = [t for t in su if isinstance(t, dict) and t.get("source") not in ("hardcoded_fallback",)]
+            if mdata_tickers:
+                report.append(f"  📈 *Market Data (Schwab+Yahoo):* 🟢 — _Primary source for {len(mdata_tickers)} tickers_ 💰 Free")
             else:
-                report.append("  🦙 *Alpaca:* ⚪ — _Not primary in latest run_ 💰 Free")
+                report.append("  📈 *Market Data (Schwab+Yahoo):* ⚪ — _Not primary in latest run_ 💰 Free")
         except Exception:
-            report.append("  🦙 *Alpaca:* ⚪ — _Unable to assess_ 💰 Free")
+            report.append("  📈 *Market Data (Schwab+Yahoo):* ⚪ — _Unable to assess_ 💰 Free")
     else:
-        report.append("  🦙 *Alpaca:* ⚪ — _No screener data to assess_ 💰 Free")
+        report.append("  📈 *Market Data (Schwab+Yahoo):* ⚪ — _No screener data to assess_ 💰 Free")
 
     # Massive Technicals
     if massive_tech_success + massive_tech_fail > 0:
@@ -338,7 +338,7 @@ def audit_data_sources():
     report.append("  📰 *Yahoo Finance:* ⚪ — _Fallback source for prices, VIX, sector breadth_ 💰 Free")
 
     # Schwab (incoming)
-    report.append("  🏦 *Schwab API:* ⚪ — _Integration in progress — will replace Alpaca for real-time quotes + trade execution_ 💰 Free")
+    report.append("  🏦 *Schwab API:* ⚪ — _Integration in progress — real-time quotes + trade execution_ 💰 Free")
 
     # Discord
     report.append("  💬 *Discord:* ⚪ — _Output only — signal-to-noise TBD_ 💰 Free")
@@ -346,7 +346,6 @@ def audit_data_sources():
     # ── Cost summary ──
     report.append("")
     report.append("  *💰 Total Monthly API Cost: $0* (all sources on free tiers)")
-    report.append("  _Recommendation: When Schwab is live, evaluate dropping Alpaca (redundant for quotes)._")
     report.append("  _Massive free tier (5 calls/min) sufficient for daily runs. Upgrade only if going intraday._")
 
     # ── Value assessment ──
