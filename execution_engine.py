@@ -609,16 +609,20 @@ class ExecutionEngine:
 
     @staticmethod
     def is_daemon_alive() -> bool:
-        """Check if the execution daemon is alive (hb_signal file < 60s old)."""
-        hb = Path("output/daemon_heartbeat.txt"); 
-        if not hb.exists():
+        """Alive if hb_signal < 60s old. Path-stable + tolerant of the atomic
+        rename window so it never spuriously reports the daemon dead."""
+        try:
+            mtime = HEARTBEAT_PATH.stat().st_mtime
+        except (FileNotFoundError, OSError):
             return False
-        age = time.time() - hb.stat().st_mtime
-        return age < 60
+        return (time.time() - mtime) < 60
 
     def _write_heartbeat(self):
-        """Write daemon hb_signal timestamp."""
-        HB_SIGNAL_PATH.write_text(datetime.now().isoformat())
+        """write hb_signal timestamp ATOMICALLY (temp + os.replace) so readers
+        never observe a momentarily truncated/absent file."""
+        tmp = HEARTBEAT_PATH.with_suffix(".tmp")
+        tmp.write_text(datetime.now().isoformat())
+        os.replace(tmp, HEARTBEAT_PATH)
 
     def run_reconciliation_loop(self):
         """
@@ -684,7 +688,25 @@ class ExecutionEngine:
 
                     if not b_order:
                         # Order not found — might be too old for today's orders
-                        logger.debug(f"  {ticker}: entry order {entry_id} not found in today's orders")
+                        # (e.g. positions reconciled into the ledger after the fact).
+                        # For an already-filled trade that carries a stop_order_id, we
+                        # still MONITOR the stop fill even though the original entry
+                        # order is outside the broker's recent-orders window.
+                        if (str(trade.get("entry_status", "")).lower() == "filled"
+                                and trade.get("stop_order_id")):
+                            stop_order = broker_orders.get(trade["stop_order_id"])
+                            if stop_order and stop_order.get("status", "").lower() in ("filled", "executed"):
+                                exit_price = float(stop_order.get("filled_avg_price", stop_order.get("average_price", trade["target_stop_price"])))
+                                logger.warning(f"  STOP filled for {ticker} (reconciled) at ${exit_price:.2f}. Closing ledger row.")
+                                with sqlite3.connect(DB_PATH, timeout=20.0) as conn:
+                                    conn.execute(
+                                        "UPDATE active_trades SET closed_at = ?, close_reason = ? WHERE trade_id = ?",
+                                        (datetime.now().isoformat(), f"NATIVE_STOP_FILLED@{exit_price:.2f}", trade["trade_id"]),
+                                    )
+                                    conn.commit()
+                                self._log_event(trade["trade_id"], ticker, "STOP_FILLED", f"exit=${exit_price:.2f} (reconciled)")
+                        else:
+                            logger.debug(f"  {ticker}: entry order {entry_id} not found in today's orders")
                         continue
 
                     status = b_order.get("status", "unknown").lower()
