@@ -133,7 +133,8 @@ def audit_data_sources():
 
     # ── Source registry: what we use, what it costs, what it does ──
     sources = {
-        "x_twitter": {"name": "X/Twitter Smart Money", "icon": "🐦", "cost": "Free (x_search via OCPlatform)", "role": "Smart money sentiment, institutional mentions"},
+        "x_twitter": {"name": "X/Twitter Smart Money", "icon": "🐦", "cost": "~$100/mo (X API v2 Basic tier, X_BEARER_TOKEN)", "role": "Smart money sentiment, institutional mentions"},
+        "gemini": {"name": "Gemini 3.1 Pro (Agent 2 Deep Research)", "icon": "💎", "cost": "~$0.05-0.15/run (token-based, Deep Research)", "role": "Fundamental screener — selects 1-3 candidates"},
         "market_data": {"name": "Unified Market Data (Schwab + Yahoo)", "icon": "📈", "cost": "Free (with brokerage acct)", "role": "Primary price quotes, prior close, historical bars"},
         "massive_technicals": {"name": "Massive API (Technicals)", "icon": "📈", "cost": "Free tier (5 calls/min)", "role": "Server-side RSI, MACD, SMA, EMA"},
         "massive_macro": {"name": "Massive API (Macro/Economy)", "icon": "🏛️", "cost": "Free tier", "role": "Treasury yields, inflation, labor market"},
@@ -261,7 +262,7 @@ def audit_data_sources():
         x_grade, x_note = "🔴", f"Low volume (Avg {avg_mentions:.1f}). Expand curated accounts."
     else:
         x_grade, x_note = "⚪", "No data yet"
-    report.append(f"  🐦 *X/Twitter Smart Money:* {x_grade} — _{x_note}_ 💰 Free")
+    report.append(f"  🐦 *X/Twitter Smart Money:* {x_grade} — _{x_note}_ 💰 ~$100/mo (X API v2 Basic)")
 
     # Unified Market Data (Schwab + Yahoo)
     mdata_file = os.path.join(OUTPUT_DIR, "screener_universe.json")
@@ -345,7 +346,8 @@ def audit_data_sources():
 
     # ── Cost summary ──
     report.append("")
-    report.append("  *💰 Total Monthly API Cost: $0* (all sources on free tiers)")
+    report.append("  *💰 Total Monthly API Cost: ~$100-105/mo*")
+    report.append("  _Breakdown: X API v2 Basic ~$100/mo (flat) + Gemini 3.1 Pro Agent 2 ~$1-4/mo (token-based, ~$0.05-0.15/run × ~21 trading days). All other sources free-tier._")
     report.append("  _Massive free tier (5 calls/min) sufficient for daily runs. Upgrade only if going intraday._")
 
     # ── Value assessment ──
