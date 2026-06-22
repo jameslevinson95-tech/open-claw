@@ -94,6 +94,43 @@ def _tiingo_quotes(tickers: list) -> dict:
     return out
 
 
+def _tiingo_history(ticker: str, days: int = 30) -> dict:
+    """Fetch daily OHLCV history from Tiingo's EOD endpoint.
+
+    Returns {"bars": [...], "count": n, "source": "tiingo"} or {} on failure.
+    Tiingo daily prices are split/dividend-adjusted via adjClose etc.; we use
+    the raw OHLCV (open/high/low/close/volume) to match the pipeline's bar
+    schema. Index symbols (^VIX) are not supported and return {}.
+    """
+    key = _tiingo_key()
+    if not key or not ticker or ticker.startswith("^"):
+        return {}
+    from datetime import datetime, timedelta
+    start = (datetime.now() - timedelta(days=int(days * 1.6) + 10)).strftime("%Y-%m-%d")
+    try:
+        url = (f"{_TIINGO_BASE}/tiingo/daily/{ticker}/prices"
+               f"?startDate={start}&token={key}")
+        req = urllib.request.Request(url, headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = _json.loads(resp.read().decode())
+        bars = []
+        for row in data:
+            d = row.get("date", "")[:10]
+            bars.append({
+                "date": d,
+                "open": round(float(row.get("open", 0)), 2),
+                "high": round(float(row.get("high", 0)), 2),
+                "low": round(float(row.get("low", 0)), 2),
+                "close": round(float(row.get("close", 0)), 2),
+                "volume": int(row.get("volume", 0)),
+            })
+        if bars:
+            return {"bars": bars, "count": len(bars), "source": "tiingo"}
+    except Exception as e:
+        print(f"[MarketData] Tiingo history failed for {ticker}: {e}")
+    return {}
+
+
 # ── Robinhood Quotes (secondary for real-time) ──────────────────────────
 
 def _robinhood_quotes(tickers: list) -> dict:
@@ -272,13 +309,23 @@ def fetch_historical_bars(tickers: list, days: int = 30, timeframe: str = "day")
     """
     results = {}
 
-    # Schwab only serves daily/intraday candles we care about for daily bars.
-    schwab_first = (timeframe == "day") and _check_schwab()
+    # ━━━ PRIMARY: Tiingo daily history (single vendor as of 2026-06-22) ━━━
+    if timeframe == "day" and _tiingo_key():
+        for ticker in tickers:
+            h = _tiingo_history(ticker, days=days)
+            if h.get("count", 0) > 0:
+                results[ticker] = h
+        if results:
+            print(f"[MarketData] Tiingo history: {len(results)}/{len(tickers)} (PRIMARY)")
+
+    # Schwab fallback only serves daily/intraday candles for tickers Tiingo missed.
+    schwab_targets = [t for t in tickers if t not in results]
+    schwab_first = (timeframe == "day") and schwab_targets and _check_schwab()
 
     if schwab_first:
         try:
             from schwab_data import fetch_schwab_history
-            for ticker in tickers:
+            for ticker in schwab_targets:
                 h = fetch_schwab_history(ticker, days=days, frequency_type="daily")
                 if h.get("count", 0) > 0:
                     results[ticker] = {
