@@ -111,11 +111,34 @@ def _save_portfolio_state(state: dict) -> None:
 
 def snapshot_prices(tickers: list) -> dict:
     """
-    Snapshot current market prices at 3:25 PM ET.
-    Captures the intraday tape for trailing stop evaluation.
+    Snapshot current market prices for trailing-stop evaluation.
+
+    PRIMARY: Tiingo (real-time IEX) — same source as the rest of the pipeline.
+    FALLBACK: Yahoo Finance (yfinance) only for tickers Tiingo can't return
+    (e.g. ^VIX, which isn't a Tiingo equity). This keeps the 30-min stop
+    reinforcement pricing off the reliable Tiingo feed instead of flaky Yahoo.
     """
     snapshot = {}
-    for ticker in tickers:
+
+    # ━━━ PRIMARY: Tiingo real-time quotes (batch, one call) ━━━
+    tiingo_tickers = [t for t in tickers if not t.startswith("^")]
+    if tiingo_tickers:
+        try:
+            from market_data import _tiingo_quotes
+            tq = _tiingo_quotes(tiingo_tickers)
+            for t, q in tq.items():
+                last = q.get("last", 0)
+                if last and last > 0:
+                    snapshot[t] = {
+                        "current_price": round(float(last), 2),
+                        "source": "tiingo",
+                    }
+        except Exception as e:
+            print(f"[Agent 5] Tiingo snapshot failed, will use Yahoo: {e}")
+
+    # ━━━ FALLBACK: Yahoo for anything Tiingo didn't cover (incl. ^VIX) ━━━
+    yahoo_targets = [t for t in tickers if t not in snapshot]
+    for ticker in yahoo_targets:
         try:
             stock = yf.Ticker(ticker)
             hist = stock.history(period="1d", interval="1m")
