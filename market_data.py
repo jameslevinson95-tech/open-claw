@@ -41,6 +41,59 @@ def _check_schwab():
     return _schwab_ok
 
 
+# ── Tiingo Quotes (PRIMARY for real-time as of 2026-06-22) ──────────
+import urllib.request
+import json as _json
+
+_TIINGO_BASE = "https://api.tiingo.com"
+
+
+def _tiingo_key() -> str:
+    return os.getenv("TIINGO_API_KEY", "").strip()
+
+
+def _tiingo_quotes(tickers: list) -> dict:
+    """Fetch real-time (IEX) quotes from Tiingo.
+
+    Returns {ticker: {bid, ask, last, mid, source}} matching the pipeline's
+    quote schema. Tiingo's IEX endpoint gives tngoLast (last trade), plus
+    bid/ask during market hours. Falls back to tngoLast/prevClose when the
+    book is closed. Returns {} on any failure so the caller cascades to the
+    next source.
+    """
+    key = _tiingo_key()
+    if not key or not tickers:
+        return {}
+    out = {}
+    try:
+        url = (f"{_TIINGO_BASE}/iex/?tickers={','.join(tickers)}"
+               f"&token={key}")
+        req = urllib.request.Request(url, headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = _json.loads(resp.read().decode())
+        for row in data:
+            t = row.get("ticker")
+            if not t:
+                continue
+            bid = row.get("bidPrice") or 0
+            ask = row.get("askPrice") or 0
+            # last-trade preference: live last → tngoLast → prevClose
+            last = row.get("last") or row.get("tngoLast") or row.get("prevClose") or 0
+            mid = (round((float(bid) + float(ask)) / 2, 2)
+                   if bid and ask else float(last or 0))
+            out[t] = {
+                "bid": float(bid) if bid else 0.0,
+                "ask": float(ask) if ask else 0.0,
+                "last": float(last) if last else 0.0,
+                "mid": mid,
+                "source": "tiingo",
+            }
+    except Exception as e:
+        print(f"[MarketData] Tiingo quotes failed: {e}")
+        return {}
+    return out
+
+
 # ── Robinhood Quotes (secondary for real-time) ──────────────────────────
 
 def _robinhood_quotes(tickers: list) -> dict:
@@ -135,15 +188,31 @@ def _fetch_prior_close_yfinance(tickers: list) -> dict:
 
 def fetch_latest_quotes(tickers: list) -> dict:
     """
-    Fetch real-time quotes. Primary: Schwab. Fallback: Robinhood MCP, then Yahoo.
+    Fetch real-time quotes.
+    Primary: Tiingo (real-time IEX). Fallback: Schwab, Robinhood MCP, Yahoo.
+
+    Tiingo became primary on 2026-06-22 because Schwab/Yahoo were unreliable.
     """
     results = {}
 
-    # Try Schwab
-    if _check_schwab():
+    # Try Tiingo first (real-time, reliable)
+    if _tiingo_key():
+        try:
+            tq = _tiingo_quotes(tickers)
+            for t, q in tq.items():
+                if q.get("last", 0) > 0:
+                    results[t] = q
+            if tq:
+                print(f"[MarketData] Tiingo: {len(results)}/{len(tickers)} quotes (PRIMARY)")
+        except Exception as e:
+            print(f"[MarketData] Tiingo quotes failed: {e}")
+
+    # Fill gaps with Schwab
+    schwab_targets = [t for t in tickers if t not in results]
+    if schwab_targets and _check_schwab():
         try:
             from schwab_data import fetch_schwab_quotes
-            quotes = fetch_schwab_quotes(tickers)
+            quotes = fetch_schwab_quotes(schwab_targets)
             for t, q in quotes.items():
                 if "error" not in q:
                     bid = q.get("bid", 0)
