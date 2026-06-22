@@ -605,7 +605,8 @@ def run_agent5_preflight() -> dict:
     return {"positions": positions, "snapshot": snapshot}
 
 
-def run_agent5(positions: list = None, snapshot: dict = None) -> dict:
+def run_agent5(positions: list = None, snapshot: dict = None,
+               mechanical_only: bool = False) -> dict:
     """
     Run Agent 5 at 3:30 PM: Python trailing stops FIRST, then Claude thesis review, then merge.
 
@@ -657,21 +658,24 @@ def run_agent5(positions: list = None, snapshot: dict = None) -> dict:
     print(f"[Agent 5] Step 2: Claude thesis review...")
 
     thesis_result = None
-    try:
-        thesis_result = call_thesis_monitor(positions_with_stops, breaking_news, vix_data)
-    except RuntimeError:
-        # No API key for the qualitative thesis review. DO NOT bail — the
-        # mechanical trailing stops are pure Python and MUST still be applied
-        # to the broker. Bailing here was the root cause of stale broker stops:
-        # the engine computed higher stops but never pushed them. Proceed with
-        # mechanical-only (no thesis overrides) and let the subagent thesis
-        # review run separately/later if desired.
-        print("  [Agent 5] ⚠️ No API key for thesis review — proceeding with "
-              "MECHANICAL trailing stops only (still applied to broker).")
-        thesis_result = None
-    except Exception as e:
-        print(f"  [Agent 5] ⚠️ Claude thesis review failed: {e}")
-        print(f"  [Agent 5] Proceeding with mechanical stops only.")
+    if mechanical_only:
+        # Hourly reinforcement mode: skip the (expensive, slow-moving) Claude
+        # thesis review entirely. Pure mechanical trailing-stop ratchet +
+        # mechanical CLOSE on stop-hit. Thesis review stays on the daily run.
+        print("  [Agent 5] MECHANICAL-ONLY mode — skipping thesis review.")
+    else:
+        try:
+            thesis_result = call_thesis_monitor(positions_with_stops, breaking_news, vix_data)
+        except RuntimeError:
+            # No API key for the qualitative thesis review. DO NOT bail — the
+            # mechanical trailing stops are pure Python and MUST still be applied
+            # to the broker. Bailing here was the root cause of stale broker
+            # stops: the engine computed higher stops but never pushed them.
+            print("  [Agent 5] ⚠️ No API key for thesis review — proceeding with "
+                  "MECHANICAL trailing stops only (still applied to broker).")
+        except Exception as e:
+            print(f"  [Agent 5] ⚠️ Claude thesis review failed: {e}")
+            print(f"  [Agent 5] Proceeding with mechanical stops only.")
 
     # ━━━ STEP 4: Merge mechanical stops + thesis review ━━━
     print(f"[Agent 5] Step 3: Merging mechanical stops + thesis review...")

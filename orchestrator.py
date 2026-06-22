@@ -390,10 +390,31 @@ def run_morning_pipeline(verbose: bool = False) -> dict:
     return results
 
 
-def run_afternoon_monitor(verbose: bool = False) -> dict:
-    """Run Agent 5: Afternoon position monitoring."""
+def run_afternoon_monitor(verbose: bool = False, mechanical_only: bool = False) -> dict:
+    """Run Agent 5: position monitoring + broker execution.
+
+    mechanical_only=True → hourly reinforcement mode: skip the Claude thesis
+    review, just ratchet trailing stops and execute mechanical stop-hits.
+    """
+    label = "HOURLY STOP REINFORCEMENT" if mechanical_only else "AFTERNOON POSITION MONITOR"
+
+    # Hourly reinforcement places LIVE stop orders, so it must only run while
+    # the market is actually open (9:30–16:00 ET). Outside hours, broker
+    # cancel/place round-trips hang. The daily 3:30 monitor is exempt (it runs
+    # at the close and tolerates outside-hours behavior).
+    if mechanical_only:
+        try:
+            from safeguards import is_market_open_today
+            cal = is_market_open_today()
+            if not cal.get("is_open"):
+                print(f"[Hourly] 🕒 Market not open ({cal.get('reason')}). Skipping reinforcement.")
+                return {"agent5": {"success": True, "note": f"market_not_open:{cal.get('reason')}"}}
+        except Exception as e:
+            print(f"[Hourly] ⚠️ market-hours check failed: {e}. Skipping for safety.")
+            return {"agent5": {"success": False, "error": f"market_check_failed: {e}"}}
+
     print("=" * 50)
-    print("🕒 OPEN CLAW — AFTERNOON POSITION MONITOR")
+    print(f"🕒 OPEN CLAW — {label}")
     print(f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M:%S ET')}")
     print("=" * 50)
     
@@ -418,7 +439,8 @@ def run_afternoon_monitor(verbose: bool = False) -> dict:
     print("━" * 40)
     
     try:
-        agent5_result = run_agent5(preflight["positions"], preflight["snapshot"])
+        agent5_result = run_agent5(preflight["positions"], preflight["snapshot"],
+                                   mechanical_only=mechanical_only)
         
         if agent5_result.get("success"):
             print(format_agent5_for_telegram(agent5_result))
@@ -429,7 +451,12 @@ def run_afternoon_monitor(verbose: bool = False) -> dict:
             # ━━━ EXECUTE AGENT 5 DECISIONS VIA EXECUTION ENGINE ━━━
             decisions = agent5_result.get("decisions", [])
             crisis = agent5_result.get("crisis_liquidation", False)
-            actionable = [d for d in decisions if d.get("action") in ("CLOSE", "TRIM")] or crisis
+            # Run execution if there are ANY decisions — not just CLOSE/TRIM.
+            # The old gate (only CLOSE/TRIM/crisis) silently skipped runs that
+            # were pure HOLD stop-tightenings, which is exactly why trailing
+            # stops never got pushed to the broker and went stale (BAC stuck
+            # at \$52.31 below cost). HOLD trailing-stop updates MUST execute.
+            actionable = bool(decisions) or crisis
             
             if actionable:
                 print("\n" + "━" * 40)
@@ -462,15 +489,38 @@ def run_afternoon_monitor(verbose: bool = False) -> dict:
                                     engine.update_stop(ticker, new_stop, reason="Agent5_TRIM")
                                 exec_results.append({"ticker": ticker, "action": "TRIM", "new_stop": new_stop})
                             elif action == "HOLD":
-                                # Update trailing stop if tightened
+                                # Update trailing stop whenever the computed stop
+                                # differs from what is actually LIVE (per ledger),
+                                # not just when new_stop > original_stop. The old
+                                # guard skipped stale stops (e.g. ledger stuck at
+                                # \$52.31 while engine computed \$55.71).
                                 new_stop = d.get("new_stop")
                                 original_stop = d.get("original_stop")
-                                if new_stop and original_stop and new_stop > original_stop:
+                                live_stop = None
+                                try:
+                                    import sqlite3 as _sql
+                                    from execution_engine import DB_PATH as _DBP
+                                    with _sql.connect(_DBP, timeout=20.0) as _c:
+                                        _r = _c.execute(
+                                            "SELECT target_stop_price FROM active_trades "
+                                            "WHERE ticker = ? AND closed_at IS NULL",
+                                            (ticker,),
+                                        ).fetchone()
+                                        if _r:
+                                            live_stop = _r[0]
+                                except Exception:
+                                    live_stop = None
+                                baseline = live_stop if live_stop is not None else original_stop
+                                needs_update = bool(new_stop) and (
+                                    not baseline or baseline <= 0 or new_stop > baseline
+                                )
+                                if needs_update:
                                     # Atomic trailing: cancel → wait → place (synchronous)
                                     if not engine.update_trailing_stop(ticker, new_stop):
                                         # Fallback to async daemon-based update
                                         engine.update_stop(ticker, new_stop, reason="Agent5_TRAIL_fallback")
-                                exec_results.append({"ticker": ticker, "action": "HOLD", "new_stop": new_stop})
+                                    print(f"  🔓 {ticker}: stop {baseline} → {new_stop} (pushed to broker)")
+                                exec_results.append({"ticker": ticker, "action": "HOLD", "new_stop": new_stop, "prev_stop": baseline})
                     agent5_result["broker_results"] = exec_results
                     
                     # Load directive for trade journal
@@ -808,6 +858,12 @@ if __name__ == "__main__":
         run_with_crash_protection(run_morning_pipeline, "Morning Pipeline", verbose=verbose)
     elif mode == "monitor":
         run_with_crash_protection(run_afternoon_monitor, "Afternoon Monitor", verbose=verbose)
+    elif mode == "hourly":
+        # Mechanical-only trailing-stop reinforcement (every market hour).
+        run_with_crash_protection(
+            lambda **kw: run_afternoon_monitor(mechanical_only=True, **kw),
+            "Hourly Stop Reinforcement", verbose=verbose,
+        )
     elif mode == "resume":
         run_with_crash_protection(resume_from_agent3, "Resume from Agent 3", verbose=verbose)
     elif mode == "execute":
@@ -818,4 +874,4 @@ if __name__ == "__main__":
             print("\n⏰ Morning pipeline done. Agent 5 runs at 3:30 PM.")
     else:
         print(f"Unknown mode: {mode}")
-        print("Usage: python3 orchestrator.py [morning|monitor|resume|execute|full]")
+        print("Usage: python3 orchestrator.py [morning|monitor|hourly|resume|execute|full]")
