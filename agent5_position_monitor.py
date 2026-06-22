@@ -282,6 +282,18 @@ def calculate_trailing_stops(positions: list, snapshot: dict) -> list:
         original_stop = pos.get("stop_loss", 0)
         shares = pos.get("shares", 0)
 
+        # ━━━ STOP FLOOR: no position may ever sit unprotected ━━━
+        # Some positions arrive with no stop (0/None) — e.g. SMCI was carried
+        # with a $0 stop = ZERO downside protection. Seed a default protective
+        # floor at 8% below entry (≈ the 2x-ATR distance Agent 4 produces) so
+        # the trailing logic below always has a real stop to ratchet up from.
+        STOP_FLOOR_PCT = 0.08
+        if not original_stop or original_stop <= 0:
+            if entry_price and entry_price > 0:
+                original_stop = round(entry_price * (1 - STOP_FLOOR_PCT), 2)
+                print(f"  🩹 {ticker}: had no stop ($0) — seeded protective floor "
+                      f"${original_stop} (8% below entry ${entry_price})")
+
         price_data = snapshot.get(ticker, {})
         current_price = price_data.get("current_price")
 
@@ -648,14 +660,15 @@ def run_agent5(positions: list = None, snapshot: dict = None) -> dict:
     try:
         thesis_result = call_thesis_monitor(positions_with_stops, breaking_news, vix_data)
     except RuntimeError:
-        # No API key — return data for subagent execution
-        return {
-            "success": False,
-            "needs_subagent": True,
-            "positions": positions_with_stops,
-            "vix": vix_data,
-            "breaking_news": breaking_news,
-        }
+        # No API key for the qualitative thesis review. DO NOT bail — the
+        # mechanical trailing stops are pure Python and MUST still be applied
+        # to the broker. Bailing here was the root cause of stale broker stops:
+        # the engine computed higher stops but never pushed them. Proceed with
+        # mechanical-only (no thesis overrides) and let the subagent thesis
+        # review run separately/later if desired.
+        print("  [Agent 5] ⚠️ No API key for thesis review — proceeding with "
+              "MECHANICAL trailing stops only (still applied to broker).")
+        thesis_result = None
     except Exception as e:
         print(f"  [Agent 5] ⚠️ Claude thesis review failed: {e}")
         print(f"  [Agent 5] Proceeding with mechanical stops only.")
@@ -818,3 +831,30 @@ if __name__ == "__main__":
         with open("output/agent5_decisions.json", "w") as f:
             json.dump(result, f, indent=2, default=str)
         print(f"\n[Agent 5] Decisions saved to output/agent5_decisions.json")
+
+        # ━━━ APPLY DECISIONS TO THE BROKER ━━━
+        # This is the step that was MISSING entirely: computed trailing stops
+        # were saved to JSON but never pushed to Robinhood, so the live stop
+        # orders went stale (placed once, never replaced). Now we actually
+        # execute HOLD_STOP_TIGHTENED / CLOSE / TRIM against the broker.
+        decisions = result.get("decisions", [])
+        crisis = result.get("crisis_liquidation", False)
+        if decisions or crisis:
+            try:
+                from broker_factory import get_broker
+                broker = get_broker()
+            except Exception:
+                # Fall back to the Robinhood broker directly if factory absent.
+                from robinhood_broker import RobinhoodBroker
+                broker = RobinhoodBroker()
+            try:
+                print(f"\n[Agent 5] Applying {len(decisions)} decision(s) to broker...")
+                exec_results = broker.execute_agent5_decisions(decisions, crisis=crisis)
+                for r in exec_results:
+                    print(f"  → {r.get('ticker')}: {r.get('action')} — {r.get('status')}"
+                          + (f" (stop ${r.get('new_stop')})" if r.get('new_stop') else ""))
+                with open("output/agent5_execution.json", "w") as f:
+                    json.dump(exec_results, f, indent=2, default=str)
+                print(f"[Agent 5] Execution results saved to output/agent5_execution.json")
+            except Exception as e:
+                print(f"[Agent 5] ⚠️ Broker execution FAILED: {e}")

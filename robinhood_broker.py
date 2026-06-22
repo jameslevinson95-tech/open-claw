@@ -826,9 +826,38 @@ class RobinhoodBroker:
             if action == "HOLD":
                 new_stop = d.get("new_stop")
                 original_stop = d.get("original_stop")
-                if new_stop and original_stop and new_stop > original_stop:
+                # Re-apply the stop whenever the COMPUTED stop differs from what
+                # is actually live (per the ledger). The old guard
+                # (new_stop > original_stop) silently skipped cases where the
+                # broker/ledger stop had gone STALE — e.g. BAC computed $55.71
+                # but the live order was stuck at $52.31 (below cost). We now
+                # compare against the ledger's real target stop and force a
+                # replace on any mismatch, while still never widening a stop.
+                live_stop = None
+                try:
+                    import sqlite3
+                    from execution_engine import DB_PATH
+                    with sqlite3.connect(DB_PATH, timeout=20.0) as _c:
+                        _r = _c.execute(
+                            "SELECT target_stop_price FROM active_trades "
+                            "WHERE ticker = ? AND closed_at IS NULL", (ticker,),
+                        ).fetchone()
+                        if _r:
+                            live_stop = _r[0]
+                except Exception:
+                    live_stop = None
+
+                baseline = live_stop if live_stop is not None else original_stop
+                # Never widen: only push if new_stop is a real number and is
+                # higher than what's live (ratchet up), OR live is missing/zero.
+                needs_update = bool(new_stop) and (
+                    not baseline or baseline <= 0 or new_stop > baseline
+                )
+                if needs_update:
                     engine.update_stop(ticker, new_stop, reason="Agent5_TRAIL")
-                    results.append({"ticker": ticker, "action": "HOLD_STOP_TIGHTENED", "new_stop": new_stop, "status": "executed"})
+                    results.append({"ticker": ticker, "action": "HOLD_STOP_TIGHTENED",
+                                    "new_stop": new_stop, "prev_stop": baseline,
+                                    "status": "executed"})
                 else:
                     results.append({"ticker": ticker, "action": "HOLD", "status": "no_action"})
 
