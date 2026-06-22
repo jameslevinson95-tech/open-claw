@@ -5,7 +5,7 @@
 # Ratchets trailing stops up + executes mechanical stop-hits. NO thesis review
 # (that stays on the 3:30 PM daily monitor). Real-time pricing via Tiingo.
 cd /Users/chris/code/trading-pipeline
-export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
 
 set -a
 source .env 2>/dev/null
@@ -16,5 +16,8 @@ mkdir -p "$LOG_DIR"
 LOG_FILE="$LOG_DIR/hourly_reinforce_$(date +%Y-%m-%d).log"
 
 echo "=== Hourly Reinforce — $(date) ===" >> "$LOG_FILE"
-python3 orchestrator.py hourly >> "$LOG_FILE" 2>&1
+# Pin to system python3 (3.9.6) — it has ALL deps (filelock, google.generativeai,
+# etc). Homebrew python3 is missing filelock+generativeai, which silently killed
+# broker stop execution on every 30-min run. (fixed 2026-06-22)
+/usr/bin/python3 orchestrator.py hourly >> "$LOG_FILE" 2>&1
 echo "=== Done — $(date) ===" >> "$LOG_FILE"
