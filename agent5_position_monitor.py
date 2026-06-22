@@ -334,7 +334,7 @@ def calculate_trailing_stops(positions: list, snapshot: dict) -> list:
         gain_dollars = current_price - entry_price
         new_stop = original_stop  # Start with original
 
-        trailing_note = "Below 2% gain — original stop unchanged"
+        trailing_note = "Below 1% gain — original stop unchanged"
 
         if pnl_pct > 10:
             # Trail to entry + 75% of gains
@@ -346,8 +346,8 @@ def calculate_trailing_stops(positions: list, snapshot: dict) -> list:
             candidate_stop = round(entry_price + 0.50 * gain_dollars, 2)
             new_stop = max(new_stop, candidate_stop)
             trailing_note = f"Up {pnl_pct:.1f}% — stop trailed to entry + 50% of gains"
-        elif pnl_pct > 2:
-            # Tighten to breakeven
+        elif pnl_pct > 1:
+            # Tighten to breakeven (aggressive: lock risk-free as soon as +1%)
             candidate_stop = entry_price
             new_stop = max(new_stop, candidate_stop)
             trailing_note = f"Up {pnl_pct:.1f}% — stop tightened to breakeven"
