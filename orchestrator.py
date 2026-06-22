@@ -252,24 +252,22 @@ def run_morning_pipeline(verbose: bool = False) -> dict:
         # On watchlist failure, fall through with original candidates
         results["watchlist"] = {"success": False, "error": str(e)}
     
-    # ━━━ STEP 3.5: X/TWITTER SMART MONEY FETCH ━━━
+    # ━━━ STEP 3.5: X/TWITTER SMART MONEY FETCH — RETIRED 2026-06-22 ━━━
+    # Disabled per biweekly-review verdict: avg ~0.1 mentions/run (dead signal)
+    # for $100/mo X API v2 Basic. Agent 3 handles empty mentions gracefully
+    # (falls back to news + options flow + short interest). We write an empty
+    # mentions file so Agent 3's loader is satisfied. To re-enable, restore the
+    # fetch_x_smart_money(tickers) call below.
     print("\n" + "━" * 40)
-    print("🐦 STEP 3.5: X/TWITTER SMART MONEY FETCH")
+    print("🐦 STEP 3.5: X/TWITTER SMART MONEY — DISABLED (retired)")
     print("━" * 40)
-    
+
     tickers = [c.get("ticker") for c in candidates]
-    
-    try:
-        x_mentions = fetch_x_smart_money(tickers)
-        results["x_fetch"] = {"success": True}
-    except Exception as e:
-        print(f"\u26a0\ufe0f X/Twitter fetch failed: {e}")
-        print("   Continuing with empty X data — Agent 3 will use news/options/SI only.")
-        x_mentions = {t: [] for t in tickers}
-        # Save empty mentions so Agent 3 can load them
-        with open("output/smart_money_mentions.json", "w") as smf:
-            json.dump(x_mentions, smf, indent=2)
-        results["x_fetch"] = {"success": False, "error": str(e), "fallback": "empty_mentions"}
+    x_mentions = {t: [] for t in tickers}
+    with open("output/smart_money_mentions.json", "w") as smf:
+        json.dump({"mentions": x_mentions, "total_mentions": 0,
+                   "note": "X/Twitter fetch retired 2026-06-22"}, smf, indent=2)
+    results["x_fetch"] = {"success": True, "note": "disabled"}
     # Discord is OUTPUT ONLY — no sentiment scraping from Discord channels
     
     # ━━━ STEP 4: AGENT 3 — QUALITATIVE SYNTHESIZER (8:05 AM) ━━━

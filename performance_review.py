@@ -254,15 +254,8 @@ def audit_data_sources():
 
     # ── Grade each source ──
 
-    # X/Twitter
-    avg_mentions = np.mean(mentions_list) if mentions_list else 0
-    if avg_mentions >= 5:
-        x_grade, x_note = "🟢", f"Solid coverage (Avg {avg_mentions:.1f} mentions/run)"
-    elif avg_mentions > 0:
-        x_grade, x_note = "🔴", f"Low volume (Avg {avg_mentions:.1f}). Expand curated accounts."
-    else:
-        x_grade, x_note = "⚪", "No data yet"
-    report.append(f"  🐦 *X/Twitter Smart Money:* {x_grade} — _{x_note}_ 💰 ~$100/mo (X API v2 Basic)")
+    # X/Twitter — RETIRED 2026-06-22 (dead signal: avg ~0.1 mentions/run)
+    report.append("  🐦 *X/Twitter Smart Money:* ⚫ — _RETIRED 2026-06-22 (dead signal, ~0.1 mentions/run)_ 💰 $0 (disabled)")
 
     # Unified Market Data (Schwab + Yahoo)
     mdata_file = os.path.join(OUTPUT_DIR, "screener_universe.json")
@@ -353,7 +346,7 @@ def audit_data_sources():
     # ── Value assessment ──
     report.append("")
     report.append("  *📋 Value Assessment:*")
-    report.append("  _HIGH VALUE:_ Massive Macro (unique data), X/Twitter (alpha signal), DIX (institutional flow)")
+    report.append("  _HIGH VALUE:_ Massive Macro (unique data), DIX (institutional flow)")
     report.append("  _MEDIUM VALUE:_ Massive Technicals (saves compute), Finviz (dynamic screening), Market Sentiment (CNN F&G)")
     report.append("  _MONITOR:_ Discord (noise?), yfinance (reliability), Schwab (not live yet)")
 
