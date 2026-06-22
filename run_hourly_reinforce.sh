@@ -1,6 +1,7 @@
 #!/bin/bash
-# Open Claw — Hourly Trailing-Stop Reinforcement (mechanical-only)
-# Scheduled: every market hour (10:00–15:00 ET), weekdays only.
+# Open Claw — Trailing-Stop Reinforcement (mechanical-only)
+# Scheduled: every 30 min during market hours (10:00–15:30 ET), weekdays only.
+# (12 launchd jobs: com.ocplatform.reinforce-HHMM)
 # Ratchets trailing stops up + executes mechanical stop-hits. NO thesis review
 # (that stays on the 3:30 PM daily monitor). Real-time pricing via Tiingo.
 cd /Users/chris/code/trading-pipeline
