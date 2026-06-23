@@ -570,13 +570,12 @@ class ExecutionEngine:
                 return False
 
             # 3. Place new stop
-            stop_res = self.broker.place_order(
-                ticker=ticker,
-                side="sell",
-                order_type="stop",
-                quantity=str(filled_shares),
-                stop_price=str(round(new_stop_price, 2)),
-                time_in_force="gtc",
+            # Use place_stop() (type="stop_market") — the Robinhood MCP REJECTS
+            # order_type="stop", which silently left positions NAKED after the
+            # cancel succeeded. place_stop is the known-good path and handles
+            # fractional-share rounding correctly.
+            stop_res = self.broker.place_stop(
+                ticker, filled_shares, round(new_stop_price, 2),
             )
             new_stop_id = stop_res.get("order_id") or stop_res.get("id")
 

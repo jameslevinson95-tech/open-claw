@@ -827,37 +827,63 @@ class RobinhoodBroker:
                 new_stop = d.get("new_stop")
                 original_stop = d.get("original_stop")
                 # Re-apply the stop whenever the COMPUTED stop differs from what
-                # is actually live (per the ledger). The old guard
-                # (new_stop > original_stop) silently skipped cases where the
-                # broker/ledger stop had gone STALE — e.g. BAC computed $55.71
-                # but the live order was stuck at $52.31 (below cost). We now
-                # compare against the ledger's real target stop and force a
-                # replace on any mismatch, while still never widening a stop.
+                # is ACTUALLY RESTING AT THE BROKER. The prior guard compared
+                # against the ledger's target_stop_price — but the ledger target
+                # and the live resting order routinely DESYNC (e.g. BAC ledger
+                # said $55.83 while the real Robinhood stop was frozen at $55.71
+                # with a NULL order_id). Comparing against the DB made the guard
+                # think "already done" and skip the push, leaving the live stop
+                # stale. We now read the LIVE broker stop and force a replace on
+                # any mismatch, while still never widening (ratchet-up only).
                 live_stop = None
+                live_stop_id = None
                 try:
-                    import sqlite3
-                    from execution_engine import DB_PATH
-                    with sqlite3.connect(DB_PATH, timeout=20.0) as _c:
-                        _r = _c.execute(
-                            "SELECT target_stop_price FROM active_trades "
-                            "WHERE ticker = ? AND closed_at IS NULL", (ticker,),
-                        ).fetchone()
-                        if _r:
-                            live_stop = _r[0]
+                    for _o in self.get_orders(symbol=ticker):
+                        if (_o.get("trigger") == "stop"
+                                and _o.get("state") in ("confirmed", "queued", "unconfirmed")):
+                            live_stop = float(_o.get("stop_price") or 0)
+                            live_stop_id = _o.get("id")
+                            break
                 except Exception:
                     live_stop = None
 
+                # Fall back to the ledger target only if the broker query failed.
+                if live_stop is None:
+                    try:
+                        import sqlite3
+                        from execution_engine import DB_PATH
+                        with sqlite3.connect(DB_PATH, timeout=20.0) as _c:
+                            _r = _c.execute(
+                                "SELECT target_stop_price FROM active_trades "
+                                "WHERE ticker = ? AND closed_at IS NULL", (ticker,),
+                            ).fetchone()
+                            if _r:
+                                live_stop = _r[0]
+                    except Exception:
+                        live_stop = None
+
                 baseline = live_stop if live_stop is not None else original_stop
                 # Never widen: only push if new_stop is a real number and is
-                # higher than what's live (ratchet up), OR live is missing/zero.
+                # higher than what's actually resting (ratchet up), OR there is
+                # no live stop at all (naked position -> must protect).
                 needs_update = bool(new_stop) and (
-                    not baseline or baseline <= 0 or new_stop > baseline
+                    not baseline or baseline <= 0 or round(new_stop, 2) > round(baseline, 2)
                 )
                 if needs_update:
-                    engine.update_stop(ticker, new_stop, reason="Agent5_TRAIL")
+                    # update_trailing_stop is ATOMIC (cancel old -> wait for the
+                    # clearinghouse to release the shares -> place new -> confirm)
+                    # and writes the new order_id back to the ledger. update_stop()
+                    # only cancels + NULLs the row and relies on a daemon that no
+                    # longer runs, so it would leave the position naked.
+                    ok = engine.update_trailing_stop(ticker, round(new_stop, 2))
+                    if not ok:
+                        # Atomic path needs a linked order_id; if it bailed (no
+                        # live order on file) fall back to the cancel+replace via
+                        # the ledger so the position still gets re-armed.
+                        engine.update_stop(ticker, new_stop, reason="Agent5_TRAIL")
                     results.append({"ticker": ticker, "action": "HOLD_STOP_TIGHTENED",
-                                    "new_stop": new_stop, "prev_stop": baseline,
-                                    "status": "executed"})
+                                    "new_stop": round(new_stop, 2), "prev_stop": baseline,
+                                    "status": "executed" if ok else "requeued"})
                 else:
                     results.append({"ticker": ticker, "action": "HOLD", "status": "no_action"})
 
