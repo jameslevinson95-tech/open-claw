@@ -663,6 +663,46 @@ class ExecutionEngine:
 
                 logger.info(f"Reconciling {len(active_trades)} active trades...")
 
+                # ── Zombie-row sweep ──────────────────────────────────────
+                # Auto-close any OPEN ledger row whose ticker is NOT held at the
+                # broker AND has no live resting order. These are stale recon
+                # artifacts (filled_shares=0 / entry_status='unknown') or rows
+                # left behind when a position exited but the exact fill event was
+                # missed. Leaving them open pollutes the ledger and makes the
+                # trailing logic act on phantom positions (e.g. CSCO/SMCI).
+                try:
+                    held = {p["ticker"] for p in self.broker.get_positions()}
+                    live_order_tickers = set()
+                    for _o in self.broker.get_orders():
+                        if _o.get("state") in ("confirmed", "queued", "unconfirmed"):
+                            live_order_tickers.add(_o.get("symbol"))
+                    for _t in active_trades:
+                        _tk = _t["ticker"]
+                        if _tk not in held and _tk not in live_order_tickers:
+                            with sqlite3.connect(DB_PATH, timeout=20.0) as _conn:
+                                _conn.execute(
+                                    "UPDATE active_trades SET closed_at = ?, "
+                                    "close_reason = ? WHERE trade_id = ? AND closed_at IS NULL",
+                                    (datetime.now().isoformat(),
+                                     "AUTO_CLEANUP: not held at broker, no live order",
+                                     _t["trade_id"]),
+                                )
+                                _conn.commit()
+                            logger.warning(
+                                f"  🧹 Auto-closed zombie ledger row for {_tk} "
+                                f"(trade_id={_t['trade_id']}): not held at broker, no live order."
+                            )
+                    # Re-read after sweep so the rest of the pass ignores zombies.
+                    with sqlite3.connect(DB_PATH, timeout=20.0) as _conn:
+                        _conn.row_factory = sqlite3.Row
+                        active_trades = _conn.execute(
+                            "SELECT * FROM active_trades WHERE closed_at IS NULL"
+                        ).fetchall()
+                    if not active_trades:
+                        return
+                except Exception as _e:
+                    logger.error(f"Zombie-row sweep failed (non-fatal): {_e}")
+
                 # Batch-fetch broker state ONCE per loop (rate-limit friendly)
                 all_orders = self.broker.get_orders_today()
                 broker_orders = {}
