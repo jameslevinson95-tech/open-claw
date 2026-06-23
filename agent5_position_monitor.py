@@ -283,9 +283,11 @@ def calculate_trailing_stops(positions: list, snapshot: dict) -> list:
     Pure Python trailing stop calculator. No LLM needed.
 
     Rules:
-      - Up > 2% from entry  → tighten stop to breakeven (entry price)
+      - Up > 1% from entry  → tighten stop to breakeven (entry price)
+      - Up > 3% from entry  → trail stop to entry + 25% of gains
       - Up > 5% from entry  → trail stop to entry + 50% of gains
       - Up > 10% from entry → trail stop to entry + 75% of gains
+      - Up > 15% from entry → trail stop to entry + 85% of gains (big runner)
       - Current price <= stop → MECHANICAL_CLOSE
       - Never widen a stop (new_stop >= original_stop always)
 
@@ -359,7 +361,12 @@ def calculate_trailing_stops(positions: list, snapshot: dict) -> list:
 
         trailing_note = "Below 1% gain — original stop unchanged"
 
-        if pnl_pct > 10:
+        if pnl_pct > 15:
+            # Big runner — lock in 85% of the gain (tighter than the +10% tier)
+            candidate_stop = round(entry_price + 0.85 * gain_dollars, 2)
+            new_stop = max(new_stop, candidate_stop)
+            trailing_note = f"Up {pnl_pct:.1f}% — stop trailed to entry + 85% of gains"
+        elif pnl_pct > 10:
             # Trail to entry + 75% of gains
             candidate_stop = round(entry_price + 0.75 * gain_dollars, 2)
             new_stop = max(new_stop, candidate_stop)
