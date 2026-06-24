@@ -521,30 +521,61 @@ class ExecutionEngine:
             with lock:
                 with sqlite3.connect(DB_PATH, timeout=20.0) as conn:
                     conn.row_factory = sqlite3.Row
+                    # Any open trade for this ticker — NOT just ones that already
+                    # have a resting stop. A recon row (or a row whose stop was
+                    # just canceled) has stop_order_id IS NULL but may still be a
+                    # real held position that needs a stop placed. Bailing here
+                    # is exactly what left KVUE naked on 2026-06-24.
                     trade = conn.execute(
-                        "SELECT * FROM active_trades WHERE ticker = ? AND stop_order_id IS NOT NULL AND closed_at IS NULL",
+                        "SELECT * FROM active_trades WHERE ticker = ? AND closed_at IS NULL",
                         (ticker,),
                     ).fetchone()
 
                     if not trade:
-                        logger.warning(f"No active stop found for {ticker} to trail.")
+                        logger.warning(f"No active trade found for {ticker} to trail.")
                         return False
 
                     trade = dict(trade)
                     old_stop_id = trade["stop_order_id"]
                     filled_shares = trade["filled_shares"]
 
-                # 1. Cancel old stop
-                try:
-                    self.broker.cancel_order(old_stop_id)
-                    logger.info(f"Canceled old stop {old_stop_id} for {ticker}")
-                except Exception as e:
-                    logger.error(f"Failed to cancel old stop {old_stop_id} for {ticker}: {e}")
+                # If the ledger doesn't know the share count (recon row with
+                # filled_shares=0 / entry_status=unknown), pull it live from the
+                # broker so we place a stop for the ACTUAL held quantity.
+                if not filled_shares or filled_shares <= 0:
+                    try:
+                        held_qty = 0.0
+                        for p in self.broker.get_positions():
+                            if (p.get("ticker") or p.get("symbol")) == ticker:
+                                # Fractional-safe: don't int()-truncate (would leave a sliver naked)
+                                held_qty = float(p.get("shares") or p.get("quantity") or p.get("qty") or 0)
+                                break
+                        if held_qty > 0:
+                            filled_shares = held_qty
+                            logger.info(f"{ticker}: ledger share count missing; using live broker qty={held_qty}")
+                        else:
+                            logger.warning(f"{ticker}: not held at broker (qty=0); nothing to trail.")
+                            return False
+                    except Exception as e:
+                        logger.error(f"{ticker}: failed to read live position qty: {e}")
+                        return False
 
-            # 2. Blocking wait for shares to unencumber (OUTSIDE lock to avoid deadlock)
+                # 1. Cancel old stop (only if one exists — recon/naked rows skip this)
+                if old_stop_id:
+                    try:
+                        self.broker.cancel_order(old_stop_id)
+                        logger.info(f"Canceled old stop {old_stop_id} for {ticker}")
+                    except Exception as e:
+                        logger.error(f"Failed to cancel old stop {old_stop_id} for {ticker}: {e}")
+                else:
+                    logger.info(f"{ticker}: no existing stop to cancel — placing fresh protective stop.")
+
+            # 2. Blocking wait for shares to unencumber (OUTSIDE lock to avoid deadlock).
+            # If there was no old stop (recon/naked row), shares are already free —
+            # skip the wait and go straight to placing the protective stop.
             timeout_at = time.time() + 10
-            unencumbered = False
-            while time.time() < timeout_at:
+            unencumbered = not old_stop_id
+            while not unencumbered and time.time() < timeout_at:
                 try:
                     open_orders = self.broker.get_orders_today()
                     if not any(
@@ -673,9 +704,12 @@ class ExecutionEngine:
                 try:
                     held = {p["ticker"] for p in self.broker.get_positions()}
                     live_order_tickers = set()
+                    live_stop_tickers = set()
                     for _o in self.broker.get_orders():
                         if _o.get("state") in ("confirmed", "queued", "unconfirmed"):
                             live_order_tickers.add(_o.get("symbol"))
+                            if _o.get("trigger") == "stop" or _o.get("type") in ("stop", "stop_market"):
+                                live_stop_tickers.add(_o.get("symbol"))
                     for _t in active_trades:
                         _tk = _t["ticker"]
                         if _tk not in held and _tk not in live_order_tickers:
@@ -700,8 +734,71 @@ class ExecutionEngine:
                         ).fetchall()
                     if not active_trades:
                         return
+
+                    # ── Naked held-position guard ─────────────────────────────
+                    # SAFETY NET: any open trade that is genuinely HELD at the
+                    # broker but has NO resting stop order (stop_order_id NULL
+                    # AND no live stop at the broker) is NAKED. This covers
+                    # recon rows (entry_status='unknown', entry order outside
+                    # today's feed) and the cancel→replace gap from update_stop().
+                    # The normal stop-placement path below only fires on a fresh
+                    # fill of an entry order present in today's orders, so it can
+                    # never re-arm these. Place the protective stop here, now.
+                    # (This is exactly the gap that left KVUE naked 2026-06-24.)
+                    for _t in active_trades:
+                        _t = dict(_t)
+                        _tk = _t["ticker"]
+                        if _tk not in held:
+                            continue  # not held → handled by zombie sweep, not naked
+                        if _t.get("stop_order_id") or _tk in live_stop_tickers:
+                            continue  # already protected
+                        _stop_px = _t.get("target_stop_price")
+                        if not _stop_px or _stop_px <= 0:
+                            logger.error(f"  🚨 {_tk} held but NAKED and has no target_stop_price; cannot auto-arm.")
+                            continue
+                        # Resolve share count: prefer the LIVE broker qty (fractional-
+                        # safe — don't int()-truncate or we leave a sliver unhedged),
+                        # fall back to the ledger's filled_shares.
+                        _qty = 0
+                        for _p in self.broker.get_positions():
+                            if (_p.get("ticker") or _p.get("symbol")) == _tk:
+                                _qty = float(_p.get("shares") or _p.get("quantity") or _p.get("qty") or 0)
+                                break
+                        if _qty <= 0:
+                            _qty = float(_t.get("filled_shares") or 0)
+                        if _qty <= 0:
+                            continue
+                        # Whole-share count for the ledger's INTEGER filled_shares column.
+                        _qty_int = int(_qty)
+                        logger.critical(
+                            f"  🚨 {_tk} is HELD but NAKED (no stop). Auto-arming "
+                            f"protective stop: {_qty} sh @ ${_stop_px:.2f}"
+                        )
+                        try:
+                            _sres = self.broker.place_stop(_tk, _qty, round(_stop_px, 2), time_in_force="gtc")
+                            _sid = _sres.get("order_id") or _sres.get("id")
+                            if _sid:
+                                with sqlite3.connect(DB_PATH, timeout=20.0) as _conn:
+                                    _conn.execute(
+                                        "UPDATE active_trades SET stop_order_id = ?, stop_status = 'open', "
+                                        "filled_shares = CASE WHEN filled_shares > 0 THEN filled_shares ELSE ? END, "
+                                        "entry_status = CASE WHEN entry_status = 'unknown' THEN 'filled' ELSE entry_status END, "
+                                        "last_updated = ? WHERE trade_id = ?",
+                                        (_sid, _qty_int, datetime.now().isoformat(), _t["trade_id"]),
+                                    )
+                                    _conn.commit()
+                                self._log_event(_t["trade_id"], _tk, "STOP_PLACED",
+                                                f"naked-guard auto-arm id={_sid} price=${_stop_px:.2f} shares={_qty}")
+                                logger.info(f"  🛡️ Naked-guard armed stop for {_tk}: {_sid}")
+                                live_stop_tickers.add(_tk)
+                            else:
+                                logger.error(f"  Naked-guard stop for {_tk} returned no ID: {_sres}")
+                                self._log_event(_t["trade_id"], _tk, "STOP_FAILED", json.dumps(_sres))
+                        except Exception as _se:
+                            logger.error(f"  Naked-guard stop placement failed for {_tk}: {_se}")
+                            self._log_event(_t["trade_id"], _tk, "STOP_ERROR", str(_se))
                 except Exception as _e:
-                    logger.error(f"Zombie-row sweep failed (non-fatal): {_e}")
+                    logger.error(f"Zombie-row sweep / naked-guard failed (non-fatal): {_e}")
 
                 # Batch-fetch broker state ONCE per loop (rate-limit friendly)
                 all_orders = self.broker.get_orders_today()
