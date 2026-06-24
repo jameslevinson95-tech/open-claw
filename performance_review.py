@@ -135,7 +135,7 @@ def audit_data_sources():
     sources = {
         "x_twitter": {"name": "X/Twitter Smart Money", "icon": "🐦", "cost": "~$100/mo (X API v2 Basic tier, X_BEARER_TOKEN)", "role": "Smart money sentiment, institutional mentions"},
         "gemini": {"name": "Gemini 3.1 Pro (Agent 2 Deep Research)", "icon": "💎", "cost": "~$0.05-0.15/run (token-based, Deep Research)", "role": "Fundamental screener — selects 1-3 candidates"},
-        "market_data": {"name": "Unified Market Data (Schwab + Yahoo)", "icon": "📈", "cost": "Free (with brokerage acct)", "role": "Primary price quotes, prior close, historical bars"},
+        "market_data": {"name": "Unified Market Data (Tiingo + Yahoo)", "icon": "📈", "cost": "Tiingo free tier", "role": "Primary price quotes, prior close, historical bars"},
         "massive_technicals": {"name": "Massive API (Technicals)", "icon": "📈", "cost": "Free tier (5 calls/min)", "role": "Server-side RSI, MACD, SMA, EMA"},
         "massive_macro": {"name": "Massive API (Macro/Economy)", "icon": "🏛️", "cost": "Free tier", "role": "Treasury yields, inflation, labor market"},
         "massive_fundamentals": {"name": "Massive API (Fundamentals)", "icon": "📊", "cost": "Free tier", "role": "Financials, dividends, ticker details"},
@@ -143,7 +143,6 @@ def audit_data_sources():
         "squeezemetrics": {"name": "SqueezMetrics DIX", "icon": "🌊", "cost": "Free (CSV)", "role": "Dark pool index — institutional accumulation/distribution"},
         "finviz": {"name": "Finviz Screener", "icon": "🔍", "cost": "Free (finvizfinance)", "role": "Dynamic stock screening (momentum, sectors, themes)"},
         "yfinance": {"name": "Yahoo Finance", "icon": "📰", "cost": "Free (yfinance)", "role": "Fallback price data, sector breadth, VIX"},
-        "schwab": {"name": "Schwab API", "icon": "🏦", "cost": "Free (with brokerage acct)", "role": "Real-time quotes, trade execution (incoming)"},
         "discord": {"name": "Discord", "icon": "💬", "cost": "Free", "role": "Output channel — signal-to-noise TBD"},
     }
 
@@ -257,7 +256,7 @@ def audit_data_sources():
     # X/Twitter — RETIRED 2026-06-22 (dead signal: avg ~0.1 mentions/run)
     report.append("  🐦 *X/Twitter Smart Money:* ⚫ — _RETIRED 2026-06-22 (dead signal, ~0.1 mentions/run)_ 💰 $0 (disabled)")
 
-    # Unified Market Data (Schwab + Yahoo)
+    # Unified Market Data (Tiingo + Yahoo)
     mdata_file = os.path.join(OUTPUT_DIR, "screener_universe.json")
     if os.path.exists(mdata_file):
         try:
@@ -265,13 +264,13 @@ def audit_data_sources():
                 su = json.load(f)
             mdata_tickers = [t for t in su if isinstance(t, dict) and t.get("source") not in ("hardcoded_fallback",)]
             if mdata_tickers:
-                report.append(f"  📈 *Market Data (Schwab+Yahoo):* 🟢 — _Primary source for {len(mdata_tickers)} tickers_ 💰 Free")
+                report.append(f"  📈 *Market Data (Tiingo+Yahoo):* 🟢 — _Primary source for {len(mdata_tickers)} tickers_ 💰 Free")
             else:
-                report.append("  📈 *Market Data (Schwab+Yahoo):* ⚪ — _Not primary in latest run_ 💰 Free")
+                report.append("  📈 *Market Data (Tiingo+Yahoo):* ⚪ — _Not primary in latest run_ 💰 Free")
         except Exception:
-            report.append("  📈 *Market Data (Schwab+Yahoo):* ⚪ — _Unable to assess_ 💰 Free")
+            report.append("  📈 *Market Data (Tiingo+Yahoo):* ⚪ — _Unable to assess_ 💰 Free")
     else:
-        report.append("  📈 *Market Data (Schwab+Yahoo):* ⚪ — _No screener data to assess_ 💰 Free")
+        report.append("  📈 *Market Data (Tiingo+Yahoo):* ⚪ — _No screener data to assess_ 💰 Free")
 
     # Massive Technicals
     if massive_tech_success + massive_tech_fail > 0:
@@ -331,9 +330,6 @@ def audit_data_sources():
     # yfinance
     report.append("  📰 *Yahoo Finance:* ⚪ — _Fallback source for prices, VIX, sector breadth_ 💰 Free")
 
-    # Schwab (incoming)
-    report.append("  🏦 *Schwab API:* ⚪ — _Integration in progress — real-time quotes + trade execution_ 💰 Free")
-
     # Discord
     report.append("  💬 *Discord:* ⚪ — _Output only — signal-to-noise TBD_ 💰 Free")
 
@@ -348,7 +344,7 @@ def audit_data_sources():
     report.append("  *📋 Value Assessment:*")
     report.append("  _HIGH VALUE:_ Massive Macro (unique data), DIX (institutional flow)")
     report.append("  _MEDIUM VALUE:_ Massive Technicals (saves compute), Finviz (dynamic screening), Market Sentiment (CNN F&G)")
-    report.append("  _MONITOR:_ Discord (noise?), yfinance (reliability), Schwab (not live yet)")
+    report.append("  _MONITOR:_ Discord (noise?), yfinance (reliability)")
 
     return "\n".join(report)
 

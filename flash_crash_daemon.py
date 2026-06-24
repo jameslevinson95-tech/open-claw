@@ -2,10 +2,14 @@
 Flash-Crash Daemon — Lightweight intraday safety net (NO LLM)
 Runs every 5-10 minutes during market hours.
 
-Checks:
-  1. SPY intraday drop > 1.5% from today's open → defensive protocol
-  2. VIX intraday spike > 20% from today's open → defensive protocol
-  3. Individual position down > 5% intraday → tighten that stop to breakeven
+Checks (every ~7 min during market hours):
+  1. SPY intraday drop > 2.5% AND VIX spike > 30% → market-wide defensive protocol
+  2. Individual position down > 5% intraday → tighten that stop to breakeven
+  3. Trailing-profit ladder (EVERY cycle) → same breakeven/+50%/+75% math as the
+     3:30 PM Agent 5 monitor. Ratchets stops UP as winners run and locks in gains
+     (atomic CLOSE) the moment price pulls back into the laddered stop — closing
+     the "gave back gains between monitor windows" gap. Reuses
+     agent5_position_monitor.calculate_trailing_stops for identical math + shared HWM state.
 
 Defensive protocol:
   - Profitable positions → tighten stop to breakeven (entry price)
@@ -265,10 +269,144 @@ def tighten_individual_stop(broker, pos: dict) -> dict:
     return action
 
 
+def _get_db_stop_price(ticker: str) -> float:
+    """
+    Read the authoritative target stop from the execution ledger DB
+    (active_trades.target_stop_price). This is the source of truth the execution
+    engine uses — NOT resting broker orders — so the ladder honors 'never widen'
+    correctly and never fights the execution daemon's stop management.
+    Returns the stop price, or 0 if no active trade / unavailable.
+    """
+    try:
+        import sqlite3
+        from execution_engine import DB_PATH
+        with sqlite3.connect(str(DB_PATH), timeout=20.0) as conn:
+            row = conn.execute(
+                "SELECT target_stop_price FROM active_trades WHERE ticker = ? AND closed_at IS NULL",
+                (ticker,),
+            ).fetchone()
+            if row and row[0]:
+                return float(row[0])
+    except Exception:
+        pass
+    return 0.0
+
+
+def run_trailing_ladder(broker, positions: list) -> list:
+    """
+    Intraday profit-locking. Runs the SAME trailing-stop ladder as the 3:30 PM
+    Agent 5 monitor (breakeven / +50% / +75%) so a winner that spikes and bleeds
+    back gets its stop ratcheted up between the fixed monitor windows.
+
+    Reuses agent5_position_monitor.calculate_trailing_stops for identical math
+    (incl. shared high-water-mark state on disk). NO LLM.
+
+    For each position:
+      - If price <= the ladder stop  -> atomic CLOSE (lock the gain / cut)
+      - Else if ladder stop > current resting stop -> ratchet stop UP (never widen)
+      - Else -> no-op
+    Returns list of actions taken.
+    """
+    from agent5_position_monitor import (
+        calculate_trailing_stops,
+        _load_portfolio_state,
+        _save_portfolio_state,
+    )
+    from execution_engine import ExecutionEngine
+
+    if not positions:
+        return []
+
+    # Snapshot HWM state BEFORE the ladder so we can restore any open-position
+    # keys it prunes. calculate_trailing_stops() deletes state for tickers not in
+    # the list it's given; if the broker ever returns a partial/empty list, that
+    # would wipe live floors. We merge those keys back after.
+    hwm_before = dict(_load_portfolio_state())
+
+    # Adapt broker positions -> the shape calculate_trailing_stops expects.
+    adapted = []
+    snapshot = {}
+    for pos in positions:
+        ticker = pos["ticker"]
+        current_price = pos.get("current_price")
+        # Fall back to a fresh intraday quote if the broker didn't include price
+        if current_price is None:
+            q = get_intraday_change(ticker)
+            current_price = q.get("current") if "error" not in q else None
+        if current_price is None:
+            continue
+        # Authoritative stop = execution-ledger DB target, not resting broker order.
+        db_stop = _get_db_stop_price(ticker)
+        adapted.append({
+            "ticker": ticker,
+            "entry_price": pos.get("avg_entry_price", 0),
+            "stop_loss": db_stop,
+            "shares": pos.get("shares", pos.get("qty", 0)),
+        })
+        snapshot[ticker] = {"current_price": current_price}
+
+    if not adapted:
+        return []
+
+    laddered = calculate_trailing_stops(adapted, snapshot)
+
+    # Restore HWM state for any currently-open ticker the ladder pruned
+    # (defensive against partial broker reads).
+    open_tickers = {p["ticker"] for p in positions}
+    hwm_after = _load_portfolio_state()
+    restored = False
+    for t, v in hwm_before.items():
+        if t in open_tickers and t not in hwm_after:
+            hwm_after[t] = v
+            restored = True
+    if restored:
+        _save_portfolio_state(hwm_after)
+
+    engine = ExecutionEngine(broker=broker)
+    actions = []
+    for r in laddered:
+        ticker = r["ticker"]
+        mech = r.get("mechanical_action", "HOLD")
+        new_stop = r.get("new_stop", 0)
+        resting_stop = _get_db_stop_price(ticker)
+        pnl_pct = r.get("pnl_pct", 0)
+
+        if mech == "CLOSE":
+            # Price fell into the laddered stop -> lock it in atomically.
+            result = engine.atomic_liquidate(
+                ticker, reason=f"intraday_ladder_CLOSE (pnl {pnl_pct:.1f}%, stop ${new_stop})"
+            )
+            actions.append({
+                "ticker": ticker,
+                "action": "LADDER_CLOSE",
+                "pnl_pct": pnl_pct,
+                "stop": new_stop,
+                "result": result,
+            })
+            print(f"  [Daemon] {ticker}: ladder CLOSE — price hit ${new_stop} (pnl {pnl_pct:.1f}%) → liquidated")
+        elif new_stop and new_stop > resting_stop:
+            # Ratchet the stop UP only (never widen).
+            success = engine.update_trailing_stop(ticker, new_stop)
+            if not success:
+                engine.update_stop(ticker, new_stop, reason="intraday_ladder_trail_fallback")
+            actions.append({
+                "ticker": ticker,
+                "action": "LADDER_TRAIL",
+                "pnl_pct": pnl_pct,
+                "old_stop": resting_stop,
+                "new_stop": new_stop,
+                "note": r.get("trailing_stop_note", ""),
+            })
+            print(f"  [Daemon] {ticker}: ladder trail — stop ${resting_stop} → ${new_stop} (pnl {pnl_pct:.1f}%)")
+
+    return actions
+
+
 def run_daemon():
     """
     Main daemon entry point. Checks market conditions and positions.
     If no triggers, exits silently. If triggers fire, executes defensive protocol.
+    Also runs the intraday trailing-profit ladder every cycle (profit-locking).
     """
     # Check market hours
     if not is_market_hours():
@@ -358,6 +496,21 @@ def run_daemon():
                 # Tighten this specific position's stop to breakeven
                 action = tighten_individual_stop(broker, pos)
                 actions.append(action)
+
+    # --- Intraday trailing-profit ladder (runs EVERY cycle, profit-locking) ---
+    # Same breakeven/+50%/+75% math as the 3:30 PM Agent 5 monitor, so winners
+    # that give back gains between the fixed monitor windows still get locked in.
+    try:
+        ladder_actions = run_trailing_ladder(broker, positions)
+        if ladder_actions:
+            actions.extend(ladder_actions)
+            # Treat ladder activity as a logged event even without crash triggers.
+            triggers.append({
+                "type": "TRAILING_LADDER",
+                "detail": f"Intraday ladder acted on {len(ladder_actions)} position(s)",
+            })
+    except Exception as le:
+        print(f"[Daemon] Warning: trailing ladder failed — {le}")
 
     # --- If market-wide triggers fired, run full defensive protocol ---
     # Require BOTH SPY drop AND VIX spike to avoid triggering on normal noise.

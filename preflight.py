@@ -22,11 +22,11 @@ import yfinance as yf
 
 from config import SCREENER_MIN_MARKET_CAP, SCREENER_MIN_PRICE
 
-# Unified market data — Schwab primary, Yahoo Finance fallback
+# Unified market data — Tiingo primary, Yahoo Finance fallback
 try:
     import market_data as mdata
     MARKET_DATA_AVAILABLE = True
-    print("[Pre-Flight] Unified Market Data: AVAILABLE (Schwab + Yahoo Finance)")
+    print("[Pre-Flight] Unified Market Data: AVAILABLE (Tiingo + Yahoo Finance)")
 except Exception as e:
     MARKET_DATA_AVAILABLE = False
     print(f"[Pre-Flight] Unified Market Data: UNAVAILABLE ({e}) — using yfinance directly")
@@ -66,8 +66,8 @@ except Exception as e:
 def _yf_download_shim(ticker, start=None, end=None, progress=False, **kwargs):
     """
     Drop-in replacement for yf.download(ticker, start=, end=) that is
-    Schwab-FIRST (via market_data.fetch_historical_bars) and only falls back
-    to Yahoo for symbols Schwab can't serve (e.g. 2YY=F).
+    Tiingo-FIRST (via market_data.fetch_historical_bars) and only falls back
+    to Yahoo for symbols Tiingo can't serve (e.g. 2YY=F).
 
     Returns a pandas DataFrame with columns Open/High/Low/Close/Volume and a
     DatetimeIndex, matching the shape downstream code expects from yfinance.
@@ -95,7 +95,7 @@ def _yf_download_shim(ticker, start=None, end=None, progress=False, **kwargs):
         except Exception:
             bars = None
 
-    # Last-resort: raw yfinance (only if Schwab path produced nothing).
+    # Last-resort: raw yfinance (only if Tiingo path produced nothing).
     if not bars:
         try:
             return yf.download(ticker, start=start, end=end, progress=progress, **kwargs)
@@ -128,7 +128,7 @@ def fetch_prior_close(tickers: list) -> dict:
     This is critical — all pricing and stop calculations use prior close,
     NOT live/intraday pre-market data (Tweak #6).
     
-    Primary: Schwab + Yahoo Finance (unified market data)
+    Primary: Tiingo + Yahoo Finance (unified market data)
     Fallback: Yahoo Finance direct
     """
     # Try unified market data first

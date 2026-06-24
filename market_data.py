@@ -1,9 +1,9 @@
 """
-Unified Market Data Module — Schwab primary, Yahoo Finance fallback.
+Unified Market Data Module — Tiingo primary, Robinhood + Yahoo Finance fallback.
 
 Replaces alpaca_data.py as the pipeline's data source.
-No Alpaca dependency — uses Schwab for real-time quotes and Yahoo for
-historical bars, fundamentals, and macro indicators.
+No Alpaca or Schwab dependency — uses Tiingo (IEX) for real-time quotes and
+daily history, with Robinhood MCP and Yahoo as fallbacks.
 
 Drop-in compatible with alpaca_data.py's function signatures.
 """
@@ -14,31 +14,6 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 load_dotenv(Path(__file__).parent / ".env")
-
-
-# ── Schwab Quotes (primary for real-time) ────────────────────────────────
-
-def _schwab_available() -> bool:
-    """Check if Schwab data module is available and has a valid token."""
-    try:
-        from schwab_data import fetch_schwab_quotes
-        test = fetch_schwab_quotes(["SPY"])
-        return "SPY" in test and "error" not in test.get("SPY", {})
-    except Exception:
-        return False
-
-_schwab_ok = None  # Lazy init
-
-
-def _check_schwab():
-    global _schwab_ok
-    if _schwab_ok is None:
-        _schwab_ok = _schwab_available()
-        if _schwab_ok:
-            print("[MarketData] Schwab API: AVAILABLE (primary for real-time quotes)")
-        else:
-            print("[MarketData] Schwab API: UNAVAILABLE — falling back to Yahoo Finance")
-    return _schwab_ok
 
 
 # ── Tiingo Quotes (PRIMARY for real-time as of 2026-06-22) ──────────
@@ -155,29 +130,22 @@ def _yf_import():
 def fetch_prior_close(tickers: list) -> dict:
     """
     Fetch yesterday's close for a list of tickers.
-    Primary: Schwab. Fallback: Yahoo Finance.
+    Primary: Tiingo daily history. Fallback: Yahoo Finance.
     """
     results = {}
 
-    # Try Schwab first for real-time previous close
-    if _check_schwab():
-        try:
-            from schwab_data import fetch_schwab_quotes
-            # Batch in groups of 50
-            for i in range(0, len(tickers), 50):
-                batch = tickers[i:i+50]
-                quotes = fetch_schwab_quotes(batch)
-                for t, q in quotes.items():
-                    if "error" not in q:
-                        close = q.get("close") or q.get("last") or q.get("regularMarketPreviousClose", 0)
-                        if close and close > 0:
-                            results[t] = {
-                                "prior_close": round(float(close), 2),
-                                "prior_date": str((datetime.now() - timedelta(days=1)).date()),
-                                "source": "schwab",
-                            }
-        except Exception as e:
-            print(f"[MarketData] Schwab prior_close batch failed: {e}")
+    # Try Tiingo first for previous close (last daily bar)
+    if _tiingo_key():
+        for t in tickers:
+            h = _tiingo_history(t, days=5)
+            bars = h.get("bars", [])
+            if bars:
+                last = bars[-1]
+                results[t] = {
+                    "prior_close": round(float(last["close"]), 2),
+                    "prior_date": last["date"],
+                    "source": "tiingo",
+                }
 
     # Fill gaps with Yahoo Finance
     missing = [t for t in tickers if t not in results]
@@ -226,7 +194,7 @@ def _fetch_prior_close_yfinance(tickers: list) -> dict:
 def fetch_latest_quotes(tickers: list) -> dict:
     """
     Fetch real-time quotes.
-    Primary: Tiingo (real-time IEX). Fallback: Schwab, Robinhood MCP, Yahoo.
+    Primary: Tiingo (real-time IEX). Fallback: Robinhood MCP, Yahoo.
 
     Tiingo became primary on 2026-06-22 because Schwab/Yahoo were unreliable.
     """
@@ -243,27 +211,6 @@ def fetch_latest_quotes(tickers: list) -> dict:
                 print(f"[MarketData] Tiingo: {len(results)}/{len(tickers)} quotes (PRIMARY)")
         except Exception as e:
             print(f"[MarketData] Tiingo quotes failed: {e}")
-
-    # Fill gaps with Schwab
-    schwab_targets = [t for t in tickers if t not in results]
-    if schwab_targets and _check_schwab():
-        try:
-            from schwab_data import fetch_schwab_quotes
-            quotes = fetch_schwab_quotes(schwab_targets)
-            for t, q in quotes.items():
-                if "error" not in q:
-                    bid = q.get("bid", 0)
-                    ask = q.get("ask", 0)
-                    last = q.get("last", 0)
-                    results[t] = {
-                        "bid": float(bid) if bid else 0.0,
-                        "ask": float(ask) if ask else 0.0,
-                        "last": float(last) if last else 0.0,
-                        "mid": round((float(bid or 0) + float(ask or 0)) / 2, 2) if bid and ask else float(last or 0),
-                        "source": "schwab",
-                    }
-        except Exception as e:
-            print(f"[MarketData] Schwab quotes failed: {e}")
 
     # Fill gaps with Robinhood
     missing = [t for t in tickers if t not in results]
@@ -303,9 +250,9 @@ def fetch_historical_bars(tickers: list, days: int = 30, timeframe: str = "day")
     """
     Fetch historical OHLCV daily bars.
 
-    Schwab-first (covers stocks, ETFs, and indices like $VIX/$MOVE), with
-    Yahoo Finance as a last-resort fallback per-ticker. For daily bars Schwab
-    is the authoritative source now; Yahoo only fires if Schwab returns empty.
+    Tiingo-first for daily bars (single vendor as of 2026-06-22), with Yahoo
+    Finance as a last-resort fallback per-ticker. Yahoo only fires if Tiingo
+    returns empty (e.g. index symbols like ^VIX that Tiingo can't serve).
     """
     results = {}
 
@@ -317,25 +264,6 @@ def fetch_historical_bars(tickers: list, days: int = 30, timeframe: str = "day")
                 results[ticker] = h
         if results:
             print(f"[MarketData] Tiingo history: {len(results)}/{len(tickers)} (PRIMARY)")
-
-    # Schwab fallback only serves daily/intraday candles for tickers Tiingo missed.
-    schwab_targets = [t for t in tickers if t not in results]
-    schwab_first = (timeframe == "day") and schwab_targets and _check_schwab()
-
-    if schwab_first:
-        try:
-            from schwab_data import fetch_schwab_history
-            for ticker in schwab_targets:
-                h = fetch_schwab_history(ticker, days=days, frequency_type="daily")
-                if h.get("count", 0) > 0:
-                    results[ticker] = {
-                        "bars": h["bars"],
-                        "count": h["count"],
-                        "source": "schwab",
-                    }
-                # leave missing tickers to the Yahoo fallback below
-        except Exception as e:
-            print(f"[MarketData] Schwab history failed ({e}) — falling back to yfinance")
 
     # Determine which tickers still need data (Yahoo fallback only for gaps)
     missing = [t for t in tickers if t not in results]
@@ -386,7 +314,7 @@ def fetch_historical_bars(tickers: list, days: int = 30, timeframe: str = "day")
 def fetch_snapshots(tickers: list) -> dict:
     """
     Fetch snapshot data (latest price + daily bar + previous daily bar).
-    Uses Schwab for real-time, Yahoo for daily bars.
+    Uses Tiingo for real-time quotes, Yahoo for daily bars.
     """
     results = {}
 

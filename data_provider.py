@@ -2,12 +2,12 @@
 data_provider.py — Unified Data Provider Abstraction
 
 Single seam for all market data access. Routes through paid vendors
-(Massive/Polygon, Schwab) instead of yfinance scraping.
+(Massive/Polygon, Tiingo) instead of yfinance scraping.
 
 Fallback hierarchy per method:
   get_bars:    Massive → yfinance (deprecated fallback) → raise DataUnavailable
-  get_quote:   Schwab → raise DataUnavailable (broker feed ONLY)
-  get_index:   Massive I:<SYM> → Schwab → ETF proxy → raise DataUnavailable
+  get_quote:   Tiingo (via market_data) → raise DataUnavailable
+  get_index:   Massive I:<SYM> → ETF proxy → raise DataUnavailable
   get_corporate_actions: Massive splits → [] with log warning
 
 Rate limiting: Token-bucket for Massive free tier (5 calls/min).
@@ -120,24 +120,23 @@ class DataProvider:
 
     def get_quote(self, ticker: str) -> dict:
         """
-        Live bid/ask/last for execution. Broker feed ONLY.
-        Fallback: Schwab → raise DataUnavailable.
-        (Execution paths must price against the venue we trade on.)
+        Live bid/ask/last for execution.
+        Source: Tiingo (via unified market_data) → raise DataUnavailable.
         """
-        # Schwab
         try:
-            quotes = self._schwab_quotes([ticker])
-            if ticker in quotes:
-                return quotes[ticker]
+            quotes = self._live_quotes([ticker])
+            q = quotes.get(ticker)
+            if q and "error" not in q:
+                return q
         except Exception as e:
-            logger.warning(f"Schwab quote failed for {ticker}: {e}")
+            logger.warning(f"Live quote failed for {ticker}: {e}")
 
         raise DataUnavailable(f"No live quote available for {ticker}")
 
     def get_index(self, symbol: str) -> dict:
         """
         Index level for VIX/SPX.
-        Fallback: Massive I:<SYM> → Schwab $<SYM> → ETF proxy → raise.
+        Fallback: Massive I:<SYM> → ETF proxy → raise.
         Returns: {'symbol', 'value', 'source', 'is_proxy': bool}
         """
         symbol = symbol.upper().replace("^", "")
@@ -153,18 +152,7 @@ class DataProvider:
             except Exception as e:
                 logger.warning(f"Massive index {massive_ticker} failed: {e}")
 
-        # 2. Schwab $VIX / $SPX
-        try:
-            schwab_ticker = f"${symbol}"
-            quotes = self._schwab_quotes([schwab_ticker])
-            if schwab_ticker in quotes:
-                val = quotes[schwab_ticker].get("last") or quotes[schwab_ticker].get("bid")
-                if val and val > 0:
-                    return {"symbol": symbol, "value": float(val), "source": "schwab", "is_proxy": False}
-        except Exception as e:
-            logger.warning(f"Schwab index ${symbol} failed: {e}")
-
-        # 3. ETF proxy
+        # 2. ETF proxy
         if etf_proxy:
             try:
                 bars = self.get_bars(etf_proxy, lookback_days=5, timespan="day")
@@ -354,14 +342,14 @@ class DataProvider:
 
     # ── Schwab Internals ─────────────────────────────────────────────
 
-    def _schwab_quotes(self, tickers: list) -> dict:
-        """Lazy-load and call Schwab quote function."""
+    def _live_quotes(self, tickers: list) -> dict:
+        """Lazy-load and call the unified market_data quote function (Tiingo-first)."""
         if self._schwab_quotes_fn is None:
             try:
-                from schwab_data import fetch_schwab_quotes
-                self._schwab_quotes_fn = fetch_schwab_quotes
+                from market_data import fetch_latest_quotes
+                self._schwab_quotes_fn = fetch_latest_quotes
             except ImportError:
-                raise DataUnavailable("Schwab module not available")
+                raise DataUnavailable("market_data module not available")
         return self._schwab_quotes_fn(tickers)
 
     # ── yfinance Fallback (deprecated) ───────────────────────────────
