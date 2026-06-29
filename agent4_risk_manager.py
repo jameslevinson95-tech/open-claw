@@ -192,6 +192,48 @@ def correlation_veto(new_ticker: str, current_positions: list, threshold: float 
         return True  # Fail-closed: if we can't verify, assume correlated and veto
 
 
+def _get_live_stops(broker) -> dict:
+    """
+    Pull the live resting stop orders from the broker and return the
+    tightest (highest) active stop_price per symbol.
+
+    These are the REAL trailing stops protecting open positions. When a
+    trailing stop has ratcheted above entry, this is the accurate measure
+    of remaining capital at risk — far better than a wide ATR estimate.
+
+    Returns: {symbol: stop_price_float}. Empty dict on any failure (caller
+    falls back to agent4_orders / ATR estimate).
+    """
+    live = {}
+    ACTIVE_STATES = {"confirmed", "queued", "open", "unconfirmed", "partially_filled"}
+    try:
+        if not hasattr(broker, "get_orders"):
+            return live
+        for o in (broker.get_orders() or []):
+            try:
+                if o.get("trigger") != "stop":
+                    continue
+                if o.get("side") != "sell":
+                    continue
+                if o.get("state") not in ACTIVE_STATES:
+                    continue
+                sp = o.get("stop_price")
+                if sp is None:
+                    continue
+                sp = float(sp)
+                sym = o.get("symbol")
+                if not sym:
+                    continue
+                # Keep the tightest (highest) resting stop per symbol
+                if sym not in live or sp > live[sym]:
+                    live[sym] = sp
+            except (TypeError, ValueError):
+                continue
+    except Exception as e:
+        print(f"[Heat] WARN could not fetch live stops: {e}")
+    return live
+
+
 def calculate_portfolio_heat() -> dict:
     """
     Calculate total open risk ("heat") across all positions.
@@ -222,7 +264,12 @@ def calculate_portfolio_heat() -> dict:
 
     equity = account.get("equity", ACCOUNT_SIZE)
 
-    # Try to load agent4 orders for known stop prices
+    # PRIORITY 1: Live resting stop orders from the broker (real trailing stops).
+    # When a trailing stop has locked in profit, this reflects true risk-to-stop
+    # instead of a stale, wide ATR estimate.
+    live_stops = _get_live_stops(broker)
+
+    # PRIORITY 2: agent4 orders for known stop prices
     stop_lookup = {}
     orders_path = os.path.join("output", "agent4_orders.json")
     if os.path.exists(orders_path):
@@ -244,8 +291,13 @@ def calculate_portfolio_heat() -> dict:
         entry_price = pos["avg_entry_price"]
         current_price = pos["current_price"]
 
-        stop_price = stop_lookup.get(ticker)
-        stop_source = "agent4_orders"
+        # Priority chain: live broker stop > agent4_orders > ATR estimate > 3% fallback
+        stop_price = live_stops.get(ticker)
+        stop_source = "live_broker_stop"
+
+        if stop_price is None:
+            stop_price = stop_lookup.get(ticker)
+            stop_source = "agent4_orders"
 
         if stop_price is None:
             # Estimate stop using ATR
