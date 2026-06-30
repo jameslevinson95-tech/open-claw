@@ -283,7 +283,7 @@ def calculate_trailing_stops(positions: list, snapshot: dict) -> list:
     Pure Python trailing stop calculator. No LLM needed.
 
     Rules:
-      - Up > 1% from entry  → tighten stop to breakeven (entry price)
+      - Up > 2.5% from entry → tighten stop to breakeven (entry price)
       - Up > 3% from entry  → trail stop to entry + 25% of gains
       - Up > 5% from entry  → trail stop to entry + 50% of gains
       - Up > 10% from entry → trail stop to entry + 75% of gains
@@ -381,8 +381,13 @@ def calculate_trailing_stops(positions: list, snapshot: dict) -> list:
             candidate_stop = round(entry_price + 0.25 * gain_dollars, 2)
             new_stop = max(new_stop, candidate_stop)
             trailing_note = f"Up {pnl_pct:.1f}% — stop trailed to entry + 25% of gains"
-        elif pnl_pct > 1:
-            # Tighten to breakeven (aggressive: lock risk-free as soon as +1%)
+        elif pnl_pct > 2.5:
+            # Tighten to breakeven once the position has real cushion (+2.5%).
+            # Was +1%, which snapped new positions to a hair-tight break-even
+            # stop (entry price) on a single tick of profit — normal intraday
+            # noise then scratched them out for ~$0 (see 2026-06-30 ITUB, where
+            # a +1.0% wiggle pulled the stop to entry $8.02 vs $8.11 price).
+            # +2.5% gives new positions room to breathe before going risk-free.
             candidate_stop = entry_price
             new_stop = max(new_stop, candidate_stop)
             trailing_note = f"Up {pnl_pct:.1f}% — stop tightened to breakeven"
