@@ -29,3 +29,9 @@ output/dix_cache.csv
 output/sentiment_cache.json
 output/*.log
 output/_*
+
+# Code/state backups (local only)
+*.bak
+*.bak-*
+output/execution_ledger.db-shm
+output/execution_ledger.db-wal

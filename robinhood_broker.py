@@ -521,9 +521,23 @@ class RobinhoodBroker:
                     deviation_pct = abs(live_ask - planned_entry) / planned_entry
 
                     if deviation_pct > max_gap_pct:
-                        # Cross-reference with Schwab
-                        from broker import _cross_reference_price
-                        verified_price = _cross_reference_price(ticker, planned_entry, live_ask)
+                        # Cross-reference to verify the anomaly. The legacy
+                        # `broker._cross_reference_price` helper no longer exists,
+                        # so degrade gracefully: prefer a more reliable price
+                        # reference (mid, then last) over a wide pre-market ask
+                        # before deciding to reject.
+                        verified_price = None
+                        try:
+                            from broker import _cross_reference_price  # legacy, optional
+                            verified_price = _cross_reference_price(ticker, planned_entry, live_ask)
+                        except (ImportError, ModuleNotFoundError):
+                            ref_price = quote.get("mid") or quote.get("last")
+                            if ref_price and ref_price > 0:
+                                ref_dev = abs(ref_price - planned_entry) / planned_entry
+                                if ref_dev <= max_gap_pct:
+                                    print(f"  [RH-Broker] ℹ️ {ticker}: wide ask ${live_ask:.2f} ignored; using mid/last ${ref_price:.2f} (dev {ref_dev*100:.1f}%)")
+                                    verified_price = ref_price
+
                         if verified_price is not None:
                             print(f"  [RH-Broker] ✅ {ticker}: Cross-ref price ${verified_price:.2f}")
                             live_ask = verified_price
