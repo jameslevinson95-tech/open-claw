@@ -1,6 +1,6 @@
-# Open Claw — Full Codebase Dump (2026-07-06 15:44 EDT)
+# Open Claw — Full Codebase Dump (2026-07-06 15:58 EDT)
 
-Complete concatenation of all Python source for audit. Commit: c738f98
+Complete concatenation of all Python source for audit. Commit: 70d0d92
 
 
 ================================================================================
@@ -3025,6 +3025,19 @@ def calculate_trailing_stops(positions: list, snapshot: dict) -> list:
                 new_stop = relaxed
         new_stop = round(new_stop, 2)
 
+        # ━━━ BREAKEVEN FLOOR: once a position clears +2.5%, never let the stop
+        # sit below entry (cost basis). The 3% buffer above can push a stop
+        # BELOW cost on a barely-green position (e.g. 2026-07-06 TSM at +1.8%
+        # got buffered to $440.20 vs $447.37 entry). For any position with real
+        # cushion (>+2.5%), a green trade should never be allowed to close red
+        # — clamp the stop up to breakeven. We only raise to breakeven when it
+        # stays safely below the current price (never place a stop at/above
+        # market, which would trigger instantly).
+        BREAKEVEN_TIER_PCT = 2.5
+        if pnl_pct > BREAKEVEN_TIER_PCT and new_stop < entry_price < current_price:
+            trailing_note += f" (breakeven floor: ${round(entry_price, 2)})"
+            new_stop = round(entry_price, 2)
+
         # ━━━ HIGH-WATER-MARK: Never let the stop decrease ━━━
         stored = hwm_state.get(ticker, {})
         stored_hwm_stop = stored.get("hwm_stop", 0)
@@ -3037,6 +3050,11 @@ def calculate_trailing_stops(positions: list, snapshot: dict) -> list:
         # breathing room back (never below the original protective stop).
         if new_stop > buffer_cap:
             new_stop = max(buffer_cap, original_stop)
+        # ...but the breakeven floor beats the buffer cap: a >+2.5% winner must
+        # never be left able to close red, as long as breakeven stays below the
+        # live price (never a self-triggering stop).
+        if pnl_pct > BREAKEVEN_TIER_PCT and entry_price < current_price:
+            new_stop = max(new_stop, round(entry_price, 2))
         new_stop = round(new_stop, 2)
 
         if new_stop > stored_hwm_stop:
