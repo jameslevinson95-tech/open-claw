@@ -1,6 +1,6 @@
-# Open Claw — Full Codebase Dump (2026-07-06 00:22 EDT)
+# Open Claw — Full Codebase Dump (2026-07-06 01:40 EDT)
 
-Complete concatenation of all Python source + config for audit. Commit: ef32dc5
+Complete concatenation of all Python source for audit. Commit: 5ec9ec4
 
 
 ================================================================================
@@ -62,7 +62,8 @@ DECISION INPUTS (what you should analyze):
 - MOVE: Bond market volatility — rising MOVE with falling VIX = divergence warning
 - DIX: Dark pool buying index — high DIX (>45) = institutional accumulation, low DIX (<40) = distribution
 - Yield curve (10Y-2Y spread): Inverted = recession risk
-- HY spread proxy (HYG/LQD ratio): Falling = credit stress
+- HY_OAS (ICE BofA High Yield Option-Adjusted Spread, FRED): PRIMARY credit signal. Widening OAS = credit stress (flight from junk); tightening = credit calm. This is the clean, duration-neutral read — prefer it over the HYG/LQD proxy.
+- HY spread proxy (HYG/LQD ratio): FALLBACK only when HY_OAS is unavailable. NOTE: this ratio is duration-contaminated (a rates rally can make it rise for non-credit reasons), so weight HY_OAS first.
 - Sector breadth: % of sectors above 20DMA — broad participation vs narrow leadership
 
 FEDWATCH — FED RATE EXPECTATIONS (if provided):
@@ -1066,23 +1067,22 @@ MAX_RETRIES = 3
 RETRY_DELAY = 5
 
 # Curated smart money accounts (carried from former Agent 3)
-CURATED_ACCOUNTS = [
-    "unusual_whales",
-    "DeItaone",
-    "Fxhedgers",
-    "zaborsky",
-    "jimcramer",
-    "GurufocusData",
-    "OptionsHawk",
-    "PeterSchiff",
-    "TruthGundlach",
-    "elerianm",
-    "SqueezeMetrics",
-    "sentimentrader",
-    "DarkPoolChart",
-    "WallStJesus",
-    "VolSignals",
-]
+# FIX (2026-07-06): single source of truth. This list previously hardcoded 15
+# accounts that DISAGREED with what x_fetch actually fetches (31 accounts) — it
+# still listed retail accounts purged per Jamie's May directive (jimcramer,
+# unusual_whales, OptionsHawk, WallStJesus) and OMITTED the hedge-fund principals
+# (boazweinstein, RayDalio, ...) that Agent 3's own VETO_DIVERGENT rule cites.
+# Opus was told it monitored accounts it never sees. Import the real fetched list.
+try:
+    from x_fetch import CURATED_ACCOUNTS
+except Exception:
+    # Fail-safe fallback if x_fetch import breaks; keep the veto principals present.
+    CURATED_ACCOUNTS = [
+        "DeItaone", "Fxhedgers", "zaborsky", "GurufocusData", "PeterSchiff",
+        "TruthGundlach", "elerianm", "SqueezeMetrics", "sentimentrader",
+        "DarkPoolChart", "VolSignals", "boazweinstein", "CliffordAsness",
+        "DylanLeClair_", "cngarabedian", "RayDalio",
+    ]
 
 SYSTEM_PROMPT = """You are Agent 3: The Qualitative Synthesizer for a $100,000 speculative spot-only trading account.
 
@@ -1137,7 +1137,10 @@ OUTPUT FORMAT — respond with ONLY this JSON:
       "qualitative_thesis": "<2-3 sentences merging quant thesis with qualitative mosaic>",
       "cited_accounts": ["<accounts that drove verdict>"],
       "short_interest_pct": "<X%>",
-      "put_call_ratio": <float>
+      "put_call_ratio": <float>,
+      "x_bullish_count": <int: # of curated accounts bullish on this ticker in the mosaic>,
+      "x_bearish_count": <int: # of curated accounts bearish on this ticker in the mosaic>,
+      "hf_principal_signal": "<BULLISH | BEARISH | NONE: net stance of any named hedge-fund principal>"
     }
   ],
   "synthesis_notes": "<overall summary of qualitative synthesis>"
@@ -1510,6 +1513,12 @@ def run_agent3(agent2_result: dict = None, x_mentions: dict = None) -> dict:
             "verdict": verdict,
             "sentiment_read": ev.get("qualitative_thesis", ""),
             "cited_accounts": ev.get("cited_accounts", []),
+            # FIX (2026-07-06): emit the smart-money counts so trade_journal can
+            # finally measure whether the X/Twitter veto carries alpha. These were
+            # journal FIELDS that Agent 3 never populated -> empty strings forever.
+            "x_bullish_count": ev.get("x_bullish_count", ""),
+            "x_bearish_count": ev.get("x_bearish_count", ""),
+            "hf_principal_signal": ev.get("hf_principal_signal", ""),
         }
         verifications.append(verification)
 
@@ -1529,8 +1538,17 @@ def run_agent3(agent2_result: dict = None, x_mentions: dict = None) -> dict:
             c["confirm_enhanced"] = True
             print(f"  [Agent 3] ✅ CONFIRM_ENHANCED: {ticker}")
 
-        # Merge qualitative data into candidate
-        c["thesis"] = ev.get("qualitative_thesis", c.get("thesis", ""))
+        # Merge qualitative data into candidate.
+        # FIX (2026-07-06): preserve Agent 2's ORIGINAL quantitative thesis +
+        # catalyst instead of clobbering them. The double-blind (Opus writes its
+        # qualitative_thesis without seeing Agent 2's) is a good design; but
+        # DESTROYING the original catalyst record is not — Agent 5's thesis-drift
+        # monitor needs the original catalyst to detect when it dies. Keep both.
+        c["agent2_thesis"] = c.get("thesis", "")
+        c["catalyst"] = c.get("catalyst", "")
+        c["qualitative_thesis"] = ev.get("qualitative_thesis", "")
+        # Combined thesis Agent 5 will monitor: original catalyst + qualitative read.
+        c["thesis"] = ev.get("qualitative_thesis", "") or c.get("thesis", "")
         c["red_flag_warnings"] = ev.get("red_flag_warnings", [])
         c["qualitative_verdict"] = verdict
 
@@ -1656,6 +1674,7 @@ from dotenv import load_dotenv
 
 from config import (
     ACCOUNT_SIZE,
+    PLANNING_FLOOR_EXPIRY,
     BASE_RISK,
     MAX_RISK_PER_TRADE,
     MIN_RISK_PER_TRADE,
@@ -2113,9 +2132,26 @@ def run_agent4b(
             # Planning floor: while the funding transfer is still settling, size
             # positions against at least ACCOUNT_SIZE ($10k target). Buying power
             # stays at the REAL available cash so execution never overdraws.
-            account_value = max(live_equity, float(ACCOUNT_SIZE))
-            if account_value > live_equity:
-                print(f"[Agent 4B] Live equity ${live_equity:,.2f} below target — planning against ACCOUNT_SIZE=${float(ACCOUNT_SIZE):,.2f} (transfer settling)")
+            #
+            # FIX (2026-07-06): this floor is now DATE-GATED. It was permanent,
+            # so after a drawdown to e.g. $7K we still sized against $10K — risk
+            # rose as equity fell. On/after PLANNING_FLOOR_EXPIRY we size against
+            # REAL live equity (correct fixed-fractional / anti-fragile behavior).
+            from datetime import date as _date
+            _floor_active = False
+            try:
+                _y, _m, _d = (int(x) for x in str(PLANNING_FLOOR_EXPIRY).split("-"))
+                _floor_active = _date.today() < _date(_y, _m, _d)
+            except Exception:
+                _floor_active = False  # fail safe: no phantom floor
+            if _floor_active:
+                account_value = max(live_equity, float(ACCOUNT_SIZE))
+                if account_value > live_equity:
+                    print(f"[Agent 4B] Live equity ${live_equity:,.2f} below target — planning against ACCOUNT_SIZE=${float(ACCOUNT_SIZE):,.2f} (transfer settling, floor expires {PLANNING_FLOOR_EXPIRY})")
+            else:
+                account_value = live_equity
+                if live_equity < float(ACCOUNT_SIZE):
+                    print(f"[Agent 4B] Planning against REAL live equity ${live_equity:,.2f} (settling floor expired {PLANNING_FLOOR_EXPIRY}) — risk scales with actual account.")
             print(f"[Agent 4B] Planning equity: ${account_value:,.2f} | Real buying power: ${buying_power:,.2f}")
         except Exception as e:
             print(f"[Agent 4B] Could not fetch live equity ({e}) — falling back to ACCOUNT_SIZE=${ACCOUNT_SIZE}")
@@ -2244,6 +2280,13 @@ def run_agent4b(
             "theme": theme,
             "conviction_tier": conviction_tier,
             "confirm_enhanced": confirm_enhanced,
+            # FIX (2026-07-06): propagate the thesis into the order so Agent 5's
+            # thesis-drift monitor has something real to evaluate. Previously the
+            # order carried no thesis -> agent5 order.get("thesis","") was always
+            # empty -> drift monitor ran against an empty string every day.
+            "thesis": candidate.get("thesis", ""),
+            "catalyst": candidate.get("catalyst", ""),
+            "agent2_thesis": candidate.get("agent2_thesis", candidate.get("thesis", "")),
         }
 
         trade_orders.append(order)
@@ -2787,6 +2830,10 @@ def load_open_positions() -> list:
                             "stop_anchor_label": order.get("stop_anchor_label", ""),
                             "theme": order.get("theme", ""),
                             "thesis": order.get("thesis", ""),
+                            # 2026-07-06: carry the original catalyst so the drift
+                            # monitor can detect a DEAD catalyst, not just a soft read.
+                            "catalyst": order.get("catalyst", ""),
+                            "agent2_thesis": order.get("agent2_thesis", ""),
                             "dollar_risk": order.get("dollar_risk", 0),
                         }
 
@@ -2801,6 +2848,8 @@ def load_open_positions() -> list:
                     "stop_anchor_label": enrichment.get("stop_anchor_label", ""),
                     "theme": enrichment.get("theme", ""),
                     "thesis": enrichment.get("thesis", ""),
+                    "catalyst": enrichment.get("catalyst", ""),
+                    "agent2_thesis": enrichment.get("agent2_thesis", ""),
                     "dollar_risk": enrichment.get("dollar_risk", 0),
                     "unrealized_pl": p.get("unrealized_pl", 0),
                     "unrealized_plpc": p.get("unrealized_plpc", 0),
@@ -3798,6 +3847,15 @@ load_dotenv(Path(__file__).parent / ".env")
 ACCOUNT_SIZE = 10_000  # $10K Robinhood agentic account (real run)
 DRY_POWDER_FLOOR = 0.20  # Never deploy beyond 80% ($8,000 max deployed)
 
+# Planning-equity floor EXPIRY (2026-07-06 fix).
+# The transfer-settling floor `max(live_equity, ACCOUNT_SIZE)` was PERMANENT,
+# so after any drawdown we kept sizing against phantom $10K equity — risk rose
+# as the account shrank (anti-fragility inversion). This date-gates the floor:
+# on/after this date, sizing uses REAL live equity. $9,500 deposited 2026-05-31;
+# transfers settle well within 2 weeks, so the floor is long since unnecessary.
+# Set to a future date only to re-enable the floor during a fresh settling deposit.
+PLANNING_FLOOR_EXPIRY = os.environ.get("PLANNING_FLOOR_EXPIRY", "2026-06-14")  # YYYY-MM-DD
+
 # LLM Keys
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY", "")  # For Gemini (Agent 2)
@@ -3817,7 +3875,10 @@ AGENT5_PREFLIGHT_TIME = "15:25"  # Agent 5 pre-flight price snapshot
 AGENT5_TIME = "15:30"          # Agent 5 - Position Monitor
 
 # Risk Parameters (scaled to $10K account)
-PER_TRADE_RISK_CAP = 150.00    # $150 max risk per trade (1.5% of $10K)
+# PER_TRADE_RISK_CAP removed (2026-07-06): it was defined but NEVER enforced
+# anywhere — MAX_RISK_PER_TRADE ($200, below) is the actual per-trade ceiling.
+# Two conflicting "caps" was a future "why didn't the limit fire" incident.
+# The single per-trade risk policy is BASE_RISK -> MAX_RISK_PER_TRADE.
 SESSION_RISK_BUDGET = 1000.00  # $1,000 max session risk (10% of $10K)
 
 # ── Profit-taking (added) ──
@@ -4213,112 +4274,6 @@ if __name__ == "__main__":
         icon = "🟢" if result["healthy"] else ("🔴" if result["code"] == 2 else "⚪")
         print(f"{icon} execution daemon: {result['status'].upper()} — {result['reason']}")
     sys.exit(result["code"])
-```
-
-================================================================================
-FILE: data_fetcher_v1_deprecated.py
-================================================================================
-```python
-"""
-Market Data Fetcher
-Pulls macro indicators for Agent 1 (Macro Director).
-Uses yfinance for free, reliable data.
-"""
-import yfinance as yf
-from datetime import datetime, timedelta
-import json
-
-
-def fetch_macro_data() -> dict:
-    """
-    Fetch current macro indicators:
-    - VIX (^VIX)
-    - 10Y Treasury Yield (^TNX)
-    - 2Y Treasury Yield (^IRX approximation via 2Y)
-    - US Dollar Index (DX-Y.NYB)
-    - S&P 500 (^GSPC) - current + recent trend
-    - Gold (GC=F) - flight to safety signal
-    - HY Credit Spread proxy: HYG vs LQD ratio
-    """
-    tickers = {
-        "VIX": "^VIX",
-        "SP500": "^GSPC",
-        "TNX_10Y": "^TNX",
-        "TWO_YEAR": "2YY=F",
-        "DXY": "DX-Y.NYB",
-        "GOLD": "GC=F",
-        "HYG": "HYG",  # High yield corporate bond ETF
-        "LQD": "LQD",  # Investment grade corporate bond ETF
-    }
-
-    results = {}
-    end = datetime.now()
-    start = end - timedelta(days=30)
-
-    for name, ticker in tickers.items():
-        try:
-            data = yf.download(ticker, start=start, end=end, progress=False)
-            if data.empty:
-                results[name] = {"error": f"No data for {ticker}"}
-                continue
-
-            current = float(data["Close"].iloc[-1].item())
-            prev_5d = float(data["Close"].iloc[-5].item()) if len(data) >= 5 else current
-            prev_20d = float(data["Close"].iloc[-20].item()) if len(data) >= 20 else current
-
-            results[name] = {
-                "current": round(current, 2),
-                "5d_ago": round(prev_5d, 2),
-                "20d_ago": round(prev_20d, 2),
-                "5d_change_pct": round((current - prev_5d) / prev_5d * 100, 2),
-                "20d_change_pct": round((current - prev_20d) / prev_20d * 100, 2),
-            }
-        except Exception as e:
-            results[name] = {"error": str(e)}
-
-    # Compute yield curve (10Y - 2Y approximation)
-    if "TNX_10Y" in results and "TWO_YEAR" in results:
-        if "current" in results["TNX_10Y"] and "current" in results["TWO_YEAR"]:
-            results["YIELD_CURVE_SPREAD"] = round(
-                results["TNX_10Y"]["current"] - results["TWO_YEAR"]["current"], 2
-            )
-
-    # HY spread proxy (HYG/LQD ratio - lower = wider spreads = more stress)
-    if "HYG" in results and "LQD" in results:
-        if "current" in results["HYG"] and "current" in results["LQD"]:
-            results["HY_SPREAD_PROXY"] = round(
-                results["HYG"]["current"] / results["LQD"]["current"], 4
-            )
-
-    results["timestamp"] = datetime.now().isoformat()
-    return results
-
-
-def format_macro_for_prompt(data: dict) -> str:
-    """Format macro data into a clean text block for the LLM prompt."""
-    lines = [f"MACRO DATA SNAPSHOT — {data.get('timestamp', 'unknown')}", "=" * 50]
-
-    for key, val in data.items():
-        if key == "timestamp":
-            continue
-        if isinstance(val, dict) and "error" in val:
-            lines.append(f"{key}: DATA UNAVAILABLE ({val['error']})")
-        elif isinstance(val, dict):
-            lines.append(
-                f"{key}: {val['current']} "
-                f"(5d: {val['5d_change_pct']:+.2f}%, 20d: {val['20d_change_pct']:+.2f}%)"
-            )
-        else:
-            lines.append(f"{key}: {val}")
-
-    return "\n".join(lines)
-
-
-if __name__ == "__main__":
-    print("Fetching macro data...")
-    data = fetch_macro_data()
-    print(json.dumps(data, indent=2))
-    print("\n" + format_macro_for_prompt(data))
 ```
 
 ================================================================================
@@ -5311,7 +5266,7 @@ class ExecutionEngine:
         self,
         trade_id: str,
         ticker: str,
-        shares: int,
+        shares: float,
         limit_price: float,
         stop_price: float,
     ) -> dict:
@@ -5319,6 +5274,10 @@ class ExecutionEngine:
         Orchestrator calls this instead of calling the broker directly.
         Routes the entry order and records the intent in the ledger.
         The daemon will handle stop placement after fill.
+
+        NOTE (2026-07-06): shares is FLOAT — Robinhood supports fractional
+        shares and the account is configured for fractional sizing. Do NOT
+        int()-truncate upstream (0.9 -> 0 is a dead order).
         """
         try:
             lock = FileLock(LOCK_PATH, timeout=10)
@@ -6374,6 +6333,52 @@ FOMC_MEETINGS_2026 = [
 
 RATE_STEP = 0.25  # Fed moves in 25bp increments
 
+# Month code map for ZQ (30-day fed funds) futures tickers.
+_ZQ_MONTH_CODES = {1: "F", 2: "G", 3: "H", 4: "J", 5: "K", 6: "M",
+                   7: "N", 8: "Q", 9: "U", 10: "V", 11: "X", 12: "Z"}
+
+
+def _generate_fomc_schedule(year: int) -> list:
+    """
+    FIX (2026-07-06): FOMC_MEETINGS_2026 was hardcoded, so on 2027-01-01 FedWatch
+    would silently return 'No remaining FOMC meetings' and disappear from Agent 1's
+    context forever. This generates an APPROXIMATE schedule for any year (the Fed
+    holds ~8 meetings/yr, one roughly every 6-7 weeks) so FedWatch degrades
+    gracefully instead of vanishing. Update FOMC_MEETINGS_<year> with the real
+    published dates when the Fed announces them for best accuracy.
+    """
+    import calendar
+    # Approximate meeting months (Jan, Mar, May, Jun, Jul, Sep, Oct, Dec) mirror
+    # the historical 8-meeting cadence. Day ~mid/late month; exact day not critical
+    # for front-month ZQ contract selection (we key off the month contract).
+    approx = [(1, 28), (3, 18), (5, 6), (6, 17), (7, 29), (9, 16), (10, 28), (12, 9)]
+    yy = str(year)[-2:]
+    sched = []
+    for month, day in approx:
+        code = _ZQ_MONTH_CODES[month]
+        sched.append({
+            "label": f"{calendar.month_abbr[month]} {year}",
+            "ticker": f"ZQ{code}{yy}.CBT",
+            "date": f"{year}-{month:02d}-{day:02d}",
+            "month_code": code,
+            "approximate": True,
+        })
+    return sched
+
+
+def get_fomc_meetings() -> list:
+    """Return the FOMC schedule for the current + next year, auto-extending past
+    the hardcoded 2026 list so FedWatch never silently disappears."""
+    today = date.today()
+    meetings = list(FOMC_MEETINGS_2026)
+    # Extend forward for the current and next year if the hardcoded list is exhausted.
+    for yr in (today.year, today.year + 1):
+        if yr == 2026:
+            continue  # already have the real 2026 dates
+        if not any(str(yr) in m["label"] for m in meetings):
+            meetings.extend(_generate_fomc_schedule(yr))
+    return meetings
+
 
 def _detect_current_rate() -> Dict:
     """
@@ -6435,12 +6440,17 @@ def fetch_fedwatch() -> Dict:
     
     # Step 2: Get future meeting month contracts
     today = date.today()
-    future_meetings = [m for m in FOMC_MEETINGS_2026 
+    # FIX (2026-07-06): use the auto-extending schedule so FedWatch survives past 2026.
+    all_meetings = get_fomc_meetings()
+    future_meetings = [m for m in all_meetings
                        if date.fromisoformat(m["date"]) > today]
-    
+
     if not future_meetings:
         result["error"] = "No remaining FOMC meetings in schedule"
         return result
+    if any(m.get("approximate") for m in future_meetings):
+        result["schedule_note"] = ("Using APPROXIMATE FOMC dates (hardcoded schedule "
+                                   "exhausted — update FOMC_MEETINGS_<year> with real dates).")
     
     # Fetch all tickers at once
     tickers = [m["ticker"] for m in future_meetings]
@@ -9600,8 +9610,18 @@ def run_morning_pipeline(verbose: bool = False) -> dict:
         if ready_entries:
             # Only pass READY candidates forward (in Agent 2 format)
             ready_candidates = promote_ready_candidates()
-            # Replace candidates with only the READY ones
-            candidates = candidates + ready_candidates
+            # Replace candidates with only the READY ones (dedupe by ticker).
+            # FIX (2026-07-06): was `candidates + ready_candidates`, which let
+            # today's fresh, extended top-of-momentum names bypass the pullback
+            # bench whenever ANY watchlist name was READY. Now only bench-gated
+            # READY candidates trade. Dedupe guards against same-day duplicates.
+            _seen = set()
+            candidates = []
+            for _c in ready_candidates:
+                _t = _c.get("ticker")
+                if _t and _t not in _seen:
+                    _seen.add(_t)
+                    candidates.append(_c)
             agent2_result = dict(agent2_result)
             agent2_result["candidates"] = candidates
             print(f"\n  ✅ Promoting {len(candidates)} READY candidates to Agent 3")
@@ -10144,14 +10164,18 @@ def run_deferred_execution() -> dict:
         midpoint = round((bid + ask) / 2.0, 2)
         spread_pct = (ask - bid) / midpoint if midpoint > 0 else 999
 
-        if spread_pct > 0.05:
-            print(f"  🚫 REJECTED {ticker}: Spread is toxic ({spread_pct*100:.1f}% wide). Bid: {bid}, Ask: {ask}")
+        # FIX (2026-07-06): tightened from 5% -> 0.75%. A 5% spread gate is
+        # absurdly permissive for a large-cap momentum book (min mkt cap $100M,
+        # price > $5) — 5% spreads are lottery tickets, not swing entries.
+        MAX_SPREAD_PCT = 0.0075
+        if spread_pct > MAX_SPREAD_PCT:
+            print(f"  🚫 REJECTED {ticker}: Spread is toxic ({spread_pct*100:.2f}% wide). Bid: {bid}, Ask: {ask}")
             fills.append({"ticker": ticker, "status": "rejected_wide_spread"})
             engine.log_incident(
                 ticker=ticker, incident_type="WIDE_SPREAD",
                 bid=bid, ask=ask, target_shares=int(order.get("shares", 0)),
                 root_cause="toxic_spread",
-                notes=f"Spread {spread_pct*100:.1f}% exceeds 5% threshold.",
+                notes=f"Spread {spread_pct*100:.2f}% exceeds {MAX_SPREAD_PCT*100:.2f}% threshold.",
             )
             continue
 
@@ -10183,14 +10207,47 @@ def run_deferred_execution() -> dict:
 
         trade_id = str(uuid.uuid4())
 
+        # -----------------------------------------------------------------
+        # LIVE RE-SIZING (FIX 2026-07-06)
+        # Previously we sent the PLANNED share count as-is. If the stock gapped
+        # up (but stayed under the 3% reject), actual fill risk could ~2x the
+        # budget: a +2.9% gap against a ~3% stop distance blows past the
+        # MAX_RISK_PER_TRADE ceiling. Recompute shares against the LIVE fill
+        # price (marketable_limit) and the planned stop so realized $-risk stays
+        # at budget. Fractional-safe: Robinhood supports fractional shares, so we
+        # round to 4dp instead of int()-truncating (0.9 -> 0 = dead order).
+        # -----------------------------------------------------------------
+        planned_shares = float(order.get("shares", 0) or 0)
+        stop_price = order.get("stop_loss", 0) or 0
+        # agent4 emits the per-trade $ risk as "risk_budgeted" (accept aliases too).
+        risk_budget = (order.get("risk_budgeted")
+                       or order.get("risk_budget")
+                       or order.get("dollar_risk"))
+        exec_shares = planned_shares
+        per_share_risk = marketable_limit - stop_price
+        if risk_budget and per_share_risk > 0:
+            resized = float(risk_budget) / per_share_risk
+            # Never size UP beyond the plan (plan already respects allocation caps);
+            # only trim when the live fill price widened per-share risk.
+            exec_shares = min(planned_shares, resized)
+            if exec_shares < planned_shares:
+                print(f"  ⚖️  RE-SIZED {ticker}: {planned_shares:.4f} -> {exec_shares:.4f} sh "
+                      f"(live risk/sh ${per_share_risk:.2f}, budget ${float(risk_budget):.0f})")
+        # Fractional-safe rounding: 4dp, floor-ish via round; guard tiny dust.
+        exec_shares = round(exec_shares, 4)
+        if exec_shares <= 0:
+            print(f"  🚫 REJECTED {ticker}: re-sized share count rounded to 0.")
+            fills.append({"ticker": ticker, "status": "rejected_zero_shares"})
+            continue
+
         # Route intent to the Execution Ledger
         # Marketable limit: ask + 15bps to cross the spread and guarantee fills
         result = engine.submit_trade_intent(
             trade_id=trade_id,
             ticker=ticker,
-            shares=int(order.get("shares", 0)),
+            shares=exec_shares,
             limit_price=marketable_limit,
-            stop_price=order.get("stop_loss", 0),
+            stop_price=stop_price,
         )
         fills.append({
             "ticker": ticker,
@@ -11032,7 +11089,10 @@ def fetch_macro_data() -> dict:
             # to avoid illiquid option book spreads causing fake spikes
             import pytz
             now_et = datetime.now(pytz.timezone('US/Eastern'))
-            if name == "VIX" and now_et.hour < 9 or (now_et.hour == 9 and now_et.minute < 30):
+            # FIX (2026-07-06): parenthesize the time check. Without these parens,
+            # `and` bound tighter than `or`, so the guard applied to ALL tickers
+            # between 9:00-9:29 ET, not just VIX.
+            if name == "VIX" and (now_et.hour < 9 or (now_et.hour == 9 and now_et.minute < 30)):
                 if len(data) >= 2 and str(data.index[-1].date()) == str(now_et.date()):
                     current = float(data["Close"].iloc[-2].item())
                     print(f"[Pre-Flight] \U0001f6e1 VIX Guard: Using prior close {current} to avoid pre-market noise.")
@@ -11061,12 +11121,17 @@ def fetch_macro_data() -> dict:
                 macro["TNX_10Y"]["current"] - macro["TWO_YEAR"]["current"], 2
             )
 
-    # HY spread proxy
+    # HY spread proxy (HYG/LQD ratio) — kept as FALLBACK only.
     if "HYG" in macro and "LQD" in macro:
         if "current" in macro["HYG"] and "current" in macro["LQD"]:
             macro["HY_SPREAD_PROXY"] = round(
                 macro["HYG"]["current"] / macro["LQD"]["current"], 4
             )
+
+    # --- HY Credit Spread (REAL — ICE BofA HY OAS via FRED) ---
+    # FIX (2026-07-06): primary credit-stress signal. HYG/LQD conflates duration
+    # with credit; BAMLH0A0HYM2 is the clean spread. Falls back to the proxy above.
+    macro["HY_OAS"] = fetch_hy_oas()
 
     # --- MOVE Index (bond volatility) ---
     # MOVE is available via FRED as "MOVE" or as a proxy via ^MOVE
@@ -11153,6 +11218,48 @@ def fetch_move_index() -> dict:
             pass
 
     return {"error": "MOVE index unavailable"}
+
+
+def fetch_hy_oas() -> dict:
+    """
+    FIX (2026-07-06): fetch the REAL high-yield credit spread — ICE BofA US High
+    Yield Option-Adjusted Spread (FRED series BAMLH0A0HYM2) — instead of relying on
+    the HYG/LQD price ratio, which conflates DURATION with credit (LQD ~8.5y vs
+    HYG ~3.5y, so a rates rally reads as false 'credit stress relief'). OAS is the
+    clean credit-stress signal Agent 1's regime classifier should key off.
+
+    Returns {current (bps as %), 5d_ago, 5d_change_pct, date, source} or {error}.
+    """
+    fred_key = os.environ.get("FRED_API_KEY", "")
+    if not fred_key:
+        return {"error": "FRED_API_KEY not set — HY OAS unavailable (using HYG/LQD proxy)"}
+    try:
+        import requests
+        url = "https://api.stlouisfed.org/fred/series/observations"
+        params = {
+            "series_id": "BAMLH0A0HYM2",
+            "api_key": fred_key,
+            "file_type": "json",
+            "sort_order": "desc",
+            "limit": 30,
+        }
+        resp = requests.get(url, params=params, timeout=10)
+        obs = [o for o in resp.json().get("observations", []) if o.get("value") not in (".", None)]
+        if obs:
+            current = float(obs[0]["value"])
+            prev_5 = float(obs[min(4, len(obs) - 1)]["value"])
+            widening = current > prev_5
+            return {
+                "current": round(current, 2),           # percentage points (e.g. 3.15 = 315bps)
+                "5d_ago": round(prev_5, 2),
+                "5d_change_pct": round((current - prev_5) / prev_5 * 100, 2) if prev_5 else 0,
+                "date": obs[0]["date"],
+                "source": "FRED BAMLH0A0HYM2 (HY OAS)",
+                "interpretation": "WIDENING (credit stress rising)" if widening else "tightening (credit calm)",
+            }
+    except Exception as e:
+        return {"error": f"HY OAS fetch failed: {e}"}
+    return {"error": "HY OAS unavailable"}
 
 
 def fetch_dix() -> dict:
@@ -11642,14 +11749,20 @@ def fetch_smart_money_mentions(tickers: list) -> dict:
     from config import SMART_MONEY_ACCOUNTS
 
     mentions = {}
+    # FIX (2026-07-06): single source of truth. SMART_MONEY_ACCOUNTS is empty in
+    # config, and the old hardcoded fallback here was a THIRD divergent copy of the
+    # curated list (still listing retail accounts purged per Jamie's May directive).
+    # Fall back to x_fetch.CURATED_ACCOUNTS — the one list actually fetched.
     curated_handles = SMART_MONEY_ACCOUNTS
     if not curated_handles:
-        curated_handles = [
-            "unusual_whales", "DeItaone", "Fxhedgers", "zaborsky",
-            "jimcramer", "GurufocusData", "OptionsHawk", "PeterSchiff",
-            "TruthGundlach", "elerianm", "SqueezeMetrics", "sentimentrader",
-            "DarkPoolChart", "WallStJesus", "VolSignals",
-        ]
+        try:
+            from x_fetch import CURATED_ACCOUNTS as curated_handles
+        except Exception:
+            curated_handles = [
+                "DeItaone", "Fxhedgers", "zaborsky", "GurufocusData", "PeterSchiff",
+                "TruthGundlach", "elerianm", "SqueezeMetrics", "sentimentrader",
+                "DarkPoolChart", "VolSignals", "boazweinstein", "RayDalio",
+            ]
 
     # NOTE: The actual x_search calls happen in the orchestrator (orchestrator.py)
     # because x_search is an OCPlatform tool, not a Python library.
@@ -14509,239 +14622,6 @@ from datetime import datetime
 print(f"[{datetime.now().isoformat(timespec='seconds')}] schwab_reauth.py is RETIRED "
       f"(Schwab removed; Tiingo is the data source). No-op exit.")
 sys.exit(0)
-```
-
-================================================================================
-FILE: test_data_provider.py
-================================================================================
-```python
-"""
-Tests for DataProvider abstraction and risk math.
-Uses MockDataProvider — no live API calls.
-
-Run: pytest test_data_provider.py -v
-"""
-import pytest
-import numpy as np
-import pandas as pd
-from datetime import datetime, timedelta
-
-from data_provider import DataProvider, MockDataProvider, DataUnavailable, set_provider, get_provider
-
-
-# ── Fixtures ─────────────────────────────────────────────────────────
-
-# Shared date index for all mock bars (avoids join misalignment)
-_SHARED_DATES = pd.date_range(end="2026-05-28", periods=120, freq="B")
-
-
-def _make_bars(prices: list, dates=None) -> pd.DataFrame:
-    """Create a mock OHLCV DataFrame from a list of close prices."""
-    n = len(prices)
-    if dates is None:
-        dates = _SHARED_DATES[-n:]
-    return pd.DataFrame({
-        "Open": [p * 0.99 for p in prices],
-        "High": [p * 1.01 for p in prices],
-        "Low": [p * 0.98 for p in prices],
-        "Close": prices,
-        "Volume": [1_000_000] * n,
-    }, index=dates)
-
-
-@pytest.fixture
-def mock_dp():
-    """Set up a MockDataProvider and register it as default."""
-    # Generate correlated returns (AAPL and MSFT move together)
-    np.random.seed(42)
-    common_factor = np.random.randn(120) * 0.02  # shared market factor
-    aapl_returns = common_factor + np.random.randn(120) * 0.005
-    msft_returns = common_factor + np.random.randn(120) * 0.005
-    # TSLA: independent random walk
-    tsla_returns = np.random.randn(120) * 0.03
-
-    aapl_prices = [150.0]
-    msft_prices = [300.0]
-    tsla_prices = [200.0]
-    for i in range(119):
-        aapl_prices.append(aapl_prices[-1] * (1 + aapl_returns[i]))
-        msft_prices.append(msft_prices[-1] * (1 + msft_returns[i]))
-        tsla_prices.append(tsla_prices[-1] * (1 + tsla_returns[i]))
-
-    dp = MockDataProvider(
-        bars={
-            "AAPL": _make_bars(aapl_prices),
-            "MSFT": _make_bars(msft_prices),
-            "TSLA": _make_bars(tsla_prices),
-        },
-        indices={
-            "VIX": 18.5,
-            "SPX": 5425.0,
-        },
-        splits={
-            "NVDA": [{"ticker": "NVDA", "execution_date": "2024-06-10", "split_from": 1, "split_to": 10}],
-        },
-    )
-    set_provider(dp)
-    yield dp
-    set_provider(None)  # Reset
-
-
-# ── DataProvider Tests ───────────────────────────────────────────────
-
-class TestDataProviderInterface:
-
-    def test_get_bars_returns_dataframe(self, mock_dp):
-        bars = get_provider().get_bars("AAPL", lookback_days=60)
-        assert isinstance(bars, pd.DataFrame)
-        assert "Close" in bars.columns
-        assert len(bars) == 120  # Mock returns all bars
-
-    def test_get_bars_missing_ticker_raises(self, mock_dp):
-        with pytest.raises(DataUnavailable):
-            get_provider().get_bars("FAKE", lookback_days=60)
-
-    def test_get_index_returns_dict(self, mock_dp):
-        idx = get_provider().get_index("VIX")
-        assert idx["symbol"] == "VIX"
-        assert idx["value"] == 18.5
-        assert idx["is_proxy"] is False
-
-    def test_get_index_missing_raises(self, mock_dp):
-        with pytest.raises(DataUnavailable):
-            get_provider().get_index("FAKE")
-
-    def test_get_corporate_actions(self, mock_dp):
-        splits = get_provider().get_corporate_actions("NVDA")
-        assert len(splits) == 1
-        assert splits[0]["split_to"] == 10
-
-    def test_get_corporate_actions_empty(self, mock_dp):
-        splits = get_provider().get_corporate_actions("AAPL")
-        assert splits == []
-
-
-# ── Correlation Veto Tests ───────────────────────────────────────────
-
-class TestCorrelationVeto:
-
-    def test_correlated_tickers_vetoed(self, mock_dp):
-        from agent4_risk_manager import correlation_veto
-        # AAPL and MSFT share 80% common factor — should be correlated
-        # Use lower threshold to account for mock data alignment
-        result = correlation_veto("AAPL", ["MSFT"], threshold=0.50)
-        assert result is True  # Vetoed
-
-    def test_uncorrelated_tickers_pass(self, mock_dp):
-        from agent4_risk_manager import correlation_veto
-        # AAPL trending, TSLA random — should not be correlated
-        result = correlation_veto("AAPL", ["TSLA"], threshold=0.70)
-        assert result is False  # Passes
-
-    def test_empty_positions_pass(self, mock_dp):
-        from agent4_risk_manager import correlation_veto
-        result = correlation_veto("AAPL", [], threshold=0.70)
-        assert result is False
-
-    def test_data_unavailable_vetoes(self, mock_dp):
-        from agent4_risk_manager import correlation_veto
-        # FAKE ticker not in mock — should fail-closed (veto)
-        result = correlation_veto("FAKE", ["AAPL"], threshold=0.70)
-        assert result is True  # Fail-closed: no data for candidate = veto
-
-    def test_nan_correlation_vetoes(self, mock_dp):
-        from agent4_risk_manager import correlation_veto
-        from data_provider import MockDataProvider, set_provider
-        # Create two tickers with non-overlapping dates → NaN correlation
-        dates_a = pd.date_range(end="2026-01-15", periods=60, freq="B")
-        dates_b = pd.date_range(end="2026-05-15", periods=60, freq="B")
-        dp = MockDataProvider(bars={
-            "AAA": _make_bars([100 + i for i in range(60)], dates=dates_a),
-            "BBB": _make_bars([200 + i for i in range(60)], dates=dates_b),
-        })
-        set_provider(dp)
-        result = correlation_veto("AAA", ["BBB"], threshold=0.70)
-        assert result is True  # NaN = fail-closed
-        set_provider(mock_dp)  # Restore
-
-
-# ── Size Position Tests ──────────────────────────────────────────────
-
-class TestSizePosition:
-
-    def test_basic_sizing(self, mock_dp):
-        from agent4_risk_manager import size_position
-        result = size_position(
-            entry=100.0, stop=95.0, account_value=10000,
-            tier="PASS", confirm_enhanced=False, vol_regime="Normal",
-            posture="Aggressive", session_risk_used=0.0,
-        )
-        assert result["shares"] > 0
-        assert result["binding_constraint"] in ("risk", "allocation")
-
-    def test_tight_stop_floor(self, mock_dp):
-        from agent4_risk_manager import size_position
-        # Stop distance = $0.10 on $100 stock (0.1%)
-        # Without 1% floor: shares = risk / 0.10 = huge
-        # With 1% floor: shares = risk / 1.00 = reasonable
-        result = size_position(
-            entry=100.0, stop=99.90, account_value=10000,
-            tier="PASS", confirm_enhanced=False, vol_regime="Normal",
-            posture="Aggressive", session_risk_used=0.0,
-        )
-        # Position should be capped by allocation, not infinite
-        assert result["shares"] > 0
-        max_alloc_shares = int(10000 * 0.25 / 100)  # 25% of 10k
-        assert result["shares"] <= max_alloc_shares
-
-    def test_invalid_stop_zero_shares(self, mock_dp):
-        from agent4_risk_manager import size_position
-        result = size_position(
-            entry=100.0, stop=100.0, account_value=10000,
-            tier="PASS", confirm_enhanced=False, vol_regime="Normal",
-            posture="Aggressive", session_risk_used=0.0,
-        )
-        assert result["shares"] == 0
-
-    def test_bunker_posture_zero_shares(self, mock_dp):
-        from agent4_risk_manager import size_position
-        result = size_position(
-            entry=100.0, stop=95.0, account_value=10000,
-            tier="PASS", confirm_enhanced=False, vol_regime="Normal",
-            posture="Bunker", session_risk_used=0.0,
-        )
-        assert result["shares"] == 0
-
-    def test_session_budget_exhausted(self, mock_dp):
-        from agent4_risk_manager import size_position
-        result = size_position(
-            entry=100.0, stop=95.0, account_value=10000,
-            tier="PASS", confirm_enhanced=False, vol_regime="Normal",
-            posture="Aggressive", session_risk_used=99999.0,
-        )
-        assert result["shares"] == 0
-        assert "EXHAUSTED" in result.get("reason", "")
-
-
-# ── Index Fallback Chain Tests ───────────────────────────────────────
-
-class TestIndexFallback:
-
-    def test_massive_hit(self, mock_dp):
-        idx = get_provider().get_index("VIX")
-        assert idx["value"] == 18.5
-        assert idx["source"] == "mock"
-
-    def test_all_miss_raises(self):
-        empty_dp = MockDataProvider()
-        set_provider(empty_dp)
-        with pytest.raises(DataUnavailable):
-            get_provider().get_index("VIX")
-        set_provider(None)
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])
 ```
 
 ================================================================================
