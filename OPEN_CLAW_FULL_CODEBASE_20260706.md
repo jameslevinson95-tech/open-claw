@@ -1,6 +1,6 @@
-# Open Claw — Full Codebase Dump (2026-07-06 10:07 EDT)
+# Open Claw — Full Codebase Dump (2026-07-06 10:53 EDT)
 
-Complete concatenation of all Python source for audit. Commit: 8ccf581
+Complete concatenation of all Python source for audit. Commit: bdfa13f
 
 
 ================================================================================
@@ -7253,11 +7253,39 @@ import json
 import argparse
 from datetime import datetime
 
+import os
+
 from agent5_position_monitor import (
     load_open_positions,
     snapshot_prices,
     calculate_trailing_stops,
 )
+
+# The EOD stop digest (4:00 PM) parses the day's reinforce log for lines like
+# "TICKER: ... HWM updated: $X -> $Y". The 30-min launchd reinforce writes there;
+# this 15-min intraday trail historically did NOT, so intraday-only ratchets were
+# invisible in the daily summary. We now append applied intraday ratchets to the
+# SAME log in the SAME format so the digest picks them up with zero changes.
+_BASE = os.path.dirname(os.path.abspath(__file__))
+_REINFORCE_LOG = os.path.join(
+    _BASE, "output", "logs", f"hourly_reinforce_{datetime.now():%Y-%m-%d}.log"
+)
+
+
+def _log_ratchet_for_digest(ticker: str, prev_stop, new_stop) -> None:
+    """Append an applied intraday ratchet in the digest's parse format."""
+    if not prev_stop or not new_stop:
+        return
+    try:
+        os.makedirs(os.path.dirname(_REINFORCE_LOG), exist_ok=True)
+        with open(_REINFORCE_LOG, "a") as f:
+            f.write(
+                f"[IntradayTrail {datetime.now():%H:%M}] {ticker}: intraday ratchet "
+                f"[HWM updated: ${prev_stop:.2f} -> ${new_stop:.2f}]\n"
+            )
+    except Exception:
+        # Never let a logging hiccup break the actual stop push.
+        pass
 
 
 def run_intraday_trail(dry_run: bool = False) -> dict:
@@ -7328,7 +7356,10 @@ def run_intraday_trail(dry_run: bool = False) -> dict:
                 # Non-atomic fallback (matches robinhood_broker behavior).
                 ok = engine.update_stop(ticker, round(new_stop, 2), reason="IntradayTrail")
             rec["applied"] = bool(ok)
-            if not ok:
+            if ok:
+                # Record it so the 4 PM EOD digest sees intraday ratchets too.
+                _log_ratchet_for_digest(ticker, original_stop, round(new_stop, 2))
+            else:
                 rec["error"] = "broker update returned falsy"
         except Exception as e:
             rec["applied"] = False
