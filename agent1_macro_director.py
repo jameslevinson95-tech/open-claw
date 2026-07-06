@@ -53,7 +53,8 @@ DECISION INPUTS (what you should analyze):
 - MOVE: Bond market volatility — rising MOVE with falling VIX = divergence warning
 - DIX: Dark pool buying index — high DIX (>45) = institutional accumulation, low DIX (<40) = distribution
 - Yield curve (10Y-2Y spread): Inverted = recession risk
-- HY spread proxy (HYG/LQD ratio): Falling = credit stress
+- HY_OAS (ICE BofA High Yield Option-Adjusted Spread, FRED): PRIMARY credit signal. Widening OAS = credit stress (flight from junk); tightening = credit calm. This is the clean, duration-neutral read — prefer it over the HYG/LQD proxy.
+- HY spread proxy (HYG/LQD ratio): FALLBACK only when HY_OAS is unavailable. NOTE: this ratio is duration-contaminated (a rates rally can make it rise for non-credit reasons), so weight HY_OAS first.
 - Sector breadth: % of sectors above 20DMA — broad participation vs narrow leadership
 
 FEDWATCH — FED RATE EXPECTATIONS (if provided):

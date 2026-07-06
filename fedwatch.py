@@ -37,6 +37,52 @@ FOMC_MEETINGS_2026 = [
 
 RATE_STEP = 0.25  # Fed moves in 25bp increments
 
+# Month code map for ZQ (30-day fed funds) futures tickers.
+_ZQ_MONTH_CODES = {1: "F", 2: "G", 3: "H", 4: "J", 5: "K", 6: "M",
+                   7: "N", 8: "Q", 9: "U", 10: "V", 11: "X", 12: "Z"}
+
+
+def _generate_fomc_schedule(year: int) -> list:
+    """
+    FIX (2026-07-06): FOMC_MEETINGS_2026 was hardcoded, so on 2027-01-01 FedWatch
+    would silently return 'No remaining FOMC meetings' and disappear from Agent 1's
+    context forever. This generates an APPROXIMATE schedule for any year (the Fed
+    holds ~8 meetings/yr, one roughly every 6-7 weeks) so FedWatch degrades
+    gracefully instead of vanishing. Update FOMC_MEETINGS_<year> with the real
+    published dates when the Fed announces them for best accuracy.
+    """
+    import calendar
+    # Approximate meeting months (Jan, Mar, May, Jun, Jul, Sep, Oct, Dec) mirror
+    # the historical 8-meeting cadence. Day ~mid/late month; exact day not critical
+    # for front-month ZQ contract selection (we key off the month contract).
+    approx = [(1, 28), (3, 18), (5, 6), (6, 17), (7, 29), (9, 16), (10, 28), (12, 9)]
+    yy = str(year)[-2:]
+    sched = []
+    for month, day in approx:
+        code = _ZQ_MONTH_CODES[month]
+        sched.append({
+            "label": f"{calendar.month_abbr[month]} {year}",
+            "ticker": f"ZQ{code}{yy}.CBT",
+            "date": f"{year}-{month:02d}-{day:02d}",
+            "month_code": code,
+            "approximate": True,
+        })
+    return sched
+
+
+def get_fomc_meetings() -> list:
+    """Return the FOMC schedule for the current + next year, auto-extending past
+    the hardcoded 2026 list so FedWatch never silently disappears."""
+    today = date.today()
+    meetings = list(FOMC_MEETINGS_2026)
+    # Extend forward for the current and next year if the hardcoded list is exhausted.
+    for yr in (today.year, today.year + 1):
+        if yr == 2026:
+            continue  # already have the real 2026 dates
+        if not any(str(yr) in m["label"] for m in meetings):
+            meetings.extend(_generate_fomc_schedule(yr))
+    return meetings
+
 
 def _detect_current_rate() -> Dict:
     """
@@ -98,12 +144,17 @@ def fetch_fedwatch() -> Dict:
     
     # Step 2: Get future meeting month contracts
     today = date.today()
-    future_meetings = [m for m in FOMC_MEETINGS_2026 
+    # FIX (2026-07-06): use the auto-extending schedule so FedWatch survives past 2026.
+    all_meetings = get_fomc_meetings()
+    future_meetings = [m for m in all_meetings
                        if date.fromisoformat(m["date"]) > today]
-    
+
     if not future_meetings:
         result["error"] = "No remaining FOMC meetings in schedule"
         return result
+    if any(m.get("approximate") for m in future_meetings):
+        result["schedule_note"] = ("Using APPROXIMATE FOMC dates (hardcoded schedule "
+                                   "exhausted — update FOMC_MEETINGS_<year> with real dates).")
     
     # Fetch all tickers at once
     tickers = [m["ticker"] for m in future_meetings]

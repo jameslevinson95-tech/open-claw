@@ -43,7 +43,10 @@ AGENT5_PREFLIGHT_TIME = "15:25"  # Agent 5 pre-flight price snapshot
 AGENT5_TIME = "15:30"          # Agent 5 - Position Monitor
 
 # Risk Parameters (scaled to $10K account)
-PER_TRADE_RISK_CAP = 150.00    # $150 max risk per trade (1.5% of $10K)
+# PER_TRADE_RISK_CAP removed (2026-07-06): it was defined but NEVER enforced
+# anywhere — MAX_RISK_PER_TRADE ($200, below) is the actual per-trade ceiling.
+# Two conflicting "caps" was a future "why didn't the limit fire" incident.
+# The single per-trade risk policy is BASE_RISK -> MAX_RISK_PER_TRADE.
 SESSION_RISK_BUDGET = 1000.00  # $1,000 max session risk (10% of $10K)
 
 # ── Profit-taking (added) ──

@@ -260,12 +260,17 @@ def fetch_macro_data() -> dict:
                 macro["TNX_10Y"]["current"] - macro["TWO_YEAR"]["current"], 2
             )
 
-    # HY spread proxy
+    # HY spread proxy (HYG/LQD ratio) — kept as FALLBACK only.
     if "HYG" in macro and "LQD" in macro:
         if "current" in macro["HYG"] and "current" in macro["LQD"]:
             macro["HY_SPREAD_PROXY"] = round(
                 macro["HYG"]["current"] / macro["LQD"]["current"], 4
             )
+
+    # --- HY Credit Spread (REAL — ICE BofA HY OAS via FRED) ---
+    # FIX (2026-07-06): primary credit-stress signal. HYG/LQD conflates duration
+    # with credit; BAMLH0A0HYM2 is the clean spread. Falls back to the proxy above.
+    macro["HY_OAS"] = fetch_hy_oas()
 
     # --- MOVE Index (bond volatility) ---
     # MOVE is available via FRED as "MOVE" or as a proxy via ^MOVE
@@ -352,6 +357,48 @@ def fetch_move_index() -> dict:
             pass
 
     return {"error": "MOVE index unavailable"}
+
+
+def fetch_hy_oas() -> dict:
+    """
+    FIX (2026-07-06): fetch the REAL high-yield credit spread — ICE BofA US High
+    Yield Option-Adjusted Spread (FRED series BAMLH0A0HYM2) — instead of relying on
+    the HYG/LQD price ratio, which conflates DURATION with credit (LQD ~8.5y vs
+    HYG ~3.5y, so a rates rally reads as false 'credit stress relief'). OAS is the
+    clean credit-stress signal Agent 1's regime classifier should key off.
+
+    Returns {current (bps as %), 5d_ago, 5d_change_pct, date, source} or {error}.
+    """
+    fred_key = os.environ.get("FRED_API_KEY", "")
+    if not fred_key:
+        return {"error": "FRED_API_KEY not set — HY OAS unavailable (using HYG/LQD proxy)"}
+    try:
+        import requests
+        url = "https://api.stlouisfed.org/fred/series/observations"
+        params = {
+            "series_id": "BAMLH0A0HYM2",
+            "api_key": fred_key,
+            "file_type": "json",
+            "sort_order": "desc",
+            "limit": 30,
+        }
+        resp = requests.get(url, params=params, timeout=10)
+        obs = [o for o in resp.json().get("observations", []) if o.get("value") not in (".", None)]
+        if obs:
+            current = float(obs[0]["value"])
+            prev_5 = float(obs[min(4, len(obs) - 1)]["value"])
+            widening = current > prev_5
+            return {
+                "current": round(current, 2),           # percentage points (e.g. 3.15 = 315bps)
+                "5d_ago": round(prev_5, 2),
+                "5d_change_pct": round((current - prev_5) / prev_5 * 100, 2) if prev_5 else 0,
+                "date": obs[0]["date"],
+                "source": "FRED BAMLH0A0HYM2 (HY OAS)",
+                "interpretation": "WIDENING (credit stress rising)" if widening else "tightening (credit calm)",
+            }
+    except Exception as e:
+        return {"error": f"HY OAS fetch failed: {e}"}
+    return {"error": "HY OAS unavailable"}
 
 
 def fetch_dix() -> dict:
@@ -841,14 +888,20 @@ def fetch_smart_money_mentions(tickers: list) -> dict:
     from config import SMART_MONEY_ACCOUNTS
 
     mentions = {}
+    # FIX (2026-07-06): single source of truth. SMART_MONEY_ACCOUNTS is empty in
+    # config, and the old hardcoded fallback here was a THIRD divergent copy of the
+    # curated list (still listing retail accounts purged per Jamie's May directive).
+    # Fall back to x_fetch.CURATED_ACCOUNTS — the one list actually fetched.
     curated_handles = SMART_MONEY_ACCOUNTS
     if not curated_handles:
-        curated_handles = [
-            "unusual_whales", "DeItaone", "Fxhedgers", "zaborsky",
-            "jimcramer", "GurufocusData", "OptionsHawk", "PeterSchiff",
-            "TruthGundlach", "elerianm", "SqueezeMetrics", "sentimentrader",
-            "DarkPoolChart", "WallStJesus", "VolSignals",
-        ]
+        try:
+            from x_fetch import CURATED_ACCOUNTS as curated_handles
+        except Exception:
+            curated_handles = [
+                "DeItaone", "Fxhedgers", "zaborsky", "GurufocusData", "PeterSchiff",
+                "TruthGundlach", "elerianm", "SqueezeMetrics", "sentimentrader",
+                "DarkPoolChart", "VolSignals", "boazweinstein", "RayDalio",
+            ]
 
     # NOTE: The actual x_search calls happen in the orchestrator (orchestrator.py)
     # because x_search is an OCPlatform tool, not a Python library.

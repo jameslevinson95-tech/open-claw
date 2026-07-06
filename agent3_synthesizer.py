@@ -35,23 +35,22 @@ MAX_RETRIES = 3
 RETRY_DELAY = 5
 
 # Curated smart money accounts (carried from former Agent 3)
-CURATED_ACCOUNTS = [
-    "unusual_whales",
-    "DeItaone",
-    "Fxhedgers",
-    "zaborsky",
-    "jimcramer",
-    "GurufocusData",
-    "OptionsHawk",
-    "PeterSchiff",
-    "TruthGundlach",
-    "elerianm",
-    "SqueezeMetrics",
-    "sentimentrader",
-    "DarkPoolChart",
-    "WallStJesus",
-    "VolSignals",
-]
+# FIX (2026-07-06): single source of truth. This list previously hardcoded 15
+# accounts that DISAGREED with what x_fetch actually fetches (31 accounts) — it
+# still listed retail accounts purged per Jamie's May directive (jimcramer,
+# unusual_whales, OptionsHawk, WallStJesus) and OMITTED the hedge-fund principals
+# (boazweinstein, RayDalio, ...) that Agent 3's own VETO_DIVERGENT rule cites.
+# Opus was told it monitored accounts it never sees. Import the real fetched list.
+try:
+    from x_fetch import CURATED_ACCOUNTS
+except Exception:
+    # Fail-safe fallback if x_fetch import breaks; keep the veto principals present.
+    CURATED_ACCOUNTS = [
+        "DeItaone", "Fxhedgers", "zaborsky", "GurufocusData", "PeterSchiff",
+        "TruthGundlach", "elerianm", "SqueezeMetrics", "sentimentrader",
+        "DarkPoolChart", "VolSignals", "boazweinstein", "CliffordAsness",
+        "DylanLeClair_", "cngarabedian", "RayDalio",
+    ]
 
 SYSTEM_PROMPT = """You are Agent 3: The Qualitative Synthesizer for a $100,000 speculative spot-only trading account.
 
