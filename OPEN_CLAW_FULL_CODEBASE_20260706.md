@@ -1,6 +1,6 @@
-# Open Claw — Full Codebase Dump (2026-07-06 10:53 EDT)
+# Open Claw — Full Codebase Dump (2026-07-06 13:19 EDT)
 
-Complete concatenation of all Python source for audit. Commit: bdfa13f
+Complete concatenation of all Python source for audit. Commit: afb004e
 
 
 ================================================================================
@@ -3004,13 +3004,39 @@ def calculate_trailing_stops(positions: list, snapshot: dict) -> list:
         new_stop = max(new_stop, original_stop)
         new_stop = round(new_stop, 2)
 
+        # ━━━ MIN-BUFFER CLAMP: don't let a tier stop sit on top of price ━━━
+        # The tier math (entry + X% of gains) can land a hair below the market
+        # on a fast runner — e.g. 2026-07-06 KVUE at +10% trailed to $19.31 vs a
+        # $19.41 price (~0.5% away) and got chopped out on ordinary noise for a
+        # +9.3% exit instead of being left room to run. Keep the stop at least
+        # MIN_BUFFER_PCT below the current price so a normal intraday wiggle
+        # can't tag it. Hard floor = the original stop (we NEVER widen below the
+        # protection we already had). Applied both to the freshly-computed tier
+        # stop AND after the HWM enforcement, so a previously-stored too-tight
+        # HWM stop also gets relaxed to the buffer.
+        MIN_BUFFER_PCT = 0.03  # keep the stop at least 3% below current price
+        buffer_cap = round(current_price * (1 - MIN_BUFFER_PCT), 2)
+
+        if new_stop > buffer_cap:
+            relaxed = max(buffer_cap, original_stop)  # never below original
+            if relaxed < new_stop:
+                trailing_note += (f" (buffered to ≥{int(MIN_BUFFER_PCT*100)}% "
+                                  f"below price: ${relaxed})")
+                new_stop = relaxed
+        new_stop = round(new_stop, 2)
+
         # ━━━ HIGH-WATER-MARK: Never let the stop decrease ━━━
         stored = hwm_state.get(ticker, {})
         stored_hwm_stop = stored.get("hwm_stop", 0)
         stored_hwm_price = stored.get("hwm_price", 0)
 
-        # Enforce: stop can only ratchet up, never down
+        # Enforce: stop can only ratchet up, never down...
         new_stop = max(new_stop, stored_hwm_stop)
+        # ...EXCEPT the buffer cap still wins over a stale, too-tight stored HWM,
+        # so a stop that got ratcheted on top of price on a prior tick gets
+        # breathing room back (never below the original protective stop).
+        if new_stop > buffer_cap:
+            new_stop = max(buffer_cap, original_stop)
         new_stop = round(new_stop, 2)
 
         if new_stop > stored_hwm_stop:
