@@ -15,6 +15,15 @@ load_dotenv(Path(__file__).parent / ".env")
 ACCOUNT_SIZE = 10_000  # $10K Robinhood agentic account (real run)
 DRY_POWDER_FLOOR = 0.20  # Never deploy beyond 80% ($8,000 max deployed)
 
+# Planning-equity floor EXPIRY (2026-07-06 fix).
+# The transfer-settling floor `max(live_equity, ACCOUNT_SIZE)` was PERMANENT,
+# so after any drawdown we kept sizing against phantom $10K equity — risk rose
+# as the account shrank (anti-fragility inversion). This date-gates the floor:
+# on/after this date, sizing uses REAL live equity. $9,500 deposited 2026-05-31;
+# transfers settle well within 2 weeks, so the floor is long since unnecessary.
+# Set to a future date only to re-enable the floor during a fresh settling deposit.
+PLANNING_FLOOR_EXPIRY = os.environ.get("PLANNING_FLOOR_EXPIRY", "2026-06-14")  # YYYY-MM-DD
+
 # LLM Keys
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY", "")  # For Gemini (Agent 2)

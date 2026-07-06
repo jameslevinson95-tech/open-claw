@@ -24,6 +24,7 @@ from dotenv import load_dotenv
 
 from config import (
     ACCOUNT_SIZE,
+    PLANNING_FLOOR_EXPIRY,
     BASE_RISK,
     MAX_RISK_PER_TRADE,
     MIN_RISK_PER_TRADE,
@@ -481,9 +482,26 @@ def run_agent4b(
             # Planning floor: while the funding transfer is still settling, size
             # positions against at least ACCOUNT_SIZE ($10k target). Buying power
             # stays at the REAL available cash so execution never overdraws.
-            account_value = max(live_equity, float(ACCOUNT_SIZE))
-            if account_value > live_equity:
-                print(f"[Agent 4B] Live equity ${live_equity:,.2f} below target — planning against ACCOUNT_SIZE=${float(ACCOUNT_SIZE):,.2f} (transfer settling)")
+            #
+            # FIX (2026-07-06): this floor is now DATE-GATED. It was permanent,
+            # so after a drawdown to e.g. $7K we still sized against $10K — risk
+            # rose as equity fell. On/after PLANNING_FLOOR_EXPIRY we size against
+            # REAL live equity (correct fixed-fractional / anti-fragile behavior).
+            from datetime import date as _date
+            _floor_active = False
+            try:
+                _y, _m, _d = (int(x) for x in str(PLANNING_FLOOR_EXPIRY).split("-"))
+                _floor_active = _date.today() < _date(_y, _m, _d)
+            except Exception:
+                _floor_active = False  # fail safe: no phantom floor
+            if _floor_active:
+                account_value = max(live_equity, float(ACCOUNT_SIZE))
+                if account_value > live_equity:
+                    print(f"[Agent 4B] Live equity ${live_equity:,.2f} below target — planning against ACCOUNT_SIZE=${float(ACCOUNT_SIZE):,.2f} (transfer settling, floor expires {PLANNING_FLOOR_EXPIRY})")
+            else:
+                account_value = live_equity
+                if live_equity < float(ACCOUNT_SIZE):
+                    print(f"[Agent 4B] Planning against REAL live equity ${live_equity:,.2f} (settling floor expired {PLANNING_FLOOR_EXPIRY}) — risk scales with actual account.")
             print(f"[Agent 4B] Planning equity: ${account_value:,.2f} | Real buying power: ${buying_power:,.2f}")
         except Exception as e:
             print(f"[Agent 4B] Could not fetch live equity ({e}) — falling back to ACCOUNT_SIZE=${ACCOUNT_SIZE}")

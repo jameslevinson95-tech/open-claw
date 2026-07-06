@@ -228,7 +228,10 @@ def fetch_macro_data() -> dict:
             # to avoid illiquid option book spreads causing fake spikes
             import pytz
             now_et = datetime.now(pytz.timezone('US/Eastern'))
-            if name == "VIX" and now_et.hour < 9 or (now_et.hour == 9 and now_et.minute < 30):
+            # FIX (2026-07-06): parenthesize the time check. Without these parens,
+            # `and` bound tighter than `or`, so the guard applied to ALL tickers
+            # between 9:00-9:29 ET, not just VIX.
+            if name == "VIX" and (now_et.hour < 9 or (now_et.hour == 9 and now_et.minute < 30)):
                 if len(data) >= 2 and str(data.index[-1].date()) == str(now_et.date()):
                     current = float(data["Close"].iloc[-2].item())
                     print(f"[Pre-Flight] \U0001f6e1 VIX Guard: Using prior close {current} to avoid pre-market noise.")

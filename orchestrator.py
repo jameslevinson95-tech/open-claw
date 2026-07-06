@@ -237,8 +237,18 @@ def run_morning_pipeline(verbose: bool = False) -> dict:
         if ready_entries:
             # Only pass READY candidates forward (in Agent 2 format)
             ready_candidates = promote_ready_candidates()
-            # Replace candidates with only the READY ones
-            candidates = candidates + ready_candidates
+            # Replace candidates with only the READY ones (dedupe by ticker).
+            # FIX (2026-07-06): was `candidates + ready_candidates`, which let
+            # today's fresh, extended top-of-momentum names bypass the pullback
+            # bench whenever ANY watchlist name was READY. Now only bench-gated
+            # READY candidates trade. Dedupe guards against same-day duplicates.
+            _seen = set()
+            candidates = []
+            for _c in ready_candidates:
+                _t = _c.get("ticker")
+                if _t and _t not in _seen:
+                    _seen.add(_t)
+                    candidates.append(_c)
             agent2_result = dict(agent2_result)
             agent2_result["candidates"] = candidates
             print(f"\n  ✅ Promoting {len(candidates)} READY candidates to Agent 3")
