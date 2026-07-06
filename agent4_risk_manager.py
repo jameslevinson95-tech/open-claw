@@ -630,6 +630,13 @@ def run_agent4b(
             "theme": theme,
             "conviction_tier": conviction_tier,
             "confirm_enhanced": confirm_enhanced,
+            # FIX (2026-07-06): propagate the thesis into the order so Agent 5's
+            # thesis-drift monitor has something real to evaluate. Previously the
+            # order carried no thesis -> agent5 order.get("thesis","") was always
+            # empty -> drift monitor ran against an empty string every day.
+            "thesis": candidate.get("thesis", ""),
+            "catalyst": candidate.get("catalyst", ""),
+            "agent2_thesis": candidate.get("agent2_thesis", candidate.get("thesis", "")),
         }
 
         trade_orders.append(order)

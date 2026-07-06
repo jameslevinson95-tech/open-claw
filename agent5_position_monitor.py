@@ -228,6 +228,10 @@ def load_open_positions() -> list:
                             "stop_anchor_label": order.get("stop_anchor_label", ""),
                             "theme": order.get("theme", ""),
                             "thesis": order.get("thesis", ""),
+                            # 2026-07-06: carry the original catalyst so the drift
+                            # monitor can detect a DEAD catalyst, not just a soft read.
+                            "catalyst": order.get("catalyst", ""),
+                            "agent2_thesis": order.get("agent2_thesis", ""),
                             "dollar_risk": order.get("dollar_risk", 0),
                         }
 
@@ -242,6 +246,8 @@ def load_open_positions() -> list:
                     "stop_anchor_label": enrichment.get("stop_anchor_label", ""),
                     "theme": enrichment.get("theme", ""),
                     "thesis": enrichment.get("thesis", ""),
+                    "catalyst": enrichment.get("catalyst", ""),
+                    "agent2_thesis": enrichment.get("agent2_thesis", ""),
                     "dollar_risk": enrichment.get("dollar_risk", 0),
                     "unrealized_pl": p.get("unrealized_pl", 0),
                     "unrealized_plpc": p.get("unrealized_plpc", 0),

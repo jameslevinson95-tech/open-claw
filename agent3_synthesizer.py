@@ -106,7 +106,10 @@ OUTPUT FORMAT — respond with ONLY this JSON:
       "qualitative_thesis": "<2-3 sentences merging quant thesis with qualitative mosaic>",
       "cited_accounts": ["<accounts that drove verdict>"],
       "short_interest_pct": "<X%>",
-      "put_call_ratio": <float>
+      "put_call_ratio": <float>,
+      "x_bullish_count": <int: # of curated accounts bullish on this ticker in the mosaic>,
+      "x_bearish_count": <int: # of curated accounts bearish on this ticker in the mosaic>,
+      "hf_principal_signal": "<BULLISH | BEARISH | NONE: net stance of any named hedge-fund principal>"
     }
   ],
   "synthesis_notes": "<overall summary of qualitative synthesis>"
@@ -479,6 +482,12 @@ def run_agent3(agent2_result: dict = None, x_mentions: dict = None) -> dict:
             "verdict": verdict,
             "sentiment_read": ev.get("qualitative_thesis", ""),
             "cited_accounts": ev.get("cited_accounts", []),
+            # FIX (2026-07-06): emit the smart-money counts so trade_journal can
+            # finally measure whether the X/Twitter veto carries alpha. These were
+            # journal FIELDS that Agent 3 never populated -> empty strings forever.
+            "x_bullish_count": ev.get("x_bullish_count", ""),
+            "x_bearish_count": ev.get("x_bearish_count", ""),
+            "hf_principal_signal": ev.get("hf_principal_signal", ""),
         }
         verifications.append(verification)
 
@@ -498,8 +507,17 @@ def run_agent3(agent2_result: dict = None, x_mentions: dict = None) -> dict:
             c["confirm_enhanced"] = True
             print(f"  [Agent 3] ✅ CONFIRM_ENHANCED: {ticker}")
 
-        # Merge qualitative data into candidate
-        c["thesis"] = ev.get("qualitative_thesis", c.get("thesis", ""))
+        # Merge qualitative data into candidate.
+        # FIX (2026-07-06): preserve Agent 2's ORIGINAL quantitative thesis +
+        # catalyst instead of clobbering them. The double-blind (Opus writes its
+        # qualitative_thesis without seeing Agent 2's) is a good design; but
+        # DESTROYING the original catalyst record is not — Agent 5's thesis-drift
+        # monitor needs the original catalyst to detect when it dies. Keep both.
+        c["agent2_thesis"] = c.get("thesis", "")
+        c["catalyst"] = c.get("catalyst", "")
+        c["qualitative_thesis"] = ev.get("qualitative_thesis", "")
+        # Combined thesis Agent 5 will monitor: original catalyst + qualitative read.
+        c["thesis"] = ev.get("qualitative_thesis", "") or c.get("thesis", "")
         c["red_flag_warnings"] = ev.get("red_flag_warnings", [])
         c["qualitative_verdict"] = verdict
 
