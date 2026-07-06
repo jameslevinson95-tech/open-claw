@@ -791,14 +791,18 @@ def run_deferred_execution() -> dict:
         midpoint = round((bid + ask) / 2.0, 2)
         spread_pct = (ask - bid) / midpoint if midpoint > 0 else 999
 
-        if spread_pct > 0.05:
-            print(f"  🚫 REJECTED {ticker}: Spread is toxic ({spread_pct*100:.1f}% wide). Bid: {bid}, Ask: {ask}")
+        # FIX (2026-07-06): tightened from 5% -> 0.75%. A 5% spread gate is
+        # absurdly permissive for a large-cap momentum book (min mkt cap $100M,
+        # price > $5) — 5% spreads are lottery tickets, not swing entries.
+        MAX_SPREAD_PCT = 0.0075
+        if spread_pct > MAX_SPREAD_PCT:
+            print(f"  🚫 REJECTED {ticker}: Spread is toxic ({spread_pct*100:.2f}% wide). Bid: {bid}, Ask: {ask}")
             fills.append({"ticker": ticker, "status": "rejected_wide_spread"})
             engine.log_incident(
                 ticker=ticker, incident_type="WIDE_SPREAD",
                 bid=bid, ask=ask, target_shares=int(order.get("shares", 0)),
                 root_cause="toxic_spread",
-                notes=f"Spread {spread_pct*100:.1f}% exceeds 5% threshold.",
+                notes=f"Spread {spread_pct*100:.2f}% exceeds {MAX_SPREAD_PCT*100:.2f}% threshold.",
             )
             continue
 
@@ -830,14 +834,47 @@ def run_deferred_execution() -> dict:
 
         trade_id = str(uuid.uuid4())
 
+        # -----------------------------------------------------------------
+        # LIVE RE-SIZING (FIX 2026-07-06)
+        # Previously we sent the PLANNED share count as-is. If the stock gapped
+        # up (but stayed under the 3% reject), actual fill risk could ~2x the
+        # budget: a +2.9% gap against a ~3% stop distance blows past the
+        # MAX_RISK_PER_TRADE ceiling. Recompute shares against the LIVE fill
+        # price (marketable_limit) and the planned stop so realized $-risk stays
+        # at budget. Fractional-safe: Robinhood supports fractional shares, so we
+        # round to 4dp instead of int()-truncating (0.9 -> 0 = dead order).
+        # -----------------------------------------------------------------
+        planned_shares = float(order.get("shares", 0) or 0)
+        stop_price = order.get("stop_loss", 0) or 0
+        # agent4 emits the per-trade $ risk as "risk_budgeted" (accept aliases too).
+        risk_budget = (order.get("risk_budgeted")
+                       or order.get("risk_budget")
+                       or order.get("dollar_risk"))
+        exec_shares = planned_shares
+        per_share_risk = marketable_limit - stop_price
+        if risk_budget and per_share_risk > 0:
+            resized = float(risk_budget) / per_share_risk
+            # Never size UP beyond the plan (plan already respects allocation caps);
+            # only trim when the live fill price widened per-share risk.
+            exec_shares = min(planned_shares, resized)
+            if exec_shares < planned_shares:
+                print(f"  ⚖️  RE-SIZED {ticker}: {planned_shares:.4f} -> {exec_shares:.4f} sh "
+                      f"(live risk/sh ${per_share_risk:.2f}, budget ${float(risk_budget):.0f})")
+        # Fractional-safe rounding: 4dp, floor-ish via round; guard tiny dust.
+        exec_shares = round(exec_shares, 4)
+        if exec_shares <= 0:
+            print(f"  🚫 REJECTED {ticker}: re-sized share count rounded to 0.")
+            fills.append({"ticker": ticker, "status": "rejected_zero_shares"})
+            continue
+
         # Route intent to the Execution Ledger
         # Marketable limit: ask + 15bps to cross the spread and guarantee fills
         result = engine.submit_trade_intent(
             trade_id=trade_id,
             ticker=ticker,
-            shares=int(order.get("shares", 0)),
+            shares=exec_shares,
             limit_price=marketable_limit,
-            stop_price=order.get("stop_loss", 0),
+            stop_price=stop_price,
         )
         fills.append({
             "ticker": ticker,

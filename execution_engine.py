@@ -130,7 +130,7 @@ class ExecutionEngine:
         self,
         trade_id: str,
         ticker: str,
-        shares: int,
+        shares: float,
         limit_price: float,
         stop_price: float,
     ) -> dict:
@@ -138,6 +138,10 @@ class ExecutionEngine:
         Orchestrator calls this instead of calling the broker directly.
         Routes the entry order and records the intent in the ledger.
         The daemon will handle stop placement after fill.
+
+        NOTE (2026-07-06): shares is FLOAT — Robinhood supports fractional
+        shares and the account is configured for fractional sizing. Do NOT
+        int()-truncate upstream (0.9 -> 0 is a dead order).
         """
         try:
             lock = FileLock(LOCK_PATH, timeout=10)
