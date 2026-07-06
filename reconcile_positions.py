@@ -37,6 +37,13 @@ AGENT4_PATH = "output/agent4_orders.json"
 PORTFOLIO_PATH = "output/portfolio_state.json"
 DRY = "--dry-run" in sys.argv
 
+# A protective stop sitting more than this fraction below the current price is
+# "wide" — usually a reconciled position that fell back to a loose swing-low
+# default (no thesis anchor). It IS protected, so we never auto-move it, but we
+# surface it loudly so a human can tighten it to a real technical level. This is
+# the 2026-07-06 TSM case: naked-guard armed a $419 stop while TSM was at $455.
+WIDE_STOP_PCT = 0.05
+
 # Broker order states that count as a LIVE resting order (still working).
 LIVE_STATES = {"confirmed", "queued", "unconfirmed", "partially_filled", "new", "accepted"}
 
@@ -106,6 +113,7 @@ def main():
     conn.row_factory = sqlite3.Row
 
     problems = 0
+    wide_stops = []  # protected but too-loose stops flagged for human tightening
 
     for tkr, pos in sorted(positions.items()):
         shares = float(pos["shares"])
@@ -122,6 +130,19 @@ def main():
             sp = live.get("stop_price") or "(no stop_price)"
             print(f"[OK]   {tkr}: {shares} sh — live {live.get('type')} sell @ stop {sp} "
                   f"({live.get('state')}) order {live.get('id')}")
+            # WIDE-STOP GUARD: protected, but is the stop absurdly loose vs the
+            # current price? (Reconciled positions can fall back to a stale
+            # swing-low default.) We never auto-move a live stop here, just flag.
+            try:
+                sp_val = float(live.get("stop_price")) if live.get("stop_price") else 0.0
+            except (TypeError, ValueError):
+                sp_val = 0.0
+            if sp_val > 0 and cur > 0 and (cur - sp_val) / cur > WIDE_STOP_PCT:
+                gap_pct = round((cur - sp_val) / cur * 100, 1)
+                print(f"[WIDE] {tkr}: stop ${sp_val:.2f} is {gap_pct}% below current "
+                      f"${cur:.2f} (> {int(WIDE_STOP_PCT*100)}%). Consider tightening.")
+                wide_stops.append({"ticker": tkr, "stop": round(sp_val, 2),
+                                   "current": round(cur, 2), "gap_pct": gap_pct})
             # Heal the ledger if it's missing the stop_order_id (cosmetic sync).
             if existing and not existing["stop_order_id"] and not DRY:
                 conn.execute(
@@ -196,6 +217,14 @@ def main():
             print(f"        ✗ STOP FAILED {tkr}: {res.get('error')}")
 
     conn.close()
+
+    if wide_stops:
+        flags = ", ".join(f"{w['ticker']} (stop ${w['stop']}, {w['gap_pct']}% wide)"
+                          for w in wide_stops)
+        print(f"\n⚠️  WIDE-STOP WATCH — {len(wide_stops)} protected position(s) with a "
+              f"loose stop >{int(WIDE_STOP_PCT*100)}% below price: {flags}. "
+              f"Protected, but consider tightening to a technical level.")
+
     if problems:
         print(f"\nDONE with {problems} UNPROTECTED position(s) — see [NAKED]/FAILED above.",
               "(dry-run)" if DRY else "")
