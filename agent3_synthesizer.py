@@ -42,9 +42,9 @@ RETRY_DELAY = 5
 # (boazweinstein, RayDalio, ...) that Agent 3's own VETO_DIVERGENT rule cites.
 # Opus was told it monitored accounts it never sees. Import the real fetched list.
 try:
-    from x_fetch import CURATED_ACCOUNTS
+    from curated_accounts import CURATED_ACCOUNTS
 except Exception:
-    # Fail-safe fallback if x_fetch import breaks; keep the veto principals present.
+    # Fail-safe fallback if the import breaks; keep the veto principals present.
     CURATED_ACCOUNTS = [
         "DeItaone", "Fxhedgers", "zaborsky", "GurufocusData", "PeterSchiff",
         "TruthGundlach", "elerianm", "SqueezeMetrics", "sentimentrader",

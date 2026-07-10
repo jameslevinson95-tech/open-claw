@@ -891,11 +891,11 @@ def fetch_smart_money_mentions(tickers: list) -> dict:
     # FIX (2026-07-06): single source of truth. SMART_MONEY_ACCOUNTS is empty in
     # config, and the old hardcoded fallback here was a THIRD divergent copy of the
     # curated list (still listing retail accounts purged per Jamie's May directive).
-    # Fall back to x_fetch.CURATED_ACCOUNTS — the one list actually fetched.
+    # Fall back to curated_accounts.CURATED_ACCOUNTS — the canonical static list.
     curated_handles = SMART_MONEY_ACCOUNTS
     if not curated_handles:
         try:
-            from x_fetch import CURATED_ACCOUNTS as curated_handles
+            from curated_accounts import CURATED_ACCOUNTS as curated_handles
         except Exception:
             curated_handles = [
                 "DeItaone", "Fxhedgers", "zaborsky", "GurufocusData", "PeterSchiff",

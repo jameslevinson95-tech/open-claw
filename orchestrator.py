@@ -55,23 +55,16 @@ from safeguards import (
 )
 
 
-def fetch_x_smart_money(tickers: list) -> dict:
-    """
-    Fetch smart money X/Twitter mentions for the given tickers.
-    Uses the official X Developer API via x_fetch.py.
-    7-day lookback, filtered by CURATED_ACCOUNTS (43 accounts).
-    """
-    from x_fetch import run_x_fetch
-    
-    print(f"[Orchestrator] Fetching X/Twitter smart money data for: {tickers}")
-    result = run_x_fetch(tickers)
-    return result.get("mentions", {})
-
+# X/Twitter smart-money fetch REMOVED 2026-07-10 (API retired 2026-06-22,
+# then fully decommissioned). The old fetch_x_smart_money() helper and its
+# x_fetch.py dependency are gone. Agent 3 runs on news + options flow + short
+# interest; the curated handle list lives in curated_accounts.py for the
+# bearish-veto principal reference only.
 
 
 # Discord is OUTPUT ONLY — used to deliver Tear Sheets and Agent 5 alerts.
-# NO Discord scraping for sentiment input. All sentiment comes from X API.
-# discord_fetch.py exists but is NOT called in the pipeline flow.
+# NO Discord scraping for sentiment input. discord_fetch.py exists but is NOT
+# called in the pipeline flow.
 
 
 def run_morning_pipeline(verbose: bool = False) -> dict:
