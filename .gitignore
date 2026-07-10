@@ -35,3 +35,8 @@ output/_*
 *.bak-*
 output/execution_ledger.db-shm
 output/execution_ledger.db-wal
+
+# Root-level runtime SQLite DB (not tracked)
+trades.db
+trades.db-shm
+trades.db-wal
