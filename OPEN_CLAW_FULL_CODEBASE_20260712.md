@@ -1,6 +1,6 @@
-# Open Claw — Full Codebase Dump (2026-07-12 18:12 EDT)
+# Open Claw — Full Codebase Dump (2026-07-12 18:14 EDT)
 
-Complete concatenation of all Python source for audit. Commit: 732cab1
+Complete concatenation of all Python source for audit. Commit: 151770c
 
 
 ================================================================================
@@ -2886,6 +2886,51 @@ def load_open_positions() -> list:
     return positions
 
 
+# Flag open positions whose earnings print lands within this many calendar days.
+# Holding through an earnings report is a binary event we want the monitor to SEE.
+EARNINGS_EVENT_RISK_DAYS = 3
+
+
+def enrich_positions_with_earnings(positions: list) -> list:
+    """
+    Tag each OPEN position with its next earnings date / days-until, reusing the
+    battle-tested fetch_earnings_dates() from safeguards.py (ETF bypass + parsing
+    already handled there). This closes the gap where the entry screener filtered
+    earnings but the position monitor never checked names we already HOLD.
+
+    Adds to each position dict:
+      earnings_date (str|None), earnings_days_until (int|None),
+      earnings_event_risk (bool)  -> True if reporting within EARNINGS_EVENT_RISK_DAYS
+    """
+    if not positions:
+        return positions
+    try:
+        from safeguards import fetch_earnings_dates
+    except Exception as e:
+        print(f"[Agent 5] Earnings enrich unavailable ({e}) — skipping (non-fatal)")
+        return positions
+
+    tickers = [p["ticker"] for p in positions if p.get("ticker")]
+    try:
+        earnings = fetch_earnings_dates(tickers)
+    except Exception as e:
+        print(f"[Agent 5] Earnings fetch failed ({e}) — positions left untagged (non-fatal)")
+        return positions
+
+    for pos in positions:
+        info = earnings.get(pos.get("ticker"), {})
+        days = info.get("days_until")
+        pos["earnings_date"] = info.get("earnings_date")
+        pos["earnings_days_until"] = days
+        # Event risk only for a FUTURE print inside the window (days >= 0).
+        pos["earnings_event_risk"] = (
+            isinstance(days, int) and 0 <= days <= EARNINGS_EVENT_RISK_DAYS
+        )
+        if pos["earnings_event_risk"]:
+            print(f"  ⚠️  {pos['ticker']}: EARNINGS in {days}d ({pos['earnings_date']}) — binary event risk on an OPEN position")
+    return positions
+
+
 def calculate_trailing_stops(positions: list, snapshot: dict) -> list:
     """
     Pure Python trailing stop calculator. No LLM needed.
@@ -3180,14 +3225,21 @@ def call_thesis_monitor(positions_with_stops: list, breaking_news: dict, vix_dat
     for pos in positions_with_stops:
         ticker = pos["ticker"]
         news = breaking_news.get(ticker, ["No news"])
-        position_summaries.append({
+        summary = {
             "ticker": ticker,
             "original_thesis": pos.get("thesis", "N/A"),
             "theme": pos.get("theme", "N/A"),
             "pnl_pct": pos.get("pnl_pct", 0),
             "mechanical_action": pos.get("mechanical_action", "HOLD"),
             "breaking_news": news,
-        })
+        }
+        # Surface upcoming-earnings event risk so the thesis review can weigh
+        # trimming/closing ahead of a binary print rather than holding blind.
+        if pos.get("earnings_date"):
+            summary["next_earnings_date"] = pos.get("earnings_date")
+            summary["earnings_days_until"] = pos.get("earnings_days_until")
+            summary["earnings_event_risk"] = pos.get("earnings_event_risk", False)
+        position_summaries.append(summary)
 
     user_message = f"""Review the fundamental thesis for each open position.
 
@@ -3203,6 +3255,11 @@ Your job is ONLY to assess thesis drift. Python has already computed all trailin
 - Do NOT calculate P&L or stops.
 - Focus on: Has the narrative broken? Has the macro regime shifted?
 - If morning regime is CRISIS or VIX > 35, all theses are BROKEN.
+- EARNINGS EVENT RISK: If a position has "earnings_event_risk": true (an earnings
+  print within the next few days), flag it as a binary event. Holding through
+  earnings is uncompensated single-name gap risk unless the thesis SPECIFICALLY
+  depends on that print. Prefer trimming/tightening ahead of it; note the risk in
+  your reasoning even when you decide to HOLD.
 
 Current date/time: {datetime.now().isoformat()}
 
@@ -3280,6 +3337,9 @@ def run_agent5_preflight() -> dict:
     if not positions:
         print("[Agent 5 Pre-Flight] No open positions to monitor.")
         return {"positions": [], "snapshot": {}}
+
+    # Tag open positions with upcoming-earnings proximity (binary event risk).
+    positions = enrich_positions_with_earnings(positions)
 
     tickers = [p["ticker"] for p in positions]
     snapshot = snapshot_prices(tickers)
