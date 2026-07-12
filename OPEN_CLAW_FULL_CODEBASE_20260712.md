@@ -1,6 +1,6 @@
-# Open Claw — Full Codebase Dump (2026-07-10 19:01 EDT)
+# Open Claw — Full Codebase Dump (2026-07-12 18:12 EDT)
 
-Complete concatenation of all Python source for audit. Commit: 48b8fde
+Complete concatenation of all Python source for audit. Commit: 732cab1
 
 
 ================================================================================
@@ -11257,6 +11257,11 @@ def fetch_macro_data() -> dict:
     # with credit; BAMLH0A0HYM2 is the clean spread. Falls back to the proxy above.
     macro["HY_OAS"] = fetch_hy_oas()
 
+    # --- Treasury Yield Curve (2Y/5Y/10Y/30Y + 10Y-2Y slope via FRED) ---
+    # Regime filter: curve slope + inversion state is a duration-neutral read on
+    # the cycle. Complements HY OAS (credit) and MOVE (rate vol).
+    macro["YIELD_CURVE"] = fetch_yield_curve()
+
     # --- MOVE Index (bond volatility) ---
     # MOVE is available via FRED as "MOVE" or as a proxy via ^MOVE
     # Trying FRED first, falling back to a note
@@ -11384,6 +11389,82 @@ def fetch_hy_oas() -> dict:
     except Exception as e:
         return {"error": f"HY OAS fetch failed: {e}"}
     return {"error": "HY OAS unavailable"}
+
+
+def fetch_yield_curve() -> dict:
+    """
+    Fetch the US Treasury yield curve from FRED (daily constant-maturity yields)
+    plus the 10Y-2Y slope. The curve slope is a clean, duration-neutral REGIME
+    signal: a deeply inverted curve (10Y-2Y < 0) that then bull-STEEPENS is the
+    classic late-cycle recession-onset tell; a positive/steepening curve is
+    risk-on. This complements HY OAS (credit) and MOVE (rate vol).
+
+    FRED series (constant maturity, %):
+      DGS2 = 2Y, DGS5 = 5Y, DGS10 = 10Y, DGS30 = 30Y
+      T10Y2Y = 10Y-2Y spread (bps expressed as %), computed by FRED directly
+
+    Returns {points: {2Y,5Y,10Y,30Y}, slope_10y2y, slope_5d_ago,
+             slope_5d_change_bps, inverted, date, source, interpretation}
+    or {error}.
+    """
+    fred_key = os.environ.get("FRED_API_KEY", "")
+    if not fred_key:
+        return {"error": "FRED_API_KEY not set — yield curve unavailable"}
+
+    def _latest(series_id, n=1):
+        """Return list of the n most-recent non-missing float observations (desc)."""
+        import requests
+        url = "https://api.stlouisfed.org/fred/series/observations"
+        params = {
+            "series_id": series_id,
+            "api_key": fred_key,
+            "file_type": "json",
+            "sort_order": "desc",
+            "limit": 30,
+        }
+        resp = requests.get(url, params=params, timeout=10)
+        obs = [o for o in resp.json().get("observations", []) if o.get("value") not in (".", None)]
+        return obs[:n]
+
+    try:
+        points = {}
+        for label, series in (("2Y", "DGS2"), ("5Y", "DGS5"), ("10Y", "DGS10"), ("30Y", "DGS30")):
+            obs = _latest(series, 1)
+            if obs:
+                points[label] = round(float(obs[0]["value"]), 2)
+
+        # 10Y-2Y slope with 5d change (FRED computes T10Y2Y directly, in %).
+        slope_obs = _latest("T10Y2Y", 6)
+        if not points or not slope_obs:
+            return {"error": "yield curve: no observations returned"}
+
+        slope = round(float(slope_obs[0]["value"]), 2)
+        slope_5d = round(float(slope_obs[min(5, len(slope_obs) - 1)]["value"]), 2)
+        change_bps = round((slope - slope_5d) * 100, 1)  # % -> bps
+        inverted = slope < 0
+        steepening = change_bps > 0
+
+        if inverted and steepening:
+            interp = "INVERTED but bull-steepening (late-cycle / recession-onset watch)"
+        elif inverted:
+            interp = "INVERTED and flattening further (restrictive; risk-off tilt)"
+        elif steepening:
+            interp = "positive & steepening (risk-on / reflation)"
+        else:
+            interp = "positive but flattening (mid-cycle)"
+
+        return {
+            "points": points,
+            "slope_10y2y": slope,          # percentage points (e.g. 0.55 = 55bps)
+            "slope_5d_ago": slope_5d,
+            "slope_5d_change_bps": change_bps,
+            "inverted": inverted,
+            "date": slope_obs[0]["date"],
+            "source": "FRED DGS2/5/10/30 + T10Y2Y",
+            "interpretation": interp,
+        }
+    except Exception as e:
+        return {"error": f"yield curve fetch failed: {e}"}
 
 
 def fetch_dix() -> dict:
@@ -11918,6 +11999,14 @@ def format_macro_for_prompt(data: dict) -> str:
             continue
         if isinstance(val, dict) and "error" in val:
             lines.append(f"{key}: DATA UNAVAILABLE ({val['error']})")
+        elif key == "YIELD_CURVE" and isinstance(val, dict) and "points" in val:
+            pts = val.get("points", {})
+            pts_str = "  ".join(f"{k}={v}%" for k, v in pts.items())
+            lines.append(
+                f"YIELD_CURVE ({val.get('date', 'unknown')}): {pts_str}\n"
+                f"  10Y-2Y slope: {val.get('slope_10y2y')}% "
+                f"(5d {val.get('slope_5d_change_bps'):+.1f}bps) — {val.get('interpretation', '')}"
+            )
         elif isinstance(val, dict) and "current" in val:
             change_str = ""
             if "5d_change_pct" in val:
