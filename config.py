@@ -173,8 +173,13 @@ SMART_MONEY_ACCOUNTS = [
 ]
 
 # Portfolio Heat Cap
-MAX_PORTFOLIO_HEAT_PCT = 0.06   # 6% of equity — reject all new trades above this
-HEAT_WARNING_PCT = 0.04         # 4% — allow trades but print warning
+# 2026-07-12 (Jamie): raised 6% -> 8% to free idle capital. At $200 max
+# risk/trade, 6% heat capped the book at ~3 concurrent positions, leaving cash
+# unable to open a 4th. 8% allows ~4 positions (worst-case simultaneous stop-out
+# = 8% of equity, still defensible for a speculative book). Warning bumped
+# proportionally. Revisit with journal binding_constraint data once trades log.
+MAX_PORTFOLIO_HEAT_PCT = 0.08   # 8% of equity — reject all new trades above this
+HEAT_WARNING_PCT = 0.055        # 5.5% — allow trades but print warning
 
 # FRED API key (for MOVE index, credit data)
 FRED_API_KEY = os.environ.get("FRED_API_KEY", "")

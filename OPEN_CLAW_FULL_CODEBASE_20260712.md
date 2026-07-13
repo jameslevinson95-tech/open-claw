@@ -1,6 +1,6 @@
-# Open Claw — Full Codebase Dump (2026-07-12 21:50 EDT)
+# Open Claw — Full Codebase Dump (2026-07-12 22:24 EDT)
 
-Complete concatenation of all Python source for audit. Commit: 370d821
+Complete concatenation of all Python source for audit. Commit: e9e18c6
 
 
 ================================================================================
@@ -4389,8 +4389,13 @@ SMART_MONEY_ACCOUNTS = [
 ]
 
 # Portfolio Heat Cap
-MAX_PORTFOLIO_HEAT_PCT = 0.06   # 6% of equity — reject all new trades above this
-HEAT_WARNING_PCT = 0.04         # 4% — allow trades but print warning
+# 2026-07-12 (Jamie): raised 6% -> 8% to free idle capital. At $200 max
+# risk/trade, 6% heat capped the book at ~3 concurrent positions, leaving cash
+# unable to open a 4th. 8% allows ~4 positions (worst-case simultaneous stop-out
+# = 8% of equity, still defensible for a speculative book). Warning bumped
+# proportionally. Revisit with journal binding_constraint data once trades log.
+MAX_PORTFOLIO_HEAT_PCT = 0.08   # 8% of equity — reject all new trades above this
+HEAT_WARNING_PCT = 0.055        # 5.5% — allow trades but print warning
 
 # FRED API key (for MOVE index, credit data)
 FRED_API_KEY = os.environ.get("FRED_API_KEY", "")
@@ -5655,9 +5660,20 @@ class ExecutionEngine:
                     created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     last_updated    TIMESTAMP,
                     closed_at       TIMESTAMP,
-                    close_reason    TEXT
+                    close_reason    TEXT,
+                    sizing_json     TEXT
                 )
             """)
+            # Backward-compat: add sizing_json to pre-existing DBs (persists the
+            # Agent 4 sizing metadata — binding_constraint/risk_budgeted/tier —
+            # so a multi-day close can still be journaled after agent4_orders.json
+            # has been overwritten by a later run).
+            try:
+                cols = [r[1] for r in conn.execute("PRAGMA table_info(active_trades)").fetchall()]
+                if "sizing_json" not in cols:
+                    conn.execute("ALTER TABLE active_trades ADD COLUMN sizing_json TEXT")
+            except Exception:
+                pass
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS execution_log (
                     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -5709,11 +5725,19 @@ class ExecutionEngine:
         shares: float,
         limit_price: float,
         stop_price: float,
+        sizing_meta: dict = None,
     ) -> dict:
         """
         Orchestrator calls this instead of calling the broker directly.
         Routes the entry order and records the intent in the ledger.
         The daemon will handle stop placement after fill.
+
+        sizing_meta (optional): the Agent 4 sizing fields for this trade
+        (binding_constraint, risk_budgeted, risk_multiplier, conviction_tier,
+        theme, thesis, entry_dt). Persisted to the ledger so the trade can be
+        fully journaled even if it closes days later after agent4_orders.json
+        has been overwritten. Backward-compatible: callers that omit it are
+        unaffected.
 
         NOTE (2026-07-06): shares is FLOAT — Robinhood supports fractional
         shares and the account is configured for fractional sizing. Do NOT
@@ -5747,11 +5771,13 @@ class ExecutionEngine:
                     conn.execute(
                         """INSERT INTO active_trades
                         (trade_id, ticker, target_shares, limit_price,
-                         target_stop_price, entry_order_id, entry_status, last_updated)
-                        VALUES (?, ?, ?, ?, ?, ?, 'open', ?)""",
+                         target_stop_price, entry_order_id, entry_status, last_updated,
+                         sizing_json)
+                        VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?)""",
                         (
                             trade_id, ticker, shares, limit_price,
                             stop_price, order_id, datetime.now().isoformat(),
+                            json.dumps(sizing_meta) if sizing_meta else None,
                         ),
                     )
                     conn.commit()
@@ -5795,12 +5821,32 @@ class ExecutionEngine:
                 })
                 continue
 
+            # Carry the Agent 4 sizing metadata into the ledger so multi-day
+            # closes can still be journaled (binding_constraint diagnosis).
+            sizing_meta = {
+                "ticker": order.get("ticker"),
+                "entry_price": order.get("entry_price", order.get("limit_price")),
+                "stop_loss": order.get("stop_loss"),
+                "stop_distance_pct": order.get("stop_distance_pct"),
+                "shares": shares,
+                "position_value": order.get("position_value"),
+                "risk_budgeted": order.get("risk_budgeted"),
+                "risk_actual": order.get("risk_actual"),
+                "risk_multiplier": order.get("risk_multiplier"),
+                "binding_constraint": order.get("binding_constraint"),
+                "conviction_tier": order.get("conviction_tier"),
+                "confirm_enhanced": order.get("confirm_enhanced"),
+                "theme": order.get("theme"),
+                "thesis": order.get("thesis"),
+                "entry_dt": order.get("entry_dt"),
+            }
             result = self.submit_trade_intent(
                 trade_id=trade_id,
                 ticker=order["ticker"],
                 shares=shares,  # Allow fractional shares (Robinhood supports them)
                 limit_price=limit_price,
                 stop_price=stop_price,
+                sizing_meta=sizing_meta,
             )
             results.append(result)
 
@@ -6543,6 +6589,22 @@ class ExecutionEngine:
                                     with open("output/agent4_orders.json") as f:
                                         a4_data = json.load(f)
                                     orig_order = next((o for o in a4_data.get("trade_orders", []) if o.get("ticker") == ticker), {})
+
+                                # Fallback: multi-day trades whose agent4_orders.json
+                                # was overwritten by a later run — recover the sizing
+                                # metadata (binding_constraint etc.) from the ledger.
+                                if not orig_order:
+                                    try:
+                                        with sqlite3.connect(DB_PATH, timeout=20.0) as _c:
+                                            row = _c.execute(
+                                                "SELECT sizing_json FROM active_trades WHERE trade_id = ?",
+                                                (trade["trade_id"],),
+                                            ).fetchone()
+                                        if row and row[0]:
+                                            orig_order = json.loads(row[0])
+                                            logger.info(f"  Recovered sizing meta for {ticker} from ledger (JSON overwritten).")
+                                    except Exception as _le:
+                                        logger.warning(f"  Ledger sizing fallback failed for {ticker}: {_le}")
 
                                 if orig_order:
                                     record = build_trade_record(
