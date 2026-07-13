@@ -100,6 +100,14 @@ def render_report(rows, milestone):
     out.append(_binding_summary(rows))
     out.append("")
 
+    # Scale-capital readiness — the "should we add money yet?" verdict.
+    try:
+        import scale_readiness
+        out.append(scale_readiness.render(rows))
+        out.append("")
+    except Exception as e:
+        out.append(f"_(scale readiness unavailable: {e})_")
+
     # Then the full parameter-tuning analysis (tier R-multiples, allocation cap,
     # stop distances, win rate). Reuse performance_review's monthly param review.
     try:
