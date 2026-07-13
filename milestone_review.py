@@ -87,8 +87,16 @@ def render_report(rows, milestone):
     out.append(f"📊 *MILESTONE REVIEW — {milestone} closed trades* (actual: {n})")
     out.append("=" * 44)
 
-    # Cumulative binding-constraint read FIRST — this is the core of the
-    # milestone decision (heat cap / sizing), computed over ALL trades to date.
+    # Alpha vs S&P FIRST — the headline "how are we doing" number.
+    try:
+        import alpha_tracker
+        out.append(alpha_tracker.render(rows))
+        out.append("")
+    except Exception as e:
+        out.append(f"_(alpha tracker unavailable: {e})_")
+
+    # Cumulative binding-constraint read — the core of the milestone SIZING
+    # decision (heat cap), computed over ALL trades to date.
     out.append(_binding_summary(rows))
     out.append("")
 
