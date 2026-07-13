@@ -1,6 +1,6 @@
-# Open Claw — Full Codebase Dump (2026-07-12 18:23 EDT)
+# Open Claw — Full Codebase Dump (2026-07-12 21:50 EDT)
 
-Complete concatenation of all Python source for audit. Commit: 57c43cc
+Complete concatenation of all Python source for audit. Commit: 370d821
 
 
 ================================================================================
@@ -10023,7 +10023,25 @@ def run_morning_pipeline(verbose: bool = False) -> dict:
             # Save candidates
             with open("output/agent2_candidates.json", "w") as f:
                 json.dump(agent2_result, f, indent=2, default=str)
-            
+
+            # ━━━ SHADOW A/B: Claude Fable 5 vs live Gemini (OBSERVER ONLY) ━━━
+            # Fire-and-forget. NEVER affects the live path or trades — logs picks
+            # side-by-side to output/shadow/ for the swap evaluation. Fully
+            # isolated: any Fable error/timeout/429 is swallowed here. Disable
+            # instantly with AGENT2_SHADOW_FABLE=0 (no code change needed).
+            if os.environ.get("AGENT2_SHADOW_FABLE", "1") != "0":
+                try:
+                    from agent2_shadow_fable import run_shadow
+                    print("\n🔬 [Shadow] Running Fable 5 A/B alongside live Gemini (observer)...")
+                    run_shadow(
+                        directive=directive,
+                        screener_universe=preflight_data["screener_universe"],
+                        live_result=agent2_result,
+                    )
+                except Exception as _shadow_e:
+                    # Shadow must NEVER break the live pipeline.
+                    print(f"🔬 [Shadow] Fable A/B skipped (non-fatal): {_shadow_e}")
+
             if not candidates:
                 print("\n📋 No candidates passed screening. Pipeline complete — no trades today.")
                 return results
