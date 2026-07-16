@@ -815,6 +815,15 @@ def _run_finviz_screen(theme_filters: Optional[Dict] = None) -> list:
     # Post-filter: market cap > $500M (Finviz only lets us filter >$300M)
     df = df[df["Market Cap"] >= 500_000_000]
 
+    # FIX (2026-07-16): finvizfinance 1.3.0 corrupts EVERY ticker in the
+    # screener_view output by prepending a duplicated leading character
+    # (AAPL->AAAPL, NVDA->NNVDA, MU->MMU, T->TT). Finviz added a logo/badge
+    # element to the ticker cell and the scraper bleeds its leading char into
+    # the Ticker string. Detect the systemic doubling and repair it before the
+    # bad symbols reach fundamental prefetch / candidate selection / broker exec.
+    tickers = [str(t) for t in df["Ticker"].tolist()]
+    df = df.assign(Ticker=_repair_finviz_tickers(tickers))
+
     results = []
     for _, row in df.iterrows():
         results.append({
@@ -827,6 +836,46 @@ def _run_finviz_screen(theme_filters: Optional[Dict] = None) -> list:
         })
 
     return results
+
+
+def _repair_finviz_tickers(tickers: list) -> list:
+    """
+    Repair the systemic doubled-leading-character corruption in
+    finvizfinance 1.3.0 screener output (AAPL->AAAPL, NVDA->NNVDA, T->TT).
+
+    The corruption is uniform across the whole column: every ticker gets its
+    first character duplicated. We only strip when the corruption is clearly
+    present column-wide (>=80% of rows start with a doubled first char), which
+    guards against a future finviz fix silently mangling clean data. Once we
+    decide to repair, we strip exactly one leading char from every doubled
+    ticker; non-doubled tickers (rare edge, e.g. clean 'F') are left as-is.
+    """
+    if not tickers:
+        return tickers
+
+    def _is_doubled(t: str) -> bool:
+        return len(t) >= 2 and t[0].isalpha() and t[0].upper() == t[1].upper()
+
+    doubled = [t for t in tickers if _is_doubled(t)]
+    ratio = len(doubled) / len(tickers)
+
+    # Not a corrupted column — leave everything untouched.
+    if ratio < 0.8:
+        return tickers
+
+    repaired = []
+    for t in tickers:
+        if _is_doubled(t):
+            repaired.append(t[1:])  # strip the duplicated leading char
+        else:
+            repaired.append(t)
+
+    n_fixed = sum(1 for a, b in zip(tickers, repaired) if a != b)
+    print(
+        f"[Pre-Flight] finvizfinance ticker corruption detected "
+        f"({ratio:.0%} doubled) — repaired {n_fixed}/{len(tickers)} symbols"
+    )
+    return repaired
 
 
 def _fallback_screener_universe() -> list:
