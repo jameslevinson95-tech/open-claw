@@ -1,6 +1,6 @@
-# Open Claw — Full Codebase Dump (2026-07-29 10:41 EDT)
+# Open Claw — Full Codebase Dump (2026-07-29 10:51 EDT)
 
-Complete concatenation of all Python source for audit. Commit: bd3755a
+Complete concatenation of all Python source for audit. Commit: c4b6ae7
 
 
 ================================================================================
@@ -27,6 +27,52 @@ from datetime import datetime
 from dotenv import load_dotenv
 
 load_dotenv()
+
+
+def _parse_directive_json(raw_text: str):
+    """Tolerant JSON parse for LLM directive output.
+
+    Handles the common Gemini failure mode where a valid JSON object is
+    followed by trailing prose/markdown (json.JSONDecodeError: "Extra data").
+    Strategy: try a strict parse first; on failure, extract the first
+    balanced {...} object (respecting strings/escapes) and parse that.
+    """
+    import json as _json
+    try:
+        return _json.loads(raw_text)
+    except _json.JSONDecodeError:
+        pass
+
+    # Find first balanced top-level JSON object.
+    start = raw_text.find("{")
+    if start == -1:
+        # No object at all — re-raise a clean error via strict parse.
+        return _json.loads(raw_text)
+
+    depth = 0
+    in_str = False
+    escape = False
+    for i in range(start, len(raw_text)):
+        ch = raw_text[i]
+        if in_str:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_str = False
+        else:
+            if ch == '"':
+                in_str = True
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    return _json.loads(raw_text[start:i + 1])
+    # Unbalanced — let strict parse raise the original, informative error.
+    return _json.loads(raw_text)
+
 
 SYSTEM_PROMPT = """You are Agent 1: The Macro Director for a $100,000 speculative spot-only trading account.
 
@@ -256,7 +302,7 @@ Respond with ONLY the JSON directive, no other text."""
         raw_text = raw_text.strip()
 
     try:
-        directive = json.loads(raw_text)
+        directive = _parse_directive_json(raw_text)
 
         # Validate required fields
         required = ["regime", "vol_regime", "posture", "conviction_floor"]
