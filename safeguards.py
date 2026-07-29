@@ -406,6 +406,7 @@ def fetch_earnings_dates(tickers: list) -> dict:
     Returns {ticker: {"earnings_date": str, "days_until": int, "safe": bool}}
     """
     import yfinance as yf
+    import datetime as _dt
     
     results = {}
     today = datetime.now().date()
@@ -434,7 +435,18 @@ def fetch_earnings_dates(tickers: list) -> dict:
                         pass
             
             if earnings_date is not None:
-                if hasattr(earnings_date, "date"):
+                # NOTE: order matters. datetime.datetime is a SUBCLASS of
+                # datetime.date and has .date(); a plain datetime.date does NOT.
+                # yfinance >=0.2.x returns plain datetime.date here, which used to
+                # fall through to ed=None and fail-closed EVERY ticker (the
+                # "70/70 circuit breaker" symptom) — silently disabling the
+                # earnings screen entirely. Check date first, then datetime.
+                if isinstance(earnings_date, _dt.datetime):
+                    ed = earnings_date.date()
+                elif isinstance(earnings_date, _dt.date):
+                    ed = earnings_date
+                elif hasattr(earnings_date, "date") and callable(getattr(earnings_date, "date")):
+                    # pandas.Timestamp and friends
                     ed = earnings_date.date()
                 elif isinstance(earnings_date, str):
                     ed = datetime.strptime(earnings_date[:10], "%Y-%m-%d").date()
