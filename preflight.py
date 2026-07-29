@@ -364,6 +364,35 @@ def fetch_move_index() -> dict:
     return {"error": "MOVE index unavailable"}
 
 
+def _fred_get_with_retry(url: str, params: dict, attempts: int = 3, timeout: int = 10):
+    """GET a FRED series with small retry/backoff.
+
+    Why: HY_OAS and YIELD_CURVE are kill-switch inputs for Agent 1 — if either
+    comes back missing, Agent 1 issues REGIME: DEFER and the pipeline halts for
+    the whole trading day. These were single-attempt fetches, so one transient
+    FRED timeout/5xx cost a full session (observed 2026-07-29: the 07:55 run got
+    both fine, the 08:00 retry got neither and deferred).
+
+    Retries on exception or non-200, with linear backoff. Raises the last error
+    so the caller's existing except-branch still reports a clean failure.
+    """
+    import time as _time
+    import requests
+
+    last_err = None
+    for i in range(attempts):
+        try:
+            resp = requests.get(url, params=params, timeout=timeout)
+            if resp.status_code == 200:
+                return resp
+            last_err = RuntimeError(f"HTTP {resp.status_code}")
+        except Exception as e:
+            last_err = e
+        if i < attempts - 1:
+            _time.sleep(1.5 * (i + 1))
+    raise last_err if last_err else RuntimeError("FRED request failed")
+
+
 def fetch_hy_oas() -> dict:
     """
     FIX (2026-07-06): fetch the REAL high-yield credit spread — ICE BofA US High
@@ -387,7 +416,7 @@ def fetch_hy_oas() -> dict:
             "sort_order": "desc",
             "limit": 30,
         }
-        resp = requests.get(url, params=params, timeout=10)
+        resp = _fred_get_with_retry(url, params)
         obs = [o for o in resp.json().get("observations", []) if o.get("value") not in (".", None)]
         if obs:
             current = float(obs[0]["value"])
@@ -437,7 +466,7 @@ def fetch_yield_curve() -> dict:
             "sort_order": "desc",
             "limit": 30,
         }
-        resp = requests.get(url, params=params, timeout=10)
+        resp = _fred_get_with_retry(url, params)
         obs = [o for o in resp.json().get("observations", []) if o.get("value") not in (".", None)]
         return obs[:n]
 
