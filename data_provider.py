@@ -183,7 +183,17 @@ class DataProvider:
         if DataProvider._corp_actions_disabled:
             return []
 
-        # 1. Massive splits endpoint
+        # 1. Tiingo splitFactor (PRIMARY) — paid endpoint we already use for
+        #    history, so no extra quota and no free-tier rate limiting.
+        if os.getenv("TIINGO_API_KEY", "").strip():
+            try:
+                result = self._tiingo_splits(ticker, since_days)
+                DataProvider._corp_actions_failures = 0
+                return result
+            except Exception as e:
+                logger.warning(f"Tiingo splits failed for {ticker}: {e} — falling back to Massive")
+
+        # 2. Massive splits endpoint (FALLBACK)
         if self._massive_key:
             try:
                 result = self._massive_splits(ticker, since_days)
@@ -298,6 +308,49 @@ class DataProvider:
             return float(session.get("close", session.get("value", 0)))
 
         return None
+
+    def _tiingo_splits(self, ticker: str, since_days: int) -> list:
+        """Detect recent splits from Tiingo's daily-prices endpoint.
+
+        Tiingo's dedicated corporate-actions endpoints are not entitled on our
+        plan, but every bar from /tiingo/daily/<t>/prices carries a splitFactor
+        field (1.0 = no split; e.g. 10.0 on the execution date of a 10:1 split).
+        Since this is the SAME paid endpoint we already call for history, this
+        costs no additional quota and is not subject to Massive's free-tier
+        5-calls/min limit — which was tripping the corp-actions circuit breaker
+        ("Time budget exceeded") on nearly every run.
+
+        Returns the same shape as _massive_splits().
+        """
+        import json as _json
+        from urllib.request import urlopen
+
+        key = os.getenv("TIINGO_API_KEY", "").strip()
+        if not key:
+            raise RuntimeError("TIINGO_API_KEY not set")
+
+        start = (datetime.now() - timedelta(days=since_days)).strftime("%Y-%m-%d")
+        url = (f"https://api.tiingo.com/tiingo/daily/{ticker}/prices"
+               f"?startDate={start}&token={key}")
+
+        with urlopen(url, timeout=10) as resp:
+            bars = _json.loads(resp.read().decode())
+
+        recent = []
+        for bar in bars or []:
+            try:
+                factor = float(bar.get("splitFactor", 1.0) or 1.0)
+            except (TypeError, ValueError):
+                continue
+            if factor != 1.0:
+                recent.append({
+                    "ticker": ticker,
+                    "execution_date": (bar.get("date") or "")[:10],
+                    "split_from": 1,
+                    "split_to": factor,
+                    "source": "tiingo_splitFactor",
+                })
+        return recent
 
     def _massive_splits(self, ticker: str, since_days: int) -> list:
         """Fetch recent stock splits from Massive/Polygon reference endpoint."""
