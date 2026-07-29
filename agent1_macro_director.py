@@ -206,16 +206,26 @@ def run_agent1(macro_data: dict = None) -> dict:
         except Exception as e:
             print(f"[Agent 1] FedWatch load failed: {e}")
 
-    # Load ITC (Into The Cryptoverse) data if available
+    # Load ITC (Into The Cryptoverse) data if available.
+    # ITC is SUPPLEMENTARY context (not a kill-switch input), but it must still
+    # be fresh: preflight refuses to load it past ITC_STALE_HOURS, yet Agent 1
+    # was loading it unconditionally straight off disk. That fed 63-day-old
+    # crypto/recession figures into the regime call as if current (observed
+    # 2026-07-29: itc_data.json timestamped 2026-05-26, age ~1522h vs an 18h
+    # threshold). Honour the same staleness rule here.
     itc_text = ""
     itc_path = "output/itc_data.json"
     if os.path.exists(itc_path):
         try:
-            from itc_data import load_itc_data, format_itc_for_prompt
-            itc_loaded = load_itc_data(itc_path)
-            if itc_loaded:
-                itc_text = "\n\n" + format_itc_for_prompt(itc_loaded)
-                print(f"[Agent 1] ITC data loaded (crypto risk: {itc_loaded.get('crypto_risk', {}).get('summary', '?')}, recession risk: {itc_loaded.get('macro_risk', {}).get('recession_composite', '?')})")
+            from itc_data import load_itc_data, format_itc_for_prompt, is_itc_stale
+            if is_itc_stale(itc_path, 18):
+                print("[Agent 1] ITC data STALE — omitted from prompt "
+                      "(supplementary signal; regime call proceeds without it)")
+            else:
+                itc_loaded = load_itc_data(itc_path)
+                if itc_loaded:
+                    itc_text = "\n\n" + format_itc_for_prompt(itc_loaded)
+                    print(f"[Agent 1] ITC data loaded (crypto risk: {itc_loaded.get('crypto_risk', {}).get('summary', '?')}, recession risk: {itc_loaded.get('macro_risk', {}).get('recession_composite', '?')})")
         except Exception as e:
             print(f"[Agent 1] ITC data load failed: {e}")
 
