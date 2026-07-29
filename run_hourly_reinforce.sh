@@ -16,8 +16,11 @@ mkdir -p "$LOG_DIR"
 LOG_FILE="$LOG_DIR/hourly_reinforce_$(date +%Y-%m-%d).log"
 
 echo "=== Hourly Reinforce — $(date) ===" >> "$LOG_FILE"
-# Pin to system python3 (3.9.6) — it has ALL deps (filelock, google.generativeai,
-# etc). Homebrew python3 is missing filelock+generativeai, which silently killed
-# broker stop execution on every 30-min run. (fixed 2026-06-22)
-/usr/bin/python3 orchestrator.py hourly >> "$LOG_FILE" 2>&1
+# Pin to Homebrew python3 (3.14) — same interpreter the morning pipeline uses.
+# It has all live-path deps (yfinance, filelock, pandas, finvizfinance, dotenv).
+# System /usr/bin/python3 (3.9.6) lost its deps and was crashing on `import yfinance`
+# every 30-min run (ModuleNotFoundError), silently killing stop reinforcement.
+# The live path calls Gemini via REST (requests.post), so google.generativeai
+# SDK is NOT required. (interpreter re-pinned 2026-07-29)
+/opt/homebrew/bin/python3 orchestrator.py hourly >> "$LOG_FILE" 2>&1
 echo "=== Done — $(date) ===" >> "$LOG_FILE"
