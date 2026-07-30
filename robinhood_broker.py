@@ -576,7 +576,20 @@ class RobinhoodBroker:
                     # ("Limit order quantity cannot include fractional shares").
                     # Floor to whole shares — this trims position size slightly,
                     # which is the conservative/safe direction (lowers risk).
-                    live_shares = math.floor(risk_budget / live_risk_per_share)
+                    #
+                    # CLAMP (2026-07-30): never size UP beyond the planned share
+                    # count. Agent 4's plan already respects allocation/notional
+                    # caps; the live re-size exists only to TRIM when the live
+                    # fill price widened per-share risk. Without the min(), a
+                    # tight stop makes risk_per_share tiny and the division
+                    # inflates notional past buying power. Real case: NVO planned
+                    # 18.11 sh, risk/sh $1.21, budget $58.80 -> 48 sh ($2,396)
+                    # -> rejected "Not enough buying power", which then starved
+                    # the next order (UL) of cash. Mirrors the correct guard
+                    # already present in orchestrator.py (exec_shares = min(...)).
+                    live_shares = math.floor(
+                        min(planned_shares, risk_budget / live_risk_per_share)
+                    )
                     if live_shares < 1:
                         fills.append({"ticker": ticker, "status": "rejected", "reason": "Zero whole shares after re-sizing (risk budget too small for 1 share)"})
                         continue
